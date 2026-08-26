@@ -282,7 +282,7 @@ async def main():
                         else:
                             try:
                                 answer = sp.sympify(answer_text, locals=sympy_locals)
-                            except (sp.SympifyError, SyntaxError) as error:
+                            except (sp.SympifyError, SyntaxError, TypeError) as error:
                                 record["residual"] = None
                                 record["parse_error"] = repr(error)
                                 record["correct"] = False
