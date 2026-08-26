@@ -19,7 +19,8 @@ TEXT_TABLES = {
     "topic_chains": "entity",
     "topic_facts": "text",
 }
-VIDEO_REQUEST_INTERVAL_SECONDS = 0.0
+VIDEO_REQUEST_BATCH_SIZE = 8
+VIDEO_REQUEST_INTERVAL_SECONDS = 0.5
 
 
 async def request_embeddings(client: httpx.AsyncClient, endpoint: str, model: str, conversations: list[list[dict]], row_ids: list[str], media_io_kwargs: dict | None) -> list[tuple[str, list[float]]]:
@@ -61,16 +62,17 @@ async def embed_text(database_path: Path, endpoint: str, model: str, batch_size:
             print(f"text_embedding_shard path={shard_path} rows={len(batch)}")
 
 
-async def embed_video_clip(client: httpx.AsyncClient, endpoint: str, model: str, row_id: str, clip_path: Path, shard_path: Path, semaphore: asyncio.Semaphore) -> None:
+async def embed_video_batch(client: httpx.AsyncClient, endpoint: str, model: str, batch: list[tuple[str, Path, Path]], semaphore: asyncio.Semaphore) -> None:
     try:
-        conversation = [
+        conversations = [[
             {"role": "system", "content": [{"type": "text", "text": "Represent the user's input."}]},
             {"role": "user", "content": [{"type": "video_url", "video_url": {"url": clip_path.resolve().as_uri()}}, {"type": "text", "text": ""}]},
             {"role": "assistant", "content": [{"type": "text", "text": ""}]},
-        ]
-        results = await request_embeddings(client, endpoint, model, [conversation], [row_id], None)
-        np.savez(shard_path, row_ids=np.array([row_id]), vectors=np.array([results[0][1]], dtype=np.float32))
-        print(f"video_embedding_shard path={shard_path} rows=1")
+        ] for _, clip_path, _ in batch]
+        results = await request_embeddings(client, endpoint, model, conversations, [row_id for row_id, _, _ in batch], None)
+        for (row_id, vector), (_, _, shard_path) in zip(results, batch, strict=True):
+            np.savez(shard_path, row_ids=np.array([row_id]), vectors=np.array([vector], dtype=np.float32))
+            print(f"video_embedding_shard path={shard_path} rows=1")
     finally:
         semaphore.release()
 
@@ -85,27 +87,31 @@ async def embed_video(database_path: Path, endpoint: str, model: str, max_in_fli
     timeout = httpx.Timeout(1800)
     limits = httpx.Limits(max_connections=max_in_flight, max_keepalive_connections=max_in_flight)
     semaphore = asyncio.Semaphore(max_in_flight)
+    pending = []
+    for shard_index, (row_id, video_id) in enumerate(rows):
+        shard_path = shard_dir / f"video-{shard_index:06d}.npz"
+        if shard_path.exists():
+            shard = np.load(shard_path)
+            if shard["row_ids"].tolist() != [row_id]:
+                raise RuntimeError(f"video shard row mismatch path={shard_path} expected={row_id} actual={shard['row_ids'].tolist()}")
+            continue
+        clip_index = int(row_id.rsplit(":", 1)[1])
+        clip_path = clip_dir / video_id / f"{clip_index:06d}.mp4"
+        if not clip_path.is_file():
+            raise FileNotFoundError(clip_path)
+        pending.append((row_id, clip_path, shard_path))
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
         last_launch = None
         async with asyncio.TaskGroup() as tasks:
-            for shard_index, (row_id, video_id) in enumerate(rows):
-                shard_path = shard_dir / f"video-{shard_index:06d}.npz"
-                if shard_path.exists():
-                    shard = np.load(shard_path)
-                    if shard["row_ids"].tolist() != [row_id]:
-                        raise RuntimeError(f"video shard row mismatch path={shard_path} expected={row_id} actual={shard['row_ids'].tolist()}")
-                    continue
-                clip_index = int(row_id.rsplit(":", 1)[1])
-                clip_path = clip_dir / video_id / f"{clip_index:06d}.mp4"
-                if not clip_path.is_file():
-                    raise FileNotFoundError(clip_path)
+            for start in range(0, len(pending), VIDEO_REQUEST_BATCH_SIZE):
+                batch = pending[start:start + VIDEO_REQUEST_BATCH_SIZE]
                 await semaphore.acquire()
                 if last_launch is not None:
                     delay = VIDEO_REQUEST_INTERVAL_SECONDS - (time.monotonic() - last_launch)
                     if delay > 0:
                         await asyncio.sleep(delay)
                 last_launch = time.monotonic()
-                tasks.create_task(embed_video_clip(client, endpoint, model, row_id, clip_path, shard_path, semaphore))
+                tasks.create_task(embed_video_batch(client, endpoint, model, batch, semaphore))
 
 
 def import_shards(database_path: Path, model: str, shard_dir: Path) -> None:
