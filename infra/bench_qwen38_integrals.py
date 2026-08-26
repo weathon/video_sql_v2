@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -113,6 +114,7 @@ async def main():
         "exp": sp.exp,
         "log": sp.log,
         "sqrt": sp.sqrt,
+        "Abs": sp.Abs,
         "asin": sp.asin,
         "acos": sp.acos,
         "atan": sp.atan,
@@ -123,6 +125,7 @@ async def main():
         "oo": sp.oo,
         "Rational": sp.Rational,
     }
+    abs_argument = sp.Wild("abs_argument")
     records = []
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(None, connect=60.0)
@@ -177,7 +180,7 @@ async def main():
                                     "请精确求解下面的积分。你可以推理，但最终答案必须"
                                     "单独放在一行，格式严格为 FINAL: <SymPy表达式>。"
                                     "变量使用 x，可使用 exp、log、sin、cos、sqrt、atan、"
-                                    "asin、pi、E、oo、Rational；不要写 + C，不要给小数近似。\n"
+                                    "asin、Abs、pi、E、oo、Rational；不要写 + C，不要给小数近似。\n"
                                     f"{question}"
                                 ),
                             }
@@ -234,11 +237,14 @@ async def main():
                 else:
                     choice = response_json["choices"][0]
                     content = choice["message"]["content"]
-                    final_lines = [
-                        line.strip()
-                        for line in content.splitlines()
-                        if line.strip().startswith("FINAL:")
-                    ]
+                    if content is None:
+                        final_lines = []
+                    else:
+                        final_lines = [
+                            line.strip()
+                            for line in content.splitlines()
+                            if line.strip().startswith("FINAL:")
+                        ]
                     record = {
                         "run_label": run_label,
                         "model": model,
@@ -262,20 +268,38 @@ async def main():
                     else:
                         answer_text = final_lines[0].removeprefix("FINAL:").strip()
                         record["answer"] = answer_text
-                        try:
-                            answer = sp.sympify(answer_text, locals=sympy_locals)
-                        except (sp.SympifyError, SyntaxError) as error:
+                        identifiers = set(
+                            re.findall(r"[A-Za-z_][A-Za-z_0-9]*", answer_text)
+                        )
+                        unsupported_identifiers = identifiers - sympy_locals.keys()
+                        if unsupported_identifiers:
                             record["residual"] = None
-                            record["parse_error"] = repr(error)
+                            record["parse_error"] = (
+                                "unsupported identifiers: "
+                                f"{sorted(unsupported_identifiers)}"
+                            )
                             record["correct"] = False
                         else:
-                            if problem["kind"] == "indefinite":
-                                residual = sp.simplify(sp.diff(answer, x) - integrand)
+                            try:
+                                answer = sp.sympify(answer_text, locals=sympy_locals)
+                            except (sp.SympifyError, SyntaxError) as error:
+                                record["residual"] = None
+                                record["parse_error"] = repr(error)
+                                record["correct"] = False
                             else:
-                                residual = sp.simplify(answer - expected)
-                            record["residual"] = str(residual)
-                            record["parse_error"] = None
-                            record["correct"] = residual == 0
+                                normalized_answer = answer.replace(
+                                    sp.log(sp.Abs(abs_argument)),
+                                    sp.log(abs_argument),
+                                )
+                                if problem["kind"] == "indefinite":
+                                    residual = sp.simplify(
+                                        sp.diff(normalized_answer, x) - integrand
+                                    )
+                                else:
+                                    residual = sp.simplify(answer - expected)
+                                record["residual"] = str(residual)
+                                record["parse_error"] = None
+                                record["correct"] = residual == 0
                     verified_path.write_text(
                         json.dumps(record, ensure_ascii=False, indent=2)
                     )
