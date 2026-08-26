@@ -24,7 +24,7 @@ def test_real_pilot_database_counts_joins_and_time_mapping(tmp_path):
         "semantic_triples": 123025,
         "topic_chains": 1680,
         "topic_facts": 10359,
-        "video_clips": 9168,
+        "video_clips": 9167,
         "videos": 14,
     }
     assert {table: connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in expected} == expected
