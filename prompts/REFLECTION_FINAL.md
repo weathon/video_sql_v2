@@ -1,0 +1,1 @@
+Stop tool use now. Produce the final reflection and meta-reflection from the existing trace. Focus on repeated paths, why the rollout failed to make progress, which evidence was repeatedly revisited, and what skill change would prevent the loop. Do not continue solving the question.

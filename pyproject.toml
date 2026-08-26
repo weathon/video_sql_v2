@@ -1,0 +1,22 @@
+[project]
+name = "video-sql-v2"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "anyascii",
+  "duckdb",
+  "httpx",
+  "numpy",
+  "openai",
+  "openai-agents",
+  "opencv-python-headless",
+  "pillow",
+  "pydantic",
+  "pytest",
+  "pytest-asyncio",
+  "wandb",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"

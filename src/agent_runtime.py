@@ -1,0 +1,192 @@
+import base64
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Literal
+
+from agents import Agent, ModelSettings, OpenAIResponsesModel, RunConfig, Runner, ToolOutputImage, ToolOutputText, function_tool
+from openai import AsyncOpenAI
+from openai.types.shared import Reasoning
+from pydantic import BaseModel
+
+from src.harness import VideoSQLHarness
+
+
+class ClipAnswer(BaseModel):
+    status: Literal["answered", "unknown"]
+    answer: str
+    evidence_timestamps: list[float]
+
+
+@dataclass
+class ModelEndpoint:
+    model: str
+    api_key: str
+    base_url: str
+    reasoning_effort: Literal["medium", "high"]
+    prompt_cache_retention: Literal["24h"] | None
+
+
+@dataclass
+class RolloutResult:
+    status: Literal["answered", "compaction_limit"]
+    answer: str | None
+    compactions: int
+    trace_path: str
+
+
+def data_url(path: Path) -> str:
+    suffix = path.suffix.lower()
+    media_type = "image/jpeg" if suffix in (".jpg", ".jpeg") else "image/png"
+    return f"data:{media_type};base64," + base64.b64encode(path.read_bytes()).decode()
+
+
+class AgentRuntime:
+    def __init__(self, harness: VideoSQLHarness, endpoint: ModelEndpoint, context_limit: int, compaction_prompt: Path, reflection_final_prompt: Path):
+        self.harness = harness
+        self.endpoint = endpoint
+        self.context_limit = context_limit
+        self.compaction_prompt = compaction_prompt.read_text(encoding="utf-8")
+        self.reflection_final_prompt = reflection_final_prompt.read_text(encoding="utf-8")
+        client = AsyncOpenAI(api_key=endpoint.api_key, base_url=endpoint.base_url)
+        self.model = OpenAIResponsesModel(model=endpoint.model, openai_client=client)
+        self.settings = ModelSettings(
+            reasoning=Reasoning(effort=endpoint.reasoning_effort),
+            parallel_tool_calls=True,
+            truncation="disabled",
+            prompt_cache_retention=endpoint.prompt_cache_retention,
+            preserve_raw_usage=True,
+        )
+
+    def main_tools(self):
+        @function_tool
+        def run_sql(sql: str) -> dict:
+            """Run read-only DuckDB SQL. Results are limited to 100 rows and long cells to 500 characters."""
+            return self.harness.run_sql(sql)
+
+        @function_tool
+        def semantic_search(query: str, n: int, table: str) -> dict:
+            """Search an embedding-enabled table. The table must be one listed in the database schema."""
+            return self.harness.semantic_search(query, n, table)
+
+        @function_tool
+        def add_note(text: str) -> dict:
+            """Persist a note for this rollout."""
+            return self.harness.add_note(text)
+
+        @function_tool
+        def read_notes() -> dict:
+            """Read all persisted notes for this rollout."""
+            return self.harness.read_notes()
+
+        @function_tool
+        def agent_raise(reason: str):
+            """Abort this rollout because a required dependency or state is broken."""
+            self.harness.agent_raise(reason)
+
+        @function_tool
+        async def clip_qa(video_id: str, start_sec: float, end_sec: float, question: str):
+            """Inspect a video segment with a nested visual agent. Prefer segments under 10 minutes; segments over 20 minutes are rejected."""
+            if end_sec - start_sec > 1200:
+                return {"status": "rejected", "error": "clip_qa segments must be at most 20 minutes"}
+
+            @function_tool
+            def sample_video(sample_start_sec: float, sample_end_sec: float, fps: float, x1: int, x2: int, y1: int, y2: int, return_caption: bool):
+                """Sample this clip into timestamped 4x3 contact sheets. Crop coordinates are integers from 0 to 1000."""
+                if sample_start_sec < start_sec or sample_end_sec > end_sec:
+                    raise ValueError(f"sample interval must stay inside clip_qa interval {start_sec}-{end_sec}")
+                result = self.harness.sample_video(video_id, sample_start_sec, sample_end_sec, fps, x1, x2, y1, y2, return_caption)
+                text = json.dumps({"frame_timestamps": result["frame_timestamps"], "captions": result["captions"]}, ensure_ascii=False)
+                outputs = [ToolOutputText(text=text)]
+                outputs.extend(ToolOutputImage(image_url=data_url(Path(path)), detail="high") for path in result["contact_sheets"])
+                return outputs
+
+            @function_tool
+            def add_clip_note(text: str) -> dict:
+                """Persist a note for this clip investigation."""
+                return self.harness.add_note(f"clip:{video_id}:{start_sec}-{end_sec} {text}")
+
+            @function_tool
+            def read_clip_notes() -> dict:
+                """Read notes available to this clip investigation."""
+                return self.harness.read_notes()
+
+            clip_agent = Agent(
+                name="clip investigator",
+                instructions=f"Answer only the supplied question about video {video_id} between {start_sec} and {end_sec} seconds. Inspect frames until evidence is sufficient. Return unknown instead of guessing. Evidence timestamps must be inside this interval.",
+                model=self.model,
+                model_settings=self.settings,
+                tools=[sample_video, add_clip_note, read_clip_notes],
+                output_type=ClipAnswer,
+            )
+            result = await Runner.run(clip_agent, question, max_turns=50, run_config=RunConfig(reasoning_item_id_policy="preserve"))
+            answer = result.final_output
+            if answer.status == "unknown":
+                return answer.model_dump()
+            if not answer.evidence_timestamps:
+                raise ValueError("answered clip_qa result requires at least one evidence timestamp")
+            if any(timestamp < start_sec or timestamp > end_sec for timestamp in answer.evidence_timestamps):
+                raise ValueError(f"evidence timestamps must stay inside clip_qa interval {start_sec}-{end_sec}")
+            screenshots = self.harness.evidence_screenshots(video_id, answer.evidence_timestamps)
+            outputs = [ToolOutputText(text=json.dumps(answer.model_dump(), ensure_ascii=False))]
+            outputs.extend(ToolOutputImage(image_url=data_url(Path(path)), detail="high") for path in screenshots)
+            return outputs
+
+        return [run_sql, semantic_search, clip_qa, add_note, read_notes, agent_raise]
+
+    def main_agent(self, skill: str) -> Agent:
+        schema = (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
+        instructions = "Answer the video-memory question using the read-only database and tool evidence. Give the answer and supporting video timestamps.\n\nDatabase schema:\n" + schema + "\n\nSkill:\n" + skill
+        return Agent(name="video memory SQL agent", instructions=instructions, model=self.model, model_settings=self.settings, tools=self.main_tools())
+
+    async def run_rollout(self, question: str, skill: str, trace_path: Path, enable_compaction: bool) -> RolloutResult:
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        endpoint_trace = asdict(self.endpoint)
+        del endpoint_trace["api_key"]
+        trace = {"question": question, "model": endpoint_trace, "responses": [], "compactions": []}
+        current_input = question
+        compactions = 0
+        while True:
+            agent = self.main_agent(skill)
+            stream = Runner.run_streamed(
+                agent,
+                current_input,
+                max_turns=50,
+                run_config=RunConfig(reasoning_item_id_policy="preserve"),
+                auto_previous_response_id=not enable_compaction,
+            )
+            compact_after_turn = False
+            async for event in stream.stream_events():
+                if event.type != "raw_response_event" or event.data.type != "response.completed":
+                    continue
+                response = event.data.response
+                serialized = response.model_dump(mode="json")
+                trace["responses"].append(serialized)
+                trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
+                usage = response.usage
+                remaining = self.context_limit - usage.input_tokens - usage.output_tokens
+                has_tool_call = any(item.type == "function_call" for item in response.output)
+                if enable_compaction and remaining <= 50_000 and has_tool_call:
+                    compact_after_turn = True
+                    stream.cancel(mode="after_turn")
+            if stream.run_loop_exception:
+                raise stream.run_loop_exception
+            if not compact_after_turn:
+                if stream.final_output is None:
+                    raise RuntimeError("agent run ended without final output")
+                trace["status"] = "answered"
+                trace["answer"] = stream.final_output
+                trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
+                return RolloutResult(status="answered", answer=str(stream.final_output), compactions=compactions, trace_path=str(trace_path))
+
+            transcript = stream.to_input_list()
+            compactor = Agent(name="rollout compactor", instructions=self.compaction_prompt, model=self.model, model_settings=self.settings)
+            compacted = await Runner.run(compactor, f"Compactions already completed for this rollout: {compactions}\n\n" + json.dumps(transcript, ensure_ascii=False), max_turns=1, run_config=RunConfig(reasoning_item_id_policy="preserve"))
+            compactions += 1
+            trace["compactions"].append({"index": compactions, "handoff": compacted.final_output})
+            trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
+            if compactions == 3:
+                trace["status"] = "compaction_limit"
+                trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
+                return RolloutResult(status="compaction_limit", answer=None, compactions=compactions, trace_path=str(trace_path))
+            current_input = [{"role": "user", "content": f"Trusted compacted handoff from the prior conversation:\n\n{compacted.final_output}"}]
