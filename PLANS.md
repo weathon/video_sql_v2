@@ -14,6 +14,7 @@
 ## 项目创新点:
 1. 本项目使用SQL Dataset代替graph, 从而使得query过程可以被agent控制, 并且可以直接实现多步骤跳转而不是agent自己relay. 
 2. Agent SKILL.md "训练": 训练大模型很复杂, 耗费算力, 容易过拟合, 所以我们"训练"agent的skill.md文件, 而不是模型参数. 简单来说, 每一次rollout结束之后模型复盘, 复盘经验加入一个文本文件, 这个文本被下一次模型rollout使用, 如此反复迭代实现模型进化. 
+3. Skill 的可追溯性: SKILL.md 記錄「現在的規則是什麼」, META-SKILL.md 記錄「該怎麼複盤」, 但都沒有記錄「為什麼會有這條規則」. 我們額外維護一個很輕的 experience db, 只做規則和歷史證據之間的索引, 讓每一條 skill 都能回答: 它是被哪些 rollout 建立的, 被哪些支持, 被哪些 failure 推翻. raw trace 本來就已經全部落盤了, 缺的只是 link, 所以這個 db 不複製 trace, 只存指標和路徑.
 
 ## 成本控制和监控
 所有的API都应该统计token的消耗, luna的pricing如下. 建议监控长context和短context. 始终需要开启cache write. 如果总消耗达到$100, 保留可以resume的状态并且暂停, 告知用户, 用户决定继续. pilot使用luna, 不要fast模式; pilot之后的所有实验全部使用本地模型, 不再使用luna. 
@@ -118,6 +119,10 @@ ORDER BY day;
 3. 每一个问题的m个rollout的反思被另一个call总结起来, 然后对于n个总结和当前SKILL.md状态, 另一个agent(不是single call)生成一个patch来修改它产生新的skill. 这个修改必须使用patch而不是直接输出新的是为了防止大范围改动. 使用linux标准的patch格式, 如果patch失败就让这个这个agent得到错误(需要agent的原因)然后重写一个patch. reflection进入SKILL.md meta-reflection进入META-SKILL.md. 这个patch需要包含修改和删除, 而不只是无限量添加, 不然会爆炸. 删掉旧的错误的, 或者merge相似的, 或者补充现有的, 而不是永远加下去. 
 4. 下一个batch带着新的SKILL.md和META-SKILL.md继续. 
 5. 只训练一个epoch, 不然很可能会过拟合
+6. 第 3 步的 updater 在生成 patch 之前先多一步確定性查詢: 按 skill_id 從 experience db 把這條規則過去的 supports 和 contradicts 撈出來, 跟本批彙總一起給它看; patch 成功套用之後再把這一批的證據寫回 skill_evidence. 只有當一條 reflection 對不上任何現有 skill_id 時, 才對歷史 reflection_summary 做一次語意檢索找可能相關的規則, 這是 fallback 不是預設路徑.
+7. SKILL.md 和 META-SKILL.md 的每一條規則都要有穩定 ID, 寫在標題前綴裡, skill 用 S 開頭 meta-skill 用 M 開頭, 例如 `### [S017] Temporal Aggregation`. ID 一旦分配就不再改變, 改寫/合併/重排都不變. updater 新增規則時分配下一個沒用過的編號, 細化規則時保留原 ID 只遞增 version, 淘汰規則時寫 deprecated 關係而不是讓這個 ID 憑空消失. 沒有穩定 ID 就沒辦法判斷 v1 的 "prefer sql for counting" 和 v7 的 "for structured counting, aggregate in sql" 是同一條規則的演化還是兩條不同的規則, provenance 也就建不起來.
+8. experience db 放在 runs/<run_id>/experience.duckdb, 兩張表. experience(experience_id, question_id, rollout_id, batch_id, score, status, reflection_summary, artifact_path), 每個 rollout 的 reflection 落盤之後寫一筆, artifact_path 指向已有的 JSON 不複製內容. skill_evidence(skill_id, skill_version, experience_id, relation, patch_id), 每批 patch 成功之後寫. status 取值固定為 completed/compaction_limit/agent_raise/turn_limit, relation 取值固定為 created/supports/contradicts/refined/deprecated, 不能讓模型自由發揮, 不然 group by 出來是碎的. Pilot 646 題 x 5 rollout 大概 3.2k 筆, 正式 266 題 x 10 rollout 大概 2.7k 筆, 都是千筆量級, 不需要為它做任何優化.
+9. 這個 db 必須和 agent 檢索用的 duckdb 是兩個獨立檔案, 不能註冊進 run_sql 和 semantic_search 看得到的表裡, 不然 agent 可以查到自己過往的 judge 分數和反思, 結果就不可信了. 反思進 SKILL.md 之前照舊抽象化去敏感內容, 具體案例只留在 runs/ 的原始 JSON 裡用 artifact_path 索引 -- provenance 不是放寬這條規則, 反而是抽象化之後還能回溯到具體案例的唯一辦法. 另外這一步只改 updater 的輸入和 prompt, 不改 patch allowlist, 能寫的檔案還是只有本次執行副本的 SKILL.md 和 META-SKILL.md.
 
 #### Prompt
 System Prompt包含简单的任务说明和database schema, **不需要**任何详细的任务步骤描述, 例如如何搜索如何继续. 但是, 我们需要一个起始状态的SKILL.md来告诉模型怎么做检索, 同样的, 反思阶段给的guideline也应该保持最简单, 而具体的开始反思的guideline应该放在META-SKILL.md. 这样模型不会被我们的system prompt困住或者和SKILL.md和META-SKILL.md冲突, 而是可以自由修改. 然后作为baseline的no skill baseline包含这个最开始的最初始的SKILL作为system prompt, 而不是完全没有prompt. 
@@ -126,6 +131,7 @@ System Prompt包含简单的任务说明和database schema, **不需要**任何�
 src/harness.py: 主harness架构, 包括tools定义
 src/training.py 训练代码
 src/val.py 验证集代码, 可以测试没有SKILL.md(baseline)也可以测试有
+src/experience.py experience db 的建表/寫入/按 skill_id 查詢, DB 檔在 runs/<run_id>/experience.duckdb, 只被 training 用, 不進 harness
 tests/ 所有单元测试
 runs/ 记录训练的log和缓存的SKILL.md和META-SKILL.md, 包括超参数和git hash
 notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context compact之后可能需要参考
