@@ -8,8 +8,8 @@ from PIL import Image
 from src.embeddings import clip_data_url, request_embeddings
 
 
-def create_video(path):
-    command = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=4:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)]
+def create_video(path, rate, duration):
+    command = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc2=size=160x120:rate={rate}:duration={duration}", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"test video creation failed: {result.stderr}")
@@ -17,7 +17,7 @@ def create_video(path):
 
 def test_clip_data_url_covers_video_at_two_fps(tmp_path):
     video_path = tmp_path / "video.mp4"
-    create_video(video_path)
+    create_video(video_path, 4, 2)
     data_url, media_io_kwargs = clip_data_url(str(video_path), 0.0, 2.0)
     encoded_frames = data_url.removeprefix("data:video/jpeg;base64,").split(",")
     assert len(encoded_frames) == 4
@@ -25,6 +25,14 @@ def test_clip_data_url_covers_video_at_two_fps(tmp_path):
         with Image.open(BytesIO(base64.b64decode(frame))) as image:
             assert image.size == (160, 120)
     assert media_io_kwargs == {"video": {"num_frames": -1, "fps": 4.0, "frames_indices": [0, 2, 4, 6], "total_num_frames": 8, "duration": 2.0, "do_sample_frames": False}}
+
+
+def test_clip_data_url_covers_fractional_video_tail(tmp_path):
+    video_path = tmp_path / "fractional.mp4"
+    create_video(video_path, 30, 3.7)
+    data_url, media_io_kwargs = clip_data_url(str(video_path), 0.0, 3.7)
+    assert len(data_url.removeprefix("data:video/jpeg;base64,").split(",")) == 8
+    assert media_io_kwargs["video"]["frames_indices"] == [0, 15, 30, 45, 60, 75, 90, 105]
 
 
 async def test_embedding_batch_request_uses_qwen_chat_protocol():

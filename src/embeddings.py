@@ -91,11 +91,13 @@ def clip_data_urls(video_path: str, clips: list[tuple[float, float]]) -> list[st
             raise RuntimeError(f"FFmpeg batch is not contiguous video={video_path} previous={previous} current={current}")
     start_sec = clips[0][0]
     end_sec = clips[-1][1]
+    expected_frames = [len(np.arange(start, end, 0.5)) for start, end in clips]
     command = [
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
         "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-c:v", "h264_cuvid",
-        "-ss", str(start_sec), "-i", video_path, "-t", str(end_sec - start_sec),
-        "-vf", "fps=2,hwdownload,format=nv12", "-c:v", "mjpeg", "-q:v", "2",
+        "-ss", str(start_sec), "-i", video_path,
+        "-vf", "tpad=stop_mode=clone:stop_duration=0.5,fps=2,hwdownload,format=nv12",
+        "-frames:v", str(sum(expected_frames)), "-c:v", "mjpeg", "-q:v", "2",
         "-f", "image2pipe", "pipe:1",
     ]
     print(f"ffmpeg_cuda video={video_path} start={start_sec} end={end_sec} clips={len(clips)}")
@@ -122,7 +124,6 @@ def clip_data_urls(video_path: str, clips: list[tuple[float, float]]) -> list[st
     if returncode != 0:
         print(f"ffmpeg_cuda_failed video={video_path} start={start_sec} end={end_sec} error={error}")
         raise RuntimeError(f"ffmpeg failed video={video_path} returncode={returncode}")
-    expected_frames = [len(np.arange(start, end, 0.5)) for start, end in clips]
     if len(encoded_frames) != sum(expected_frames):
         raise RuntimeError(f"FFmpeg frame count mismatch video={video_path} expected={sum(expected_frames)} actual={len(encoded_frames)}")
     data_urls = []
