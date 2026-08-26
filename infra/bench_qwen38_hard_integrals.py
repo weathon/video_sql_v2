@@ -181,7 +181,7 @@ async def main():
                 "reasoning_effort": "xhigh",
                 "seed": 20260826,
                 "tensor_parallel_size": 2,
-                "gpu_indices": [4, 5],
+                "gpu_indices": [5, 6],
             },
         )
         for problem in problems:
