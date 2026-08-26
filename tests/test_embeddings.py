@@ -6,7 +6,7 @@ import httpx
 import numpy as np
 from PIL import Image
 
-from src.embeddings import clip_data_url, request_embedding
+from src.embeddings import clip_data_url, request_embeddings
 
 
 def create_video(path):
@@ -32,17 +32,16 @@ def test_clip_data_url_covers_video_at_two_fps(tmp_path):
     assert media_io_kwargs == {"video": {"num_frames": -1, "fps": 4.0, "frames_indices": [0, 2, 4, 6], "total_num_frames": 8, "duration": 2.0, "do_sample_frames": False}}
 
 
-async def test_embedding_request_uses_qwen_chat_protocol():
+async def test_embedding_batch_request_uses_qwen_chat_protocol():
     captured = {}
 
     def respond(request):
         captured.update(__import__("json").loads(request.content))
-        return httpx.Response(200, json={"data": [{"embedding": [0.5, -0.5]}]})
+        return httpx.Response(200, json={"data": [{"index": 1, "embedding": [0.25, -0.25]}, {"index": 0, "embedding": [0.5, -0.5]}]})
 
     messages = [{"role": "user", "content": [{"type": "text", "text": "query"}]}]
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        row_id, vector = await request_embedding(client, "http://embedding/v1/embeddings", "qwen", messages, "row-1", None)
-    assert row_id == "row-1"
-    assert vector == [0.5, -0.5]
-    assert captured == {"model": "qwen", "messages": messages, "encoding_format": "float", "continue_final_message": True, "add_special_tokens": True}
+        results = await request_embeddings(client, "http://embedding/v1/embeddings", "qwen", [messages, messages], ["row-1", "row-2"], None)
+    assert results == [("row-1", [0.5, -0.5]), ("row-2", [0.25, -0.25])]
+    assert captured == {"model": "qwen", "messages": [messages, messages], "encoding_format": "float", "continue_final_message": True, "add_special_tokens": True}
     assert "input" not in captured

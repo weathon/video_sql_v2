@@ -22,18 +22,20 @@ TEXT_TABLES = {
 }
 
 
-async def request_embedding(client: httpx.AsyncClient, endpoint: str, model: str, messages: list[dict], row_id: str, media_io_kwargs: dict | None) -> tuple[str, list[float]]:
-    print(f"embedding_request row_id={row_id}")
-    body = {"model": model, "messages": messages, "encoding_format": "float", "continue_final_message": True, "add_special_tokens": True}
+async def request_embeddings(client: httpx.AsyncClient, endpoint: str, model: str, conversations: list[list[dict]], row_ids: list[str], media_io_kwargs: dict | None) -> list[tuple[str, list[float]]]:
+    print(f"embedding_batch rows={len(row_ids)} first_row_id={row_ids[0]} last_row_id={row_ids[-1]}")
+    body = {"model": model, "messages": conversations, "encoding_format": "float", "continue_final_message": True, "add_special_tokens": True}
     if media_io_kwargs is not None:
         body["media_io_kwargs"] = media_io_kwargs
     response = await client.post(endpoint, json=body)
     response.raise_for_status()
-    payload = response.json()
-    return row_id, payload["data"][0]["embedding"]
+    items = sorted(response.json()["data"], key=lambda item: item["index"])
+    if [item["index"] for item in items] != list(range(len(row_ids))):
+        raise RuntimeError(f"embedding response indexes do not match batch rows: {[item['index'] for item in items]}")
+    return [(row_id, item["embedding"]) for row_id, item in zip(row_ids, items, strict=True)]
 
 
-async def embed_text(database_path: Path, endpoint: str, model: str, concurrency: int, shard_dir: Path) -> None:
+async def embed_text(database_path: Path, endpoint: str, model: str, batch_size: int, shard_dir: Path) -> None:
     connection = duckdb.connect(str(database_path), read_only=True)
     rows = []
     for table, text_column in TEXT_TABLES.items():
@@ -42,21 +44,27 @@ async def embed_text(database_path: Path, endpoint: str, model: str, concurrency
     connection.close()
     shard_dir.mkdir(parents=True, exist_ok=True)
     timeout = httpx.Timeout(1800)
-    limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
+    limits = httpx.Limits(max_connections=1, max_keepalive_connections=1)
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-        for shard_index, start in enumerate(range(0, len(rows), concurrency)):
+        for shard_index, start in enumerate(range(0, len(rows), batch_size)):
             shard_path = shard_dir / f"text-{shard_index:06d}.npz"
             if shard_path.exists():
                 continue
-            batch = rows[start:start + concurrency]
-            messages = [[
+            batch = rows[start:start + batch_size]
+            conversations = [[
                 {"role": "system", "content": [{"type": "text", "text": "Represent the user's input."}]},
                 {"role": "user", "content": [{"type": "text", "text": text}]},
                 {"role": "assistant", "content": [{"type": "text", "text": ""}]},
             ] for _, _, text in batch]
-            results = await asyncio.gather(*(request_embedding(client, endpoint, model, prompt, row_id, None) for prompt, (_, row_id, _) in zip(messages, batch, strict=True)))
+            results = await request_embeddings(client, endpoint, model, conversations, [row_id for _, row_id, _ in batch], None)
             np.savez(shard_path, tables=np.array([table for table, _, _ in batch]), row_ids=np.array([row_id for _, row_id, _ in batch]), vectors=np.array([vector for _, vector in results], dtype=np.float32))
             print(f"text_embedding_shard path={shard_path} rows={len(batch)}")
+
+
+def clip_metadata(native_fps: float, start_sec: float, end_sec: float) -> dict:
+    duration = end_sec - start_sec
+    timestamps = np.arange(start_sec, end_sec, 0.5)
+    return {"video": {"num_frames": -1, "fps": native_fps, "frames_indices": [round((timestamp - start_sec) * native_fps) for timestamp in timestamps], "total_num_frames": round(duration * native_fps), "duration": duration, "do_sample_frames": False}}
 
 
 def clip_data_url(video_path: str, start_sec: float, end_sec: float) -> tuple[str, dict]:
@@ -68,7 +76,6 @@ def clip_data_url(video_path: str, start_sec: float, end_sec: float) -> tuple[st
         capture.release()
         raise RuntimeError(f"invalid video fps video={video_path} fps={native_fps}")
     encoded_frames = []
-    frame_indices = []
     for timestamp in np.arange(start_sec, end_sec, 0.5):
         capture.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
         ok, frame = capture.read()
@@ -80,38 +87,52 @@ def clip_data_url(video_path: str, start_sec: float, end_sec: float) -> tuple[st
             capture.release()
             raise RuntimeError(f"cannot encode frame video={video_path} timestamp={timestamp}")
         encoded_frames.append(base64.b64encode(buffer).decode())
-        frame_indices.append(round((timestamp - start_sec) * native_fps))
     capture.release()
-    duration = end_sec - start_sec
     data_url = "data:video/jpeg;base64," + ",".join(encoded_frames)
-    media_io_kwargs = {"video": {"num_frames": -1, "fps": native_fps, "frames_indices": frame_indices, "total_num_frames": round(duration * native_fps), "duration": duration, "do_sample_frames": False}}
-    return data_url, media_io_kwargs
+    return data_url, clip_metadata(native_fps, start_sec, end_sec)
 
 
-async def embed_video(database_path: Path, endpoint: str, model: str, concurrency: int, shard_dir: Path) -> None:
+async def embed_video(database_path: Path, endpoint: str, model: str, batch_size: int, shard_dir: Path) -> None:
     connection = duckdb.connect(str(database_path), read_only=True)
-    rows = connection.execute("SELECT c.row_id, v.video_path, c.start_sec, c.end_sec FROM video_clips c JOIN videos v USING(video_id) ORDER BY c.row_id").fetchall()
+    rows = connection.execute("SELECT c.row_id, v.video_path, c.start_sec, c.end_sec FROM video_clips c JOIN videos v USING(video_id) ORDER BY v.sequence_index, c.start_sec").fetchall()
     connection.close()
+    video_fps = {}
+    for _, video_path, _, _ in rows:
+        if video_path in video_fps:
+            continue
+        capture = cv2.VideoCapture(video_path)
+        if not capture.isOpened():
+            raise RuntimeError(f"cannot open video {video_path}")
+        video_fps[video_path] = capture.get(cv2.CAP_PROP_FPS)
+        capture.release()
+        if video_fps[video_path] <= 0:
+            raise RuntimeError(f"invalid video fps video={video_path} fps={video_fps[video_path]}")
+    batches = []
+    for row in rows:
+        metadata = clip_metadata(video_fps[row[1]], row[2], row[3])
+        if not batches or batches[-1][0] != metadata or len(batches[-1][1]) == batch_size:
+            batches.append((metadata, [row]))
+        else:
+            batches[-1][1].append(row)
     shard_dir.mkdir(parents=True, exist_ok=True)
     timeout = httpx.Timeout(1800)
-    limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
+    limits = httpx.Limits(max_connections=1, max_keepalive_connections=1)
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-        for shard_index, start in enumerate(range(0, len(rows), concurrency)):
+        for shard_index, (metadata, batch) in enumerate(batches):
             shard_path = shard_dir / f"video-{shard_index:06d}.npz"
             if shard_path.exists():
                 continue
-            batch = rows[start:start + concurrency]
-            prompts = []
-            media_kwargs = []
+            conversations = []
             for _, video_path, start_sec, end_sec in batch:
-                data_url, metadata = clip_data_url(video_path, start_sec, end_sec)
-                prompts.append([
+                data_url, generated_metadata = clip_data_url(video_path, start_sec, end_sec)
+                if generated_metadata != metadata:
+                    raise RuntimeError(f"video metadata changed while encoding {video_path} {start_sec}-{end_sec}")
+                conversations.append([
                     {"role": "system", "content": [{"type": "text", "text": "Represent the user's input."}]},
                     {"role": "user", "content": [{"type": "video_url", "video_url": {"url": data_url}}, {"type": "text", "text": ""}]},
                     {"role": "assistant", "content": [{"type": "text", "text": ""}]},
                 ])
-                media_kwargs.append(metadata)
-            results = await asyncio.gather(*(request_embedding(client, endpoint, model, prompt, row_id, metadata) for prompt, metadata, (row_id, _, _, _) in zip(prompts, media_kwargs, batch, strict=True)))
+            results = await request_embeddings(client, endpoint, model, conversations, [row_id for row_id, _, _, _ in batch], metadata)
             np.savez(shard_path, row_ids=np.array([row_id for row_id, _, _, _ in batch]), vectors=np.array([vector for _, vector in results], dtype=np.float32))
             print(f"video_embedding_shard path={shard_path} rows={len(batch)}")
 
@@ -138,10 +159,10 @@ if __name__ == "__main__":
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--endpoint", required=True)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--text-concurrency", type=int, required=True)
-    parser.add_argument("--video-concurrency", type=int, required=True)
+    parser.add_argument("--text-batch-size", type=int, required=True)
+    parser.add_argument("--video-batch-size", type=int, required=True)
     parser.add_argument("--shard-dir", type=Path, required=True)
     arguments = parser.parse_args()
-    asyncio.run(embed_text(arguments.database, arguments.endpoint, arguments.model, arguments.text_concurrency, arguments.shard_dir))
-    asyncio.run(embed_video(arguments.database, arguments.endpoint, arguments.model, arguments.video_concurrency, arguments.shard_dir))
+    asyncio.run(embed_text(arguments.database, arguments.endpoint, arguments.model, arguments.text_batch_size, arguments.shard_dir))
+    asyncio.run(embed_video(arguments.database, arguments.endpoint, arguments.model, arguments.video_batch_size, arguments.shard_dir))
     import_shards(arguments.database, arguments.model, arguments.shard_dir)
