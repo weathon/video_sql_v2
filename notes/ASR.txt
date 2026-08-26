@@ -1,0 +1,49 @@
+Qwen3-ASR-1.7B-hf batch inference on MM-Lifelong video
+
+Goal: run Qwen/Qwen3-ASR-1.7B-hf (Transformers native ASR) as batch inference over the audio of the MM-Lifelong source videos. Verified on 2026-08-26 with 4 audio slices from source video 4, on physical GPU 1 (fully idle B200).
+
+Audio source
+The cached clips under data/video_clips/<video_id>/*.mp4 were produced with ffmpeg -an, so they have no audio stream and cannot be used for ASR. The audio lives only in the original source videos referenced by videos.video_path in data/pilot.duckdb, e.g. /raid/wg25r/mmlifelong_pilot/videos/month/4.mp4, which carry an aac stream (44100 Hz, stereo). Extract audio from these source files, not from the cached clips.
+
+Environment
+New venv for this work: .venv_asr_20260826 (created with uv venv --python 3.12).
+Installed: transformers>=5.13.0 (resolved 5.16.1), accelerate, soundfile, librosa, numpy, huggingface_hub, duckdb.
+torch resolved to 2.13.0+cu130 (CUDA 13.0) from PyPI default; it runs on the B200 (compute capability 10.0). Qwen3-ASR needs Transformers >= 5.13.0.
+HF cache env used: HF_HOME=/raid/huggingface, HF_HUB_CACHE=/raid/huggingface/hub. Model weights cache: /raid/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B-hf, 3.9 GB.
+
+GPU selection
+Test ran with CUDA_VISIBLE_DEVICES=1. Model loaded in bfloat16 with .to("cuda"), single device (no device_map sharding needed at this size).
+
+Setup commands
+export UV_CACHE_DIR=/raid/wg25r/video_sql_v2/.uv-cache
+uv venv --python 3.12 .venv_asr_20260826
+source .venv_asr_20260826/bin/activate
+uv pip install "transformers>=5.13.0" accelerate soundfile librosa numpy huggingface_hub duckdb
+
+Audio extraction
+For each target segment, cut the source video audio to 16 kHz mono wav at the segment start/end seconds:
+ffmpeg -y -v error -ss <start_sec> -to <end_sec> -i <video_path> -vn -ac 1 -ar 16000 <out.wav>
+The processor resamples internally, but 16 kHz mono wav is the direct ASR sample rate and keeps the files small.
+
+Batch inference (Transformers native)
+model_id = "Qwen/Qwen3-ASR-1.7B-hf"
+processor = AutoProcessor.from_pretrained(model_id)
+model = AutoModelForMultimodalLM.from_pretrained(model_id, dtype=torch.bfloat16).to("cuda").eval()
+inputs = processor.apply_transcription_request(audio=[wav1, wav2, ...], language=[None, None, ...]).to(model.device, model.dtype)
+with torch.inference_mode():
+    output_ids = model.generate(**inputs, max_new_tokens=256)
+generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
+processor.decode(generated_ids)                                  # raw: "language English<asr_text>..."
+processor.decode(generated_ids, return_format="parsed")          # [{"language":..., "transcription":...}, ...]
+processor.decode(generated_ids, return_format="transcription_only")
+
+apply_transcription_request accepts audio as a list (local path, URL, base64, or (np.ndarray, sr) tuple). language=[None, ...] auto-detects per item; pass a language name ("English") or code ("en") to force it. prompt=... biases with hotwords/context. Forcing language in a batch requires a prefill for every item in that batch (apply_transcription_request handles this; the chat-template path needs the "language <NAME><asr_text>" assistant prefill with continue_final_message=True).
+
+Measured on GPU 1 (B200), Qwen3-ASR-1.7B-hf, bfloat16, batch of 4 short slices
+Weight load: about 2.6 s. Batch-of-4 generate (max_new_tokens=256): about 3.0 s. Peak GPU memory: 4.39 GB.
+
+Verification (2026-08-26)
+Script: runs/asr_test/run_asr_test.py. Results: runs/asr_test/asr_test_results.json, plus the 4 extracted wavs. Slices taken at existing asr_segments start/end for video 4. Example: stored "literally like gone chat like my voice is gone my voice is gone but anyways oh god the skies are" vs ASR "Literally, like gone, chat. Like my voice is gone. My voice is gone. But anyways, the skies are." ASR output keeps capitalization and punctuation; the stored asr_segments text is normalized (lowercase, no punctuation). Language auto-detected English on all 4. Transcriptions match the audio content.
+
+Notes for scaling to full videos
+The source videos are long (video 4 is 14421 s). apply_transcription_request works on the slices you feed it; for full videos you segment the audio and batch the slices. Longer audio and larger batches raise generate time and memory beyond the small-sample figures above.
