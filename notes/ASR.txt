@@ -31,7 +31,7 @@ processor = AutoProcessor.from_pretrained(model_id)
 model = AutoModelForMultimodalLM.from_pretrained(model_id, dtype=torch.bfloat16).to("cuda").eval()
 inputs = processor.apply_transcription_request(audio=[wav1, wav2, ...], language=[None, None, ...]).to(model.device, model.dtype)
 with torch.inference_mode():
-    output_ids = model.generate(**inputs, max_new_tokens=256)
+    output_ids = model.generate(**inputs)
 generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
 processor.decode(generated_ids)                                  # raw: "language English<asr_text>..."
 processor.decode(generated_ids, return_format="parsed")          # [{"language":..., "transcription":...}, ...]
@@ -39,8 +39,8 @@ processor.decode(generated_ids, return_format="transcription_only")
 
 apply_transcription_request accepts audio as a list (local path, URL, base64, or (np.ndarray, sr) tuple). language=[None, ...] auto-detects per item; pass a language name ("English") or code ("en") to force it. prompt=... biases with hotwords/context. Forcing language in a batch requires a prefill for every item in that batch (apply_transcription_request handles this; the chat-template path needs the "language <NAME><asr_text>" assistant prefill with continue_final_message=True).
 
-Measured on GPU 1 (B200), Qwen3-ASR-1.7B-hf, bfloat16, batch of 4 short slices
-Weight load: about 2.6 s. Batch-of-4 generate (max_new_tokens=256): about 3.0 s. Peak GPU memory: 4.39 GB.
+Measured on GPU 1 (B200), Qwen3-ASR-1.7B-hf, bfloat16, batch of 4 short slices, no completion token cap (generate uses the model generation_config)
+Weight load: about 2.2 s. Total audio in the batch: 30.96 s. Cold first generate: about 2.73 s (about 11x realtime, 0.088 process-min per audio-min). Warm generate: about 0.64 s (about 48x realtime, 0.021 process-min per audio-min). Peak GPU memory: 4.43 GB.
 
 Verification (2026-08-26)
 Script: runs/asr_test/run_asr_test.py. Results: runs/asr_test/asr_test_results.json, plus the 4 extracted wavs. Slices taken at existing asr_segments start/end for video 4. Example: stored "literally like gone chat like my voice is gone my voice is gone but anyways oh god the skies are" vs ASR "Literally, like gone, chat. Like my voice is gone. My voice is gone. But anyways, the skies are." ASR output keeps capitalization and punctuation; the stored asr_segments text is normalized (lowercase, no punctuation). Language auto-detected English on all 4. Transcriptions match the audio content.
