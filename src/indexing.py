@@ -19,14 +19,17 @@ def read_json(path: Path):
 def video_duration(path: Path) -> float:
     print(f"video_metadata path={path}")
     result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)],
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "json", str(path)],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         print(f"ffprobe_failed video={path} error={result.stderr.strip()}")
         raise RuntimeError(f"ffprobe failed video={path} returncode={result.returncode}")
-    duration = float(json.loads(result.stdout)["format"]["duration"])
+    streams = json.loads(result.stdout)["streams"]
+    if len(streams) != 1:
+        raise RuntimeError(f"expected one video stream path={path} streams={len(streams)}")
+    duration = float(streams[0]["duration"])
     if duration <= 0:
         raise RuntimeError(f"invalid video duration path={path} duration={duration}")
     return duration
