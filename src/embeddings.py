@@ -1,9 +1,11 @@
 import argparse
 import asyncio
 import base64
+from fractions import Fraction
+import json
 from pathlib import Path
+import subprocess
 
-import cv2
 import duckdb
 import httpx
 import numpy as np
@@ -67,29 +69,73 @@ def clip_metadata(native_fps: float, start_sec: float, end_sec: float) -> dict:
     return {"video": {"num_frames": -1, "fps": native_fps, "frames_indices": [round((timestamp - start_sec) * native_fps) for timestamp in timestamps], "total_num_frames": round(duration * native_fps), "duration": duration, "do_sample_frames": False}}
 
 
-def clip_data_url(video_path: str, start_sec: float, end_sec: float) -> tuple[str, dict]:
-    capture = cv2.VideoCapture(video_path)
-    if not capture.isOpened():
-        raise RuntimeError(f"cannot open video {video_path}")
-    native_fps = capture.get(cv2.CAP_PROP_FPS)
+def probe_video_fps(video_path: str) -> float:
+    command = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate", "-of", "json", video_path]
+    print(f"ffprobe video={video_path}")
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"ffprobe_failed video={video_path} error={result.stderr.strip()}")
+        raise RuntimeError(f"ffprobe failed video={video_path} returncode={result.returncode}")
+    streams = json.loads(result.stdout)["streams"]
+    if len(streams) != 1:
+        raise RuntimeError(f"expected one video stream video={video_path} streams={len(streams)}")
+    native_fps = float(Fraction(streams[0]["avg_frame_rate"]))
     if native_fps <= 0:
-        capture.release()
         raise RuntimeError(f"invalid video fps video={video_path} fps={native_fps}")
+    return native_fps
+
+
+def clip_data_urls(video_path: str, clips: list[tuple[float, float]]) -> list[str]:
+    for previous, current in zip(clips, clips[1:]):
+        if previous[1] != current[0]:
+            raise RuntimeError(f"FFmpeg batch is not contiguous video={video_path} previous={previous} current={current}")
+    start_sec = clips[0][0]
+    end_sec = clips[-1][1]
+    command = [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-c:v", "h264_cuvid",
+        "-ss", str(start_sec), "-i", video_path, "-t", str(end_sec - start_sec),
+        "-vf", "fps=2,hwdownload,format=nv12", "-c:v", "mjpeg", "-q:v", "2",
+        "-f", "image2pipe", "pipe:1",
+    ]
+    print(f"ffmpeg_cuda video={video_path} start={start_sec} end={end_sec} clips={len(clips)}")
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     encoded_frames = []
-    for timestamp in np.arange(start_sec, end_sec, 0.5):
-        capture.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
-        ok, frame = capture.read()
-        if not ok:
-            capture.release()
-            raise RuntimeError(f"cannot read frame video={video_path} timestamp={timestamp}")
-        encoded, buffer = cv2.imencode(".jpg", frame)
-        if not encoded:
-            capture.release()
-            raise RuntimeError(f"cannot encode frame video={video_path} timestamp={timestamp}")
-        encoded_frames.append(base64.b64encode(buffer).decode())
-    capture.release()
-    data_url = "data:video/jpeg;base64," + ",".join(encoded_frames)
-    return data_url, clip_metadata(native_fps, start_sec, end_sec)
+    buffer = bytearray()
+    while chunk := process.stdout.read(1024 * 1024):
+        buffer.extend(chunk)
+        while True:
+            frame_start = buffer.find(b"\xff\xd8")
+            if frame_start == -1:
+                if len(buffer) > 1:
+                    del buffer[:-1]
+                break
+            if frame_start:
+                del buffer[:frame_start]
+            frame_end = buffer.find(b"\xff\xd9", 2)
+            if frame_end == -1:
+                break
+            encoded_frames.append(base64.b64encode(buffer[:frame_end + 2]).decode())
+            del buffer[:frame_end + 2]
+    returncode = process.wait()
+    error = process.stderr.read().decode().strip()
+    if returncode != 0:
+        print(f"ffmpeg_cuda_failed video={video_path} start={start_sec} end={end_sec} error={error}")
+        raise RuntimeError(f"ffmpeg failed video={video_path} returncode={returncode}")
+    expected_frames = [len(np.arange(start, end, 0.5)) for start, end in clips]
+    if len(encoded_frames) != sum(expected_frames):
+        raise RuntimeError(f"FFmpeg frame count mismatch video={video_path} expected={sum(expected_frames)} actual={len(encoded_frames)}")
+    data_urls = []
+    offset = 0
+    for frame_count in expected_frames:
+        data_urls.append("data:video/jpeg;base64," + ",".join(encoded_frames[offset:offset + frame_count]))
+        offset += frame_count
+    return data_urls
+
+
+def clip_data_url(video_path: str, start_sec: float, end_sec: float) -> tuple[str, dict]:
+    native_fps = probe_video_fps(video_path)
+    return clip_data_urls(video_path, [(start_sec, end_sec)])[0], clip_metadata(native_fps, start_sec, end_sec)
 
 
 async def embed_video(database_path: Path, endpoint: str, model: str, batch_size: int, shard_dir: Path) -> None:
@@ -100,13 +146,7 @@ async def embed_video(database_path: Path, endpoint: str, model: str, batch_size
     for _, video_path, _, _ in rows:
         if video_path in video_fps:
             continue
-        capture = cv2.VideoCapture(video_path)
-        if not capture.isOpened():
-            raise RuntimeError(f"cannot open video {video_path}")
-        video_fps[video_path] = capture.get(cv2.CAP_PROP_FPS)
-        capture.release()
-        if video_fps[video_path] <= 0:
-            raise RuntimeError(f"invalid video fps video={video_path} fps={video_fps[video_path]}")
+        video_fps[video_path] = probe_video_fps(video_path)
     batches = []
     for row in rows:
         metadata = clip_metadata(video_fps[row[1]], row[2], row[3])
@@ -122,11 +162,16 @@ async def embed_video(database_path: Path, endpoint: str, model: str, batch_size
             shard_path = shard_dir / f"video-{shard_index:06d}.npz"
             if shard_path.exists():
                 continue
+            data_urls = []
+            group_start = 0
+            while group_start < len(batch):
+                group_end = group_start + 1
+                while group_end < len(batch) and batch[group_end][1] == batch[group_start][1]:
+                    group_end += 1
+                data_urls.extend(clip_data_urls(batch[group_start][1], [(start_sec, end_sec) for _, _, start_sec, end_sec in batch[group_start:group_end]]))
+                group_start = group_end
             conversations = []
-            for _, video_path, start_sec, end_sec in batch:
-                data_url, generated_metadata = clip_data_url(video_path, start_sec, end_sec)
-                if generated_metadata != metadata:
-                    raise RuntimeError(f"video metadata changed while encoding {video_path} {start_sec}-{end_sec}")
+            for data_url in data_urls:
                 conversations.append([
                     {"role": "system", "content": [{"type": "text", "text": "Represent the user's input."}]},
                     {"role": "user", "content": [{"type": "video_url", "video_url": {"url": data_url}}, {"type": "text", "text": ""}]},
