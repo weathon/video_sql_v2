@@ -9,7 +9,7 @@
 6. 缓存的试点数据集和预构建的index: /raid/wg25r/mmlifelong_pilot
 7. 数据库引擎: https://github.com/duckdb/duckdb
 8. OpenAI Doc Skill: 本次运行明确允许且需要使用这个doc来完成构建, 上面的agent辅助doc也需要使用
-9. 本地模型: Inferact/Qwen3.8-Flash-Next-NVFP4，启动方式和全部参数使用INFRA.txt中的Current best choice
+9. 本地模型: Inferact/Qwen3.8-Flash-Next-NVFP4，使用四张完全空闲的GPU做tensor parallel 4；除GPU部署和tensor parallel外，启动参数使用INFRA.txt中的Current best choice
 
 ## 项目创新点:
 1. 本项目使用SQL Dataset代替graph, 从而使得query过程可以被agent控制, 并且可以直接实现多步骤跳转而不是agent自己relay. 
@@ -35,7 +35,7 @@
 
 ### 阶段二: 预处理
 1. 下载MM-Lifelong数据集, 有可能已经存在cache
-2. 找一个空的GPU, 用docker开启Qwen/Qwen3-VL-Embedding-8B作为embedding server. 找另一个空的GPU, 用INFRA.txt中的Current best choice启动Inferact/Qwen3.8-Flash-Next-NVFP4本地模型. 如果没有两张空的卡, 挤在一张卡, embedding不需要很多空间, 或者找另一个显存还有剩余但是compute是空的的卡启动embedding. Embedding高并发同上.
+2. 找一张显存已经占用约一半但是compute空闲的shared GPU, 用docker开启Qwen/Qwen3-VL-Embedding-8B作为embedding server. 使用剩下四张完全空闲的GPU做tensor parallel 4, 启动Inferact/Qwen3.8-Flash-Next-NVFP4本地模型. 除GPU部署和tensor parallel外, 使用INFRA.txt中的Current best choice. Embedding高并发同上.
 3. 修改MAGIC-video中的预处理脚本, 用本地模型Inferact/Qwen3.8-Flash-Next-NVFP4, 生成index, 所以用它作为所有模型, reasoning设置成medium. 使用embedding server作为embedding. 需要全部重新生成不能使用pilot的, 因为模型变了. 产生artifacts非常耗时和资源, 所以必须用本地模型而不是云端.
 4. 储存所有index并且转化成SQL格式保存在一个duckdb database
 
@@ -45,7 +45,7 @@
 3. 记录比较结果. 
 
 ### 阶段四: 跨模型测试
-1. 启动一个vllm/sglang, 根据INFRA.txt中的Current best choice在物理GPU 5和6跑Inferact/Qwen3.8-Flash-Next-NVFP4 [如果GPU不可用(VRAM<80% free OR always busy, it is fine if it has a small amount of VRAM being used), 暂停], medium, 测试mmlifelong测试集.由于是本地跑没有成本考量, 所以跑所有的mmlifelong测试集. 同样测试用SKILL.md和没有SKILL.md.
+1. 启动一个vllm/sglang, 使用四张完全空闲的GPU做tensor parallel 4跑Inferact/Qwen3.8-Flash-Next-NVFP4 [如果四张GPU不可用(VRAM<80% free OR always busy), 暂停]. 除GPU部署和tensor parallel外, 使用INFRA.txt中的Current best choice. medium, 测试mmlifelong测试集.由于是本地跑没有成本考量, 所以跑所有的mmlifelong测试集. 同样测试用SKILL.md和没有SKILL.md.
 2. 记录和比较结果, 同样用deepseek/deepseek-v4-flash-0731的judge. 主要内部比较(with/without skill), 但是同时和阶段三比较, 和阶段三比较时比较同一子集. 
 
 
@@ -163,7 +163,7 @@ This plan is a draft and has been refined into CODEX_PLAN.md
 
 ## 当前进度（2026-08-26）
 
-1. 正式本地模型已改为`Inferact/Qwen3.8-Flash-Next-NVFP4`。后续启动必须使用`INFRA.txt`最上方的Current best choice：物理GPU 5和6、vLLM Docker `qwen38-flash-next`、tensor parallel 2、`max-num-seqs 200`、MTP 3、prefix caching和SimpleCPUOffloadConnector配置。
+1. 正式本地模型已改为`Inferact/Qwen3.8-Flash-Next-NVFP4`。后续使用四张完全空闲的GPU做tensor parallel 4；embedding server放在显存已经占用约一半但是compute空闲的shared GPU。除GPU部署和tensor parallel外，使用`INFRA.txt`最上方Current best choice中的vLLM Docker `qwen38-flash-next`、`max-num-seqs 200`、MTP 3、prefix caching和SimpleCPUOffloadConnector配置。
 2. Phase 1代码、Pilot DuckDB、离散视频clip cache、TorchCodec harness和embedding调度已经实现。完整测试为13项通过。当前代码提交为`edf4cdc`。
 3. Pilot视频clip cache已经完成：DuckDB和磁盘各9,167个clip，所有视频的最终边界与视频流时长一致。文本embedding已经生成813个shard，共416,029行。
 4. Pilot视频embedding仍在生成。记录进度时为746/9,167个shard；当前任务使用每个HTTP batch 2个视频、最多128个在途batch、每1秒启动一个batch。embedding服务关闭`mm_processor_cache`，全部运行时缓存和临时目录位于`/raid`，记录时健康检查为HTTP 200。
