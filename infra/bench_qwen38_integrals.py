@@ -287,19 +287,27 @@ async def main():
                                 record["parse_error"] = repr(error)
                                 record["correct"] = False
                             else:
-                                normalized_answer = answer.replace(
-                                    sp.log(sp.Abs(abs_argument)),
-                                    sp.log(abs_argument),
-                                )
-                                if problem["kind"] == "indefinite":
-                                    residual = sp.simplify(
-                                        sp.diff(normalized_answer, x) - integrand
+                                if not isinstance(answer, sp.Expr):
+                                    record["residual"] = None
+                                    record["parse_error"] = (
+                                        "answer is not a scalar SymPy expression: "
+                                        f"{type(answer).__name__}"
                                     )
+                                    record["correct"] = False
                                 else:
-                                    residual = sp.simplify(answer - expected)
-                                record["residual"] = str(residual)
-                                record["parse_error"] = None
-                                record["correct"] = residual == 0
+                                    normalized_answer = answer.replace(
+                                        sp.log(sp.Abs(abs_argument)),
+                                        sp.log(abs_argument),
+                                    )
+                                    if problem["kind"] == "indefinite":
+                                        residual = sp.simplify(
+                                            sp.diff(normalized_answer, x) - integrand
+                                        )
+                                    else:
+                                        residual = sp.simplify(answer - expected)
+                                    record["residual"] = str(residual)
+                                    record["parse_error"] = None
+                                    record["correct"] = residual == 0
                     verified_path.write_text(
                         json.dumps(record, ensure_ascii=False, indent=2)
                     )
