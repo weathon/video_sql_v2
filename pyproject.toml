@@ -9,13 +9,23 @@ dependencies = [
   "numpy",
   "openai",
   "openai-agents",
-  "opencv-python-headless",
   "pillow",
   "pydantic",
   "pytest",
   "pytest-asyncio",
+  "torch==2.11.0",
+  "torchcodec==0.16.0",
   "wandb",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchcodec = { index = "pytorch-cu130" }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

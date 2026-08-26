@@ -2,11 +2,11 @@ import json
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 
-import cv2
 import duckdb
 import httpx
 import numpy as np
 from PIL import Image, ImageDraw
+from torchcodec.decoders import VideoDecoder
 
 from src.preprocess.normalize import normalize_text
 
@@ -48,10 +48,11 @@ class Notes:
 
 
 class VideoSQLHarness:
-    def __init__(self, database_path: Path, embedding_endpoint: str, embedding_model: str, media_dir: Path, notes_path: Path):
+    def __init__(self, database_path: Path, embedding_endpoint: str, embedding_model: str, clip_dir: Path, media_dir: Path, notes_path: Path):
         self.database_path = database_path
         self.embedding_endpoint = embedding_endpoint
         self.embedding_model = embedding_model
+        self.clip_dir = clip_dir
         self.media_dir = media_dir
         self.media_dir.mkdir(parents=True, exist_ok=True)
         self.notes = Notes(notes_path)
@@ -138,32 +139,34 @@ class VideoSQLHarness:
         if start_sec < 0 or end_sec <= start_sec or fps <= 0:
             raise ValueError("start_sec, end_sec, and fps define an invalid sampling interval")
         connection = duckdb.connect(str(self.database_path), read_only=True)
-        video_path, duration = connection.execute("SELECT video_path, duration_sec FROM videos WHERE video_id = ?", [video_id]).fetchone()
+        duration = connection.execute("SELECT duration_sec FROM videos WHERE video_id = ?", [video_id]).fetchone()[0]
         if end_sec > duration:
             connection.close()
             raise ValueError(f"end_sec {end_sec} exceeds video duration {duration}")
         captions = []
         if return_caption:
             captions = connection.execute("SELECT start_sec, end_sec, text FROM captions WHERE video_id = ? AND source = 'merged' AND granularity_sec = 30 AND end_sec > ? AND start_sec < ? ORDER BY start_sec", [video_id, start_sec, end_sec]).fetchall()
+        clips = connection.execute("SELECT row_id, start_sec, end_sec FROM video_clips WHERE video_id = ? AND end_sec > ? AND start_sec < ? ORDER BY start_sec", [video_id, start_sec, end_sec]).fetchall()
         connection.close()
 
         timestamps = np.arange(start_sec, end_sec, 1.0 / fps).tolist()
-        capture = cv2.VideoCapture(video_path)
-        if not capture.isOpened():
-            raise RuntimeError(f"cannot open video {video_path}")
-        frames = []
-        for timestamp in timestamps:
-            capture.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
-            ok, frame = capture.read()
-            if not ok:
-                capture.release()
-                raise RuntimeError(f"cannot read video={video_id} timestamp={timestamp}")
-            height, width = frame.shape[:2]
-            crop = frame[y1 * height // 1000:y2 * height // 1000, x1 * width // 1000:x2 * width // 1000]
-            image = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-            image = image.resize((480, 270))
-            frames.append((timestamp, image.copy()))
-        capture.release()
+        frames: list[tuple[float, Image.Image] | None] = [None] * len(timestamps)
+        for row_id, clip_start, clip_end in clips:
+            selected = [(index, timestamp) for index, timestamp in enumerate(timestamps) if clip_start <= timestamp < clip_end]
+            if not selected:
+                continue
+            clip_index = int(row_id.rsplit(":", 1)[1])
+            clip_path = self.clip_dir / video_id / f"{clip_index:06d}.mp4"
+            if not clip_path.is_file():
+                raise FileNotFoundError(clip_path)
+            decoder = VideoDecoder(clip_path, dimension_order="NHWC", num_ffmpeg_threads=4, seek_mode="approximate")
+            batch = decoder.get_frames_played_at([timestamp - clip_start for _, timestamp in selected]).data.cpu().numpy()
+            for (frame_index, timestamp), frame in zip(selected, batch, strict=True):
+                height, width = frame.shape[:2]
+                crop = frame[y1 * height // 1000:y2 * height // 1000, x1 * width // 1000:x2 * width // 1000]
+                frames[frame_index] = (timestamp, Image.fromarray(crop).resize((480, 270)))
+        if any(frame is None for frame in frames):
+            raise RuntimeError(f"cached clips did not cover requested interval video={video_id} start={start_sec} end={end_sec}")
 
         pages = []
         for page_index, page_start in enumerate(range(0, len(frames), 12)):
@@ -181,22 +184,26 @@ class VideoSQLHarness:
 
     def evidence_screenshots(self, video_id: str, timestamps: list[float]) -> list[str]:
         connection = duckdb.connect(str(self.database_path), read_only=True)
-        video_path = connection.execute("SELECT video_path FROM videos WHERE video_id = ?", [video_id]).fetchone()[0]
+        clips = connection.execute("SELECT row_id, start_sec, end_sec FROM video_clips WHERE video_id = ? ORDER BY start_sec", [video_id]).fetchall()
         connection.close()
-        capture = cv2.VideoCapture(video_path)
-        if not capture.isOpened():
-            raise RuntimeError(f"cannot open video {video_path}")
+        frames = [None] * len(timestamps)
+        for row_id, clip_start, clip_end in clips:
+            selected = [(index, timestamp) for index, timestamp in enumerate(timestamps) if clip_start <= timestamp < clip_end]
+            if not selected:
+                continue
+            clip_index = int(row_id.rsplit(":", 1)[1])
+            clip_path = self.clip_dir / video_id / f"{clip_index:06d}.mp4"
+            if not clip_path.is_file():
+                raise FileNotFoundError(clip_path)
+            decoder = VideoDecoder(clip_path, dimension_order="NHWC", num_ffmpeg_threads=4, seek_mode="approximate")
+            batch = decoder.get_frames_played_at([timestamp - clip_start for _, timestamp in selected]).data.cpu().numpy()
+            for (frame_index, _), frame in zip(selected, batch, strict=True):
+                frames[frame_index] = frame
+        if any(frame is None for frame in frames):
+            raise RuntimeError(f"cached clips did not cover all evidence timestamps video={video_id} timestamps={timestamps}")
         paths = []
-        for index, timestamp in enumerate(timestamps):
-            capture.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
-            ok, frame = capture.read()
-            if not ok:
-                capture.release()
-                raise RuntimeError(f"cannot read evidence video={video_id} timestamp={timestamp}")
+        for index, (timestamp, frame) in enumerate(zip(timestamps, frames, strict=True)):
             path = self.media_dir / f"evidence-{video_id}-{timestamp:.3f}-{index}.jpg"
-            if not cv2.imwrite(str(path), frame):
-                capture.release()
-                raise RuntimeError(f"cannot write screenshot {path}")
+            Image.fromarray(frame).save(path)
             paths.append(str(path))
-        capture.release()
         return paths

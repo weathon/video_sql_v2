@@ -1,10 +1,9 @@
 import json
 from pathlib import Path
 
-import cv2
 import duckdb
-import numpy as np
 from PIL import Image
+import subprocess
 
 from src.harness import AgentRaised, VideoSQLHarness
 
@@ -22,27 +21,25 @@ def create_database(path: Path, video_path: Path):
     connection.execute(Path("src/schema.sql").read_text(encoding="utf-8"))
     connection.execute("INSERT INTO videos VALUES ('1', 0, 'test', ?, 4.0, INTERVAL 0 SECOND, INTERVAL 4 SECOND)", [str(video_path)])
     connection.execute("INSERT INTO captions VALUES ('c1', '1', 'merged', 30, 0, 4, INTERVAL 0 SECOND, INTERVAL 4 SECOND, 'alpha memory')")
+    connection.execute("INSERT INTO video_clips VALUES ('1:video_clips:0', '1', 0, 4, INTERVAL 0 SECOND, INTERVAL 4 SECOND)")
     connection.execute("INSERT INTO embeddings VALUES ('captions', 'c1', 'text', 'test', [1.0, 0.0])")
     connection.close()
 
 
 def create_video(path: Path):
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 4, (160, 120))
-    if not writer.isOpened():
-        raise RuntimeError("test video writer did not open")
-    for index in range(16):
-        frame = np.zeros((120, 160, 3), dtype=np.uint8)
-        frame[:, :, index % 3] = 200
-        writer.write(frame)
-    writer.release()
+    result = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=4:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"test video creation failed: {result.stderr}")
 
 
 def test_sql_search_notes_and_video(tmp_path, monkeypatch):
-    video_path = tmp_path / "video.avi"
+    clip_dir = tmp_path / "clips"
+    video_path = clip_dir / "1" / "000000.mp4"
+    video_path.parent.mkdir(parents=True)
     database_path = tmp_path / "memory.duckdb"
     create_video(video_path)
     create_database(database_path, video_path)
-    harness = VideoSQLHarness(database_path, "http://embedding", "test", tmp_path / "media", tmp_path / "notes.json")
+    harness = VideoSQLHarness(database_path, "http://embedding", "test", clip_dir, tmp_path / "media", tmp_path / "notes.json")
 
     connection = duckdb.connect(str(database_path))
     connection.execute("CREATE TABLE many AS SELECT range AS value, repeat('x', 600) AS text FROM range(101)")

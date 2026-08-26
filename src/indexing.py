@@ -1,10 +1,10 @@
 import argparse
 import hashlib
 import json
+import subprocess
 from datetime import timedelta
 from pathlib import Path
 
-import cv2
 import duckdb
 
 from src.preprocess.normalize import normalize_text, normalize_triple_atom, parse_hms, parse_time_range
@@ -18,15 +18,18 @@ def read_json(path: Path):
 
 def video_duration(path: Path) -> float:
     print(f"video_metadata path={path}")
-    capture = cv2.VideoCapture(str(path))
-    if not capture.isOpened():
-        raise RuntimeError(f"cannot open video {path}")
-    fps = capture.get(cv2.CAP_PROP_FPS)
-    frame_count = capture.get(cv2.CAP_PROP_FRAME_COUNT)
-    capture.release()
-    if fps <= 0 or frame_count <= 0:
-        raise RuntimeError(f"invalid video metadata path={path} fps={fps} frames={frame_count}")
-    return frame_count / fps
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"ffprobe_failed video={path} error={result.stderr.strip()}")
+        raise RuntimeError(f"ffprobe failed video={path} returncode={result.returncode}")
+    duration = float(json.loads(result.stdout)["format"]["duration"])
+    if duration <= 0:
+        raise RuntimeError(f"invalid video duration path={path} duration={duration}")
+    return duration
 
 
 def derive_offsets(question_sets: list[tuple[str, list[dict]]]) -> dict[str, float]:
