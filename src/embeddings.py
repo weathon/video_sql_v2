@@ -19,8 +19,8 @@ TEXT_TABLES = {
     "topic_chains": "entity",
     "topic_facts": "text",
 }
-VIDEO_REQUEST_BATCH_SIZE = 8
-VIDEO_REQUEST_INTERVAL_SECONDS = 0.5
+VIDEO_REQUEST_BATCH_SIZE = 2
+VIDEO_REQUEST_INTERVAL_SECONDS = 1.0
 
 
 async def request_embeddings(client: httpx.AsyncClient, endpoint: str, model: str, conversations: list[list[dict]], row_ids: list[str], media_io_kwargs: dict | None) -> list[tuple[str, list[float]]]:
@@ -78,8 +78,8 @@ async def embed_video_batch(client: httpx.AsyncClient, endpoint: str, model: str
 
 
 async def embed_video(database_path: Path, endpoint: str, model: str, max_in_flight: int, shard_dir: Path, clip_dir: Path) -> None:
-    if max_in_flight != 64:
-        raise ValueError(f"video max in-flight requests must be 64, got {max_in_flight}")
+    if max_in_flight != 128:
+        raise ValueError(f"video max in-flight requests must be 128, got {max_in_flight}")
     connection = duckdb.connect(str(database_path), read_only=True)
     rows = connection.execute("SELECT c.row_id, c.video_id FROM video_clips c JOIN videos v USING(video_id) ORDER BY v.sequence_index, c.start_sec").fetchall()
     connection.close()
