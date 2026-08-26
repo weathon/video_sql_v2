@@ -3,7 +3,7 @@
 ## 总结
 
 - 保留基础设施研究、索引与 harness、pilot、正式训练与评测四个阶段；原 Phase 4 删除，因为 Phase 3 已进行完整评测。
-- Pilot 使用 Luna；Pilot 之后的主检索、judge、reflection、skill updater、compactor、字幕与结构化处理全部使用本地 Qwen。
+- Pilot 使用 Luna；Pilot 之后的主检索、judge、reflection、skill updater、compactor、字幕与结构化处理全部使用 `Inferact/Qwen3.8-Flash-Next-NVFP4`。
 - Pilot 训练每题 5 个 rollout；正式训练每题 10 个并发 rollout；所有验证与测试每题 1 个 rollout。
 - 仅主检索 agent 启用 context compaction。完成第三次 compaction 后立即终止该 rollout，记 0 分并进入复盘。
 - 固定 compaction prompt，不允许训练过程修改。
@@ -17,6 +17,8 @@
 - 记录最终服务命令、服务框架和版本、GPU 数量、context limit、并发能力、官方 generation config、图像限制、吞吐量、首 token 延迟及整体延迟。
 - 移除现有 `temperature=0`；客户端不覆盖 temperature、top-p、top-k，也不设置输入或输出 token 上限。
 - 后续所有本地 Qwen 运行只使用最终 `INFRA.txt` 中确认的配置。
+- 正式本地模型固定为 `Inferact/Qwen3.8-Flash-Next-NVFP4`，使用四张完全空闲的 GPU 做 tensor parallel 4。除 GPU 部署和 tensor parallel 外，使用 `INFRA.txt` 最上方 Current best choice 的全部参数。
+- Qwen3-VL-Embedding-8B embedding server 放在显存已经占用约一半但 compute 空闲的 shared GPU；四张完全空闲的 GPU 只用于正式本地模型。
 
 ### 1. 仓库、索引和 harness
 
@@ -40,13 +42,13 @@
 - 启用 Luna prompt cache，记录 cache write、cached input、普通 input 和 output token。Pilot API 累计费用超过 100 美元时，仅在当前顶层 rollout 完成后保存恢复状态并暂停。
 - 完成 Pilot 后报告每题费用及正式规模外推。
 
-### 3. 正式 Qwen 训练与完整评测
+### 3. 正式本地模型训练与完整评测
 
 - 使用 datasets/Hugging Face 下载机制获取正式数据；重新生成全部正式数据，不复用 Pilot 产物。
-- ASR 使用 [Qwen3-ASR-1.7B-hf](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf)；caption merge、OpenIE、semantic、topic、event 等步骤均使用 `INFRA.txt` 指定的本地 Qwen。
+- ASR 使用 [Qwen3-ASR-1.7B-hf](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf)；caption merge、OpenIE、semantic、topic、event 等步骤均使用 `Inferact/Qwen3.8-Flash-Next-NVFP4` 和 `INFRA.txt` 指定的配置。
 - 从与 Pilot 相同的初始 `SKILL.md` 和 `META-SKILL.md` 重新开始，不继承 Pilot 训练结果。
 - 使用 month train 的 266 个问题训练 1 个 epoch，每批 5 题，每题 10 个并发 rollout；seed 2026 固定顺序，最后一批正常处理。
-- 每个 rollout 由本地 Qwen judge 独立评分并复盘；summarizer、skill updater 和 compactor 也使用本地 Qwen。
+- 每个 rollout 由 `Inferact/Qwen3.8-Flash-Next-NVFP4` judge 独立评分并复盘；summarizer、skill updater 和 compactor 也使用该模型。
 - 对 month val 623、day test 200、week test 200 共 1023 题进行完整评测；trained-skill 和 initial-skill 各跑一次，每题每组 1 个 rollout。
 - 报告 overall、day/week/month、question_type 以及每题 trained-vs-baseline 配对差值，并保留全部逐题原始结果。不存在额外 Phase 4。
 
@@ -113,3 +115,12 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 - 阶段 1 完成并提交后暂停，交由用户审查代码；获得确认后才进入 Pilot。
 - 每次大型运行前先提交改动，再按 `REVIEW.md` 让一个 reviewer 检查相对上一提交的变更行，修复所有明确问题并复查。
 - 所有长期任务在命名 tmux session 中运行，并持续前台观察真实 pane 或日志直至结束；完整日志写文件，stdout 和 `AGENT_STDOUT.txt` 只记录里程碑。
+
+## 当前进度（2026-08-26）
+
+1. Phase 1 代码、Pilot DuckDB、离散视频 clip cache、TorchCodec harness 和 embedding 调度已经实现，完整测试为 13 项通过。当前 embedding 调度代码提交为 `de6a67e`，实现和排障记录为 `notes/VIDEO_EMBEDDING_PIPELINE.md`。
+2. Pilot 视频 clip cache 已经完成：DuckDB 和磁盘各 9,167 个 clip，所有视频的最终边界与视频流时长一致。文本 embedding 已经生成 813 个 shard，共 416,029 行。
+3. Pilot 视频 embedding 仍在生成。记录进度时为 996/9,167 个 shard；当前任务使用每个 HTTP batch 2 个视频、最多 128 个在途 batch、每 1 秒启动一个 batch。embedding 服务关闭 `mm_processor_cache`，全部运行时缓存和临时目录位于 `/raid`，记录时健康检查为 HTTP 200。
+4. 当前 tmux 任务为 `stage1_pilot_video_embeddings`，运行日志为 `logs/stage1_pilot_video_embeddings_batch2_128_1s.log`；embedding 服务为 `stage1_embedding_server_torchcodec`，日志为 `logs/stage1_embedding_server_no_mm_cache_all_raid.log`。
+5. 正式本地模型已经改为 `Inferact/Qwen3.8-Flash-Next-NVFP4`。后续使用四张完全空闲的 GPU 做 tensor parallel 4；embedding server 放在显存已经占用约一半但 compute 空闲的 shared GPU。除 GPU 部署和 tensor parallel 外，使用 `INFRA.txt` 最上方 Current best choice 的配置。
+6. 当前对话只继续观察视频 embedding 直到生成完成。生成完成后由用户开启新对话，再从实际落盘产物继续后续 Phase 1 验证和审查，不提前进入 Pilot。
