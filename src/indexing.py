@@ -70,10 +70,8 @@ def build_database(pilot_root: Path, database_path: Path) -> None:
     connection = duckdb.connect(str(database_path))
     connection.execute((Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8"))
 
-    durations = {}
     for sequence_index, path in enumerate(sorted(video_paths, key=lambda item: offsets[item.stem])):
         duration = video_duration(path)
-        durations[path.stem] = duration
         offset = offsets[path.stem]
         connection.execute(
             "INSERT INTO videos VALUES (?, ?, ?, ?, ?, ?, ?)",

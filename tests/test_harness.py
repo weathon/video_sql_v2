@@ -51,6 +51,9 @@ def test_sql_search_notes_and_video(tmp_path, monkeypatch):
     assert len(result["rows"]) == 100
     assert result["hidden_more"] is True
     assert result["rows"][0][1]["original_characters"] == 600
+    interval_result = harness.run_sql("SELECT global_start FROM videos")
+    json.dumps(interval_result)
+    assert interval_result["rows"] == [["0:00:00"]]
     assert harness.run_sql("SELECT missing FROM nowhere")["status"] == "query_error"
 
     monkeypatch.setattr("src.harness.httpx.post", lambda *args, **kwargs: EmbeddingResponse())

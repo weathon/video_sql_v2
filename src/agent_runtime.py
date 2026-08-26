@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -10,6 +11,19 @@ from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
 from src.harness import VideoSQLHarness
+
+
+IMAGE_DATA_URL = re.compile(r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+
+
+def normalize_trace(value):
+    if isinstance(value, dict):
+        return {key: normalize_trace(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_trace(item) for item in value]
+    if isinstance(value, str):
+        return IMAGE_DATA_URL.sub("[image bytes omitted; see recorded media path]", value)
+    return value
 
 
 class ClipAnswer(BaseModel):
@@ -31,6 +45,8 @@ class ModelEndpoint:
 class RolloutResult:
     status: Literal["answered", "compaction_limit"]
     answer: str | None
+    score: int | None
+    reflection: str | None
     compactions: int
     trace_path: str
 
@@ -58,7 +74,7 @@ class AgentRuntime:
             preserve_raw_usage=True,
         )
 
-    def main_tools(self):
+    def main_tools(self, nested_tool_traces: list[dict]):
         @function_tool
         def run_sql(sql: str) -> dict:
             """Run read-only DuckDB SQL. Results are limited to 100 rows and long cells to 500 characters."""
@@ -96,7 +112,7 @@ class AgentRuntime:
                 if sample_start_sec < start_sec or sample_end_sec > end_sec:
                     raise ValueError(f"sample interval must stay inside clip_qa interval {start_sec}-{end_sec}")
                 result = self.harness.sample_video(video_id, sample_start_sec, sample_end_sec, fps, x1, x2, y1, y2, return_caption)
-                text = json.dumps({"frame_timestamps": result["frame_timestamps"], "captions": result["captions"]}, ensure_ascii=False)
+                text = json.dumps({"frame_timestamps": result["frame_timestamps"], "captions": result["captions"], "contact_sheets": result["contact_sheets"]}, ensure_ascii=False)
                 outputs = [ToolOutputText(text=text)]
                 outputs.extend(ToolOutputImage(image_url=data_url(Path(path)), detail="high") for path in result["contact_sheets"])
                 return outputs
@@ -120,6 +136,11 @@ class AgentRuntime:
                 output_type=ClipAnswer,
             )
             result = await Runner.run(clip_agent, question, max_turns=50, run_config=RunConfig(reasoning_item_id_policy="preserve"))
+            nested_tool_traces.append({
+                "tool": "clip_qa",
+                "input": {"video_id": video_id, "start_sec": start_sec, "end_sec": end_sec, "question": question},
+                "transcript": normalize_trace(result.to_input_list(mode="normalized")),
+            })
             answer = result.final_output
             if answer.status == "unknown":
                 return answer.model_dump()
@@ -128,26 +149,29 @@ class AgentRuntime:
             if any(timestamp < start_sec or timestamp > end_sec for timestamp in answer.evidence_timestamps):
                 raise ValueError(f"evidence timestamps must stay inside clip_qa interval {start_sec}-{end_sec}")
             screenshots = self.harness.evidence_screenshots(video_id, answer.evidence_timestamps)
-            outputs = [ToolOutputText(text=json.dumps(answer.model_dump(), ensure_ascii=False))]
+            answer_payload = answer.model_dump()
+            answer_payload["evidence_screenshots"] = screenshots
+            outputs = [ToolOutputText(text=json.dumps(answer_payload, ensure_ascii=False))]
             outputs.extend(ToolOutputImage(image_url=data_url(Path(path)), detail="high") for path in screenshots)
             return outputs
 
         return [run_sql, semantic_search, clip_qa, add_note, read_notes, agent_raise]
 
-    def main_agent(self, skill: str) -> Agent:
+    def main_agent(self, skill: str, nested_tool_traces: list[dict]) -> Agent:
         schema = (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
         instructions = "Answer the video-memory question using the read-only database and tool evidence. Give the answer and supporting video timestamps.\n\nDatabase schema:\n" + schema + "\n\nSkill:\n" + skill
-        return Agent(name="video memory SQL agent", instructions=instructions, model=self.model, model_settings=self.settings, tools=self.main_tools())
+        return Agent(name="video memory SQL agent", instructions=instructions, model=self.model, model_settings=self.settings, tools=self.main_tools(nested_tool_traces))
 
     async def run_rollout(self, question: str, skill: str, trace_path: Path, enable_compaction: bool) -> RolloutResult:
         trace_path.parent.mkdir(parents=True, exist_ok=True)
         endpoint_trace = asdict(self.endpoint)
         del endpoint_trace["api_key"]
-        trace = {"question": question, "model": endpoint_trace, "responses": [], "compactions": []}
+        nested_tool_traces: list[dict] = []
+        trace = {"question": question, "model": endpoint_trace, "responses": [], "turns": [], "nested_tool_traces": nested_tool_traces, "compactions": []}
         current_input = question
         compactions = 0
         while True:
-            agent = self.main_agent(skill)
+            agent = self.main_agent(skill, nested_tool_traces)
             stream = Runner.run_streamed(
                 agent,
                 current_input,
@@ -171,22 +195,38 @@ class AgentRuntime:
                     stream.cancel(mode="after_turn")
             if stream.run_loop_exception:
                 raise stream.run_loop_exception
+            transcript = normalize_trace(stream.to_input_list(mode="normalized"))
+            trace["turns"].append(transcript)
+            trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
             if not compact_after_turn:
                 if stream.final_output is None:
                     raise RuntimeError("agent run ended without final output")
                 trace["status"] = "answered"
                 trace["answer"] = stream.final_output
                 trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
-                return RolloutResult(status="answered", answer=str(stream.final_output), compactions=compactions, trace_path=str(trace_path))
+                return RolloutResult(status="answered", answer=str(stream.final_output), score=None, reflection=None, compactions=compactions, trace_path=str(trace_path))
 
-            transcript = stream.to_input_list()
             compactor = Agent(name="rollout compactor", instructions=self.compaction_prompt, model=self.model, model_settings=self.settings)
             compacted = await Runner.run(compactor, f"Compactions already completed for this rollout: {compactions}\n\n" + json.dumps(transcript, ensure_ascii=False), max_turns=1, run_config=RunConfig(reasoning_item_id_policy="preserve"))
+            if compacted.final_output is None:
+                raise RuntimeError("compactor ended without a handoff")
             compactions += 1
-            trace["compactions"].append({"index": compactions, "handoff": compacted.final_output})
+            trace["compactions"].append({
+                "index": compactions,
+                "handoff": compacted.final_output,
+                "responses": [{"output": [item.model_dump(mode="json") for item in response.output], "usage": asdict(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in compacted.raw_responses],
+            })
             trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
             if compactions == 3:
+                reflection_agent = Agent(name="compaction-limit reflection", instructions=self.reflection_final_prompt, model=self.model, model_settings=self.settings)
+                reflection_input = json.dumps({"question": question, "turns": trace["turns"], "nested_tool_traces": nested_tool_traces, "compactions": trace["compactions"]}, ensure_ascii=False)
+                reflection_result = await Runner.run(reflection_agent, reflection_input, max_turns=1, run_config=RunConfig(reasoning_item_id_policy="preserve"))
+                if reflection_result.final_output is None:
+                    raise RuntimeError("compaction-limit reflection ended without output")
                 trace["status"] = "compaction_limit"
+                trace["score"] = 0
+                trace["reflection"] = reflection_result.final_output
+                trace["reflection_responses"] = [{"output": [item.model_dump(mode="json") for item in response.output], "usage": asdict(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in reflection_result.raw_responses]
                 trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
-                return RolloutResult(status="compaction_limit", answer=None, compactions=compactions, trace_path=str(trace_path))
+                return RolloutResult(status="compaction_limit", answer=None, score=0, reflection=str(reflection_result.final_output), compactions=compactions, trace_path=str(trace_path))
             current_input = [{"role": "user", "content": f"Trusted compacted handoff from the prior conversation:\n\n{compacted.final_output}"}]

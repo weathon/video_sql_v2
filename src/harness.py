@@ -84,6 +84,8 @@ class VideoSQLHarness:
                 rendered = str(cell)
                 if len(rendered) > 500:
                     row.append({"text": rendered[:500], "original_characters": len(rendered), "truncated": True})
+                elif cell is not None and not isinstance(cell, (str, int, float, bool)):
+                    row.append(rendered)
                 else:
                     row.append(cell)
             rows.append(row)

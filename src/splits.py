@@ -30,7 +30,9 @@ def graph_partition(train_path: Path, val_path: Path) -> tuple[list[dict], list[
     components.sort(key=len, reverse=True)
     if [len(component) for component in components] != [646, 24]:
         raise ValueError(f"expected graph components [646, 24], received {[len(component) for component in components]}")
-    return [questions[position] for position in components[0]], [questions[position] for position in components[1]]
+    train_positions = set(components[0])
+    val_positions = set(components[1])
+    return [question for position, question in enumerate(questions) if position in train_positions], [question for position, question in enumerate(questions) if position in val_positions]
 
 
 if __name__ == "__main__":
