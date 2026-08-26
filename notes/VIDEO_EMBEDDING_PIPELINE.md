@@ -3,8 +3,8 @@
 ## Final approach
 
 - Text embeddings remain batched at 512 rows per request.
-- Video embeddings use one cached video clip per HTTP request. Do not place multiple videos in one request.
-- At most 64 video requests may be in flight. New requests are launched one second apart so vLLM can schedule decoding and model work across requests.
+- Video embeddings use two cached video clips per HTTP request.
+- At most 128 video requests may be in flight. New requests are launched one second apart so vLLM can schedule decoding and model work across requests.
 - Each completed video embedding is immediately written to its own stable `video-%06d.npz` shard. A resumed run verifies the shard row ID before skipping it.
 - Video content is sent as a local `file://` URL. vLLM is started with `--allowed-local-media-path /raid/wg25r/video_sql_v2/data/video_clips`; video bytes are not serialized into the request JSON.
 - vLLM decodes through TorchCodec using the Qwen video loader at 2 fps, with all frames selected and four FFmpeg threads.
@@ -29,13 +29,15 @@ vllm serve Qwen/Qwen3-VL-Embedding-8B
   --port 8012
   --trust-remote-code
   --allowed-local-media-path /raid/wg25r/video_sql_v2/data/video_clips
+  --mm-processor-cache-gb 0
   --media-io-kwargs {"video":{"video_backend":"qwen3_vl","backend":"torchcodec","fps":2,"num_frames":-1,"seek_mode":"approximate","num_ffmpeg_threads":4}}
 ```
 
 - The service runs in tmux session `stage1_embedding_server_torchcodec` on physical GPU 4.
 - The embedding run uses tmux session `stage1_pilot_video_embeddings`.
-- Run log: `logs/stage1_pilot_video_embeddings_1s.log`.
-- Server log: `logs/stage1_embedding_server_torchcodec.log`.
+- Run log: `logs/stage1_pilot_video_embeddings_batch2_128_1s.log`.
+- Server log: `logs/stage1_embedding_server_no_mm_cache_all_raid.log`.
+- Runtime caches, configuration, and temporary compilation files are directed to `/raid/wg25r/video_sql_v2/runs/`; the Hugging Face cache is `/raid/huggingface`.
 
 ## Verification performed
 
@@ -44,12 +46,12 @@ vllm serve Qwen/Qwen3-VL-Embedding-8B
 - The complete test suite passed: 13 tests.
 - Database count, disk file count, and per-video duration coverage were checked after cache generation.
 - The final Video 23 contact sheet at 22,495, 22,499, and 22,503 seconds and its 22,502-second evidence screenshot were opened and visually checked.
-- With one-second request spacing, the run reached 61 simultaneous in-flight requests while completed shards continued to appear on disk.
+- With two videos per request, 128 maximum in-flight requests, and one-second request spacing, 30 requests launched and four new shards were saved during the initial verification.
 
 ## Approaches replaced
 
 - Runtime source-video seeking and cutting were replaced by the reusable discrete clip cache.
 - OpenCV decoding was replaced by FFmpeg stream-copy caching and TorchCodec reading.
-- Multi-video request batching was retained only for text; videos are independently scheduled requests.
+- Text uses batches of 512 rows and video requests use batches of two clips.
 - Ten-second video request spacing left too little work in flight and was replaced by one-second spacing after observing idle CPU and GPU periods.
 - The available observations did not establish a Python HTTP-client deadlock, so no such diagnosis is recorded as a cause.
