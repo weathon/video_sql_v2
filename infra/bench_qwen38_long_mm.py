@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import httpx
+import wandb
 
 
 def parse_metrics(body):
@@ -40,7 +41,7 @@ def parse_metrics(body):
 
 
 async def main():
-    root = Path("/workspace/runs/qwen38_bench")
+    root = Path(__file__).resolve().parents[1] / "runs" / "qwen38_bench"
     run_label = os.environ["RUN_LABEL"]
     run_dir = root / "results" / run_label
     run_dir.mkdir(parents=True)
@@ -73,6 +74,28 @@ async def main():
             "ignore_eos": True,
             "top_k": 20,
         }
+        wandb_run = wandb.init(
+            project="video-sql-v2",
+            name=f"qwen38-long-mm-{run_label}",
+            dir=root,
+            config={
+                "run_label": run_label,
+                "model": model,
+                "image_count": 1024,
+                "prompt_tokens": 230000,
+                "visual_tokens": 115000,
+                "text_and_template_tokens": 115000,
+                "max_tokens": 32144,
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "top_k": 20,
+                "ignore_eos": True,
+                "tensor_parallel_size": 2,
+                "gpu_indices": [5, 6],
+                "max_model_len": 262144,
+                "max_num_batched_tokens": 32768,
+            },
+        )
         (run_dir / "request_summary.json").write_text(
             json.dumps(
                 {
@@ -156,6 +179,21 @@ async def main():
                         ),
                         flush=True,
                     )
+                    wandb.log(
+                        {
+                            "runtime/elapsed_seconds": now - request_start,
+                            "runtime/seconds_without_progress": now
+                            - state["last_progress"],
+                            "runtime/prompt_tokens_total": prompt_tokens,
+                            "runtime/generation_tokens_total": generation_tokens,
+                            "runtime/running_requests": metrics[
+                                "vllm:num_requests_running"
+                            ],
+                            "runtime/waiting_requests": metrics[
+                                "vllm:num_requests_waiting"
+                            ],
+                        }
+                    )
                     if now - state["last_progress"] >= 1200:
                         health = await client.get("http://127.0.0.1:8000/health")
                         probe_payload = {
@@ -188,6 +226,16 @@ async def main():
                         (run_dir / "wedge_probe.json").write_text(
                             json.dumps(probe_result, ensure_ascii=False, indent=2)
                         )
+                        wandb.log(
+                            {
+                                "wedge/detected": 1,
+                                "wedge/elapsed_seconds": now - request_start,
+                                "wedge/seconds_without_progress": now
+                                - state["last_progress"],
+                                "wedge/health_status": health.status_code,
+                            }
+                        )
+                        wandb_run.finish(exit_code=1)
                         raise RuntimeError(
                             "No prompt, generation, or stream progress for 1200 seconds"
                         )
@@ -305,6 +353,27 @@ async def main():
         assert state["finish_reason"] == "length"
         assert prompt_tokens_delta == 230000
         assert generation_tokens_delta == 32144
+        wandb.log(
+            {
+                "result/wall_seconds": result["wall_seconds"],
+                "result/wall_ttft_seconds": result["wall_ttft_seconds"],
+                "result/wall_decode_tokens_per_second": result[
+                    "wall_decode_tokens_per_second"
+                ],
+                "result/engine_prefill_seconds": prefill_seconds,
+                "result/engine_decode_seconds": decode_seconds,
+                "result/engine_prefill_tokens_per_second": result[
+                    "engine_prefill_tokens_per_second"
+                ],
+                "result/engine_decode_tokens_per_second": result[
+                    "engine_decode_tokens_per_second"
+                ],
+                "result/prompt_tokens": usage["prompt_tokens"],
+                "result/completion_tokens": usage["completion_tokens"],
+                "wedge/detected": 0,
+            }
+        )
+        wandb_run.finish()
         print(json.dumps(result, ensure_ascii=False), flush=True)
 
 

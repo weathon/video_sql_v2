@@ -5,7 +5,7 @@ from PIL import Image
 from transformers import AutoProcessor
 
 
-root = Path("/workspace/runs/qwen38_bench")
+root = Path(__file__).resolve().parents[1] / "runs" / "qwen38_bench"
 images_dir = root / "images"
 images_dir.mkdir()
 
@@ -81,8 +81,22 @@ assert grid_visual_tokens == 115000
 assert processed["image_grid_thw"].shape[0] == 1024
 assert processed["pixel_values"].shape == (460000, 1536)
 
+api_content = [
+    {
+        "type": "image_url",
+        "image_url": {
+            "url": f"file:///bench/images/image_{index:04d}.png",
+        },
+    }
+    for index in range(1024)
+]
+api_content.append({"type": "text", "text": content[-1]["text"]})
 with (root / "request.json").open("x") as file:
-    json.dump({"messages": messages}, file, ensure_ascii=False)
+    json.dump(
+        {"messages": [{"role": "user", "content": api_content}]},
+        file,
+        ensure_ascii=False,
+    )
 with (root / "request_summary.json").open("x") as file:
     json.dump(
         {
