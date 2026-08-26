@@ -27,7 +27,7 @@ def create_database(path: Path, video_path: Path):
 
 
 def create_video(path: Path):
-    result = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=4:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)], capture_output=True, text=True)
+    result = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=4:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-output_ts_offset", "0.5", str(path)], capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"test video creation failed: {result.stderr}")
 

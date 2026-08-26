@@ -160,7 +160,10 @@ class VideoSQLHarness:
             if not clip_path.is_file():
                 raise FileNotFoundError(clip_path)
             decoder = VideoDecoder(clip_path, dimension_order="NHWC", num_ffmpeg_threads=4, seek_mode="approximate")
-            batch = decoder.get_frames_played_at([timestamp - clip_start for _, timestamp in selected]).data.cpu().numpy()
+            clip_begin = decoder.metadata.begin_stream_seconds
+            if clip_begin is None:
+                raise RuntimeError(f"cached clip has no start time row_id={row_id} path={clip_path}")
+            batch = decoder.get_frames_played_at([clip_begin + timestamp - clip_start for _, timestamp in selected]).data.cpu().numpy()
             for (frame_index, timestamp), frame in zip(selected, batch, strict=True):
                 height, width = frame.shape[:2]
                 crop = frame[y1 * height // 1000:y2 * height // 1000, x1 * width // 1000:x2 * width // 1000]
@@ -196,7 +199,10 @@ class VideoSQLHarness:
             if not clip_path.is_file():
                 raise FileNotFoundError(clip_path)
             decoder = VideoDecoder(clip_path, dimension_order="NHWC", num_ffmpeg_threads=4, seek_mode="approximate")
-            batch = decoder.get_frames_played_at([timestamp - clip_start for _, timestamp in selected]).data.cpu().numpy()
+            clip_begin = decoder.metadata.begin_stream_seconds
+            if clip_begin is None:
+                raise RuntimeError(f"cached clip has no start time row_id={row_id} path={clip_path}")
+            batch = decoder.get_frames_played_at([clip_begin + timestamp - clip_start for _, timestamp in selected]).data.cpu().numpy()
             for (frame_index, _), frame in zip(selected, batch, strict=True):
                 frames[frame_index] = frame
         if any(frame is None for frame in frames):

@@ -7,9 +7,9 @@ from src.embeddings import embed_video, request_embeddings
 from src.preprocess.cache_video_clips import cache_video_clips
 
 
-def test_ffmpeg_builds_verified_discrete_clip_cache(tmp_path):
+def test_ffmpeg_builds_verified_resumable_discrete_clip_cache(tmp_path):
     source_path = tmp_path / "source.mp4"
-    result = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=4:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source_path)], capture_output=True, text=True)
+    result = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=4:duration=34", "-c:v", "libx264", "-force_key_frames", "expr:gte(t,n_forced*30)", "-pix_fmt", "yuv420p", str(source_path)], capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"test video creation failed: {result.stderr}")
     database_path = tmp_path / "cache.duckdb"
@@ -17,14 +17,19 @@ def test_ffmpeg_builds_verified_discrete_clip_cache(tmp_path):
     connection.execute("CREATE TABLE videos(video_id VARCHAR, video_path VARCHAR, sequence_index INTEGER)")
     connection.execute("CREATE TABLE video_clips(row_id VARCHAR, video_id VARCHAR, start_sec DOUBLE, end_sec DOUBLE)")
     connection.execute("INSERT INTO videos VALUES ('1', ?, 0)", [str(source_path)])
-    connection.execute("INSERT INTO video_clips VALUES ('1:video_clips:0', '1', 0, 4)")
+    connection.execute("INSERT INTO video_clips VALUES ('1:video_clips:0', '1', 0, 30), ('1:video_clips:1', '1', 30, 34)")
     connection.close()
     clip_dir = tmp_path / "clips"
     cache_video_clips(database_path, clip_dir)
     clip_path = clip_dir / "1" / "000000.mp4"
+    second_clip_path = clip_dir / "1" / "000001.mp4"
     assert clip_path.is_file()
     assert clip_path.stat().st_size > 0
-    assert (clip_dir / "1" / "segments.csv").read_text(encoding="utf-8").split(",", 1)[0] == "000000.mp4"
+    assert second_clip_path.is_file()
+    second_clip_path.unlink()
+    cache_video_clips(database_path, clip_dir)
+    assert second_clip_path.is_file()
+    assert second_clip_path.stat().st_size > 0
 
 
 async def test_embedding_batch_request_uses_qwen_chat_protocol():
