@@ -54,6 +54,7 @@ class FakeAgent:
 
 class FakeRunner:
     compact_inputs = []
+    reflection_input = None
     run_count = 0
 
     @classmethod
@@ -70,6 +71,7 @@ class FakeRunner:
             return type("Result", (), {"final_output": f"handoff-{len(cls.compact_inputs)}", "raw_responses": []})()
         assert agent.name == "compaction-limit reflection"
         assert agent.tools is None
+        cls.reflection_input = input
         return type("Result", (), {"final_output": "final reflection", "raw_responses": []})()
 
 
@@ -78,6 +80,7 @@ async def test_third_compaction_scores_zero_and_runs_fixed_reflection(tmp_path, 
     monkeypatch.setattr("src.agent_runtime.Runner", FakeRunner)
     FakeAgent.created = []
     FakeRunner.compact_inputs = []
+    FakeRunner.reflection_input = None
     FakeRunner.run_count = 0
     runtime = object.__new__(AgentRuntime)
     runtime.endpoint = ModelEndpoint("qwen", "secret", "http://local", "high", None)
@@ -103,6 +106,7 @@ async def test_third_compaction_scores_zero_and_runs_fixed_reflection(tmp_path, 
     assert "/tmp/contact.jpg" in trace_path.read_text(encoding="utf-8")
     assert FakeRunner.run_count == 4
     assert FakeAgent.created[-1].instructions == "fixed reflection prompt"
+    assert json.loads(FakeRunner.reflection_input) == {"compactions_completed": 3, "trusted_handoff": "handoff-3"}
 
 
 def test_normalize_trace_preserves_paths_and_removes_image_bytes():

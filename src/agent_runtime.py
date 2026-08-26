@@ -140,6 +140,7 @@ class AgentRuntime:
                 "tool": "clip_qa",
                 "input": {"video_id": video_id, "start_sec": start_sec, "end_sec": end_sec, "question": question},
                 "transcript": normalize_trace(result.to_input_list(mode="normalized")),
+                "responses": [{"output": [item.model_dump(mode="json") for item in response.output], "usage": asdict(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in result.raw_responses],
             })
             answer = result.final_output
             if answer.status == "unknown":
@@ -219,7 +220,7 @@ class AgentRuntime:
             trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
             if compactions == 3:
                 reflection_agent = Agent(name="compaction-limit reflection", instructions=self.reflection_final_prompt, model=self.model, model_settings=self.settings)
-                reflection_input = json.dumps({"question": question, "turns": trace["turns"], "nested_tool_traces": nested_tool_traces, "compactions": trace["compactions"]}, ensure_ascii=False)
+                reflection_input = json.dumps({"compactions_completed": compactions, "trusted_handoff": compacted.final_output}, ensure_ascii=False)
                 reflection_result = await Runner.run(reflection_agent, reflection_input, max_turns=1, run_config=RunConfig(reasoning_item_id_policy="preserve"))
                 if reflection_result.final_output is None:
                     raise RuntimeError("compaction-limit reflection ended without output")
