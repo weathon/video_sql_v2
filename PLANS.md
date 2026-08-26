@@ -9,7 +9,7 @@
 6. 缓存的试点数据集和预构建的index: /raid/wg25r/mmlifelong_pilot
 7. 数据库引擎: https://github.com/duckdb/duckdb
 8. OpenAI Doc Skill: 本次运行明确允许且需要使用这个doc来完成构建, 上面的agent辅助doc也需要使用
-9. 本地模型: Qwen/Qwen3.8-27B
+9. 本地模型: Inferact/Qwen3.8-Flash-Next-NVFP4，启动方式和全部参数使用INFRA.txt中的Current best choice
 
 ## 项目创新点:
 1. 本项目使用SQL Dataset代替graph, 从而使得query过程可以被agent控制, 并且可以直接实现多步骤跳转而不是agent自己relay. 
@@ -25,7 +25,7 @@
 
 ## 实验
 ### 阶段一: 试点
-0. (跳过这个, 这个已经完成)在试点期间, 同步进行这个操作: 启动一个subagent, 让他从网上(英文社区和中文社区, 还有官方文档)找到最好的vllm/sglang配置跑Qwen/Qwen3.8-27B用的, research哪一个bug更少. 同时这个subagent在一个空的GPU自主测试效果, 用合成长图像文本混合数据集. 每个setting不需要stress test很多prompt, 但是每个prompt需要是合成数据多伦对话长context, 用一个脚本自动的添加用户回复或者让两个对话相互几乎, 包含图片, 简单看看效果就好. 把所有setting和throughput放到INFRA.txt作为best_setting, 子agent不打断你做rollout. 做test的时候要测试高并发(25-50)长context(100k token)测试.
+0. (跳过这个, 这个已经完成)在试点期间, 同步进行这个操作: 启动一个subagent, 让他从网上(英文社区和中文社区, 还有官方文档)找到最好的vllm/sglang配置跑Inferact/Qwen3.8-Flash-Next-NVFP4用的, research哪一个bug更少. 同时这个subagent在一个空的GPU自主测试效果, 用合成长图像文本混合数据集. 每个setting不需要stress test很多prompt, 但是每个prompt需要是合成数据多伦对话长context, 用一个脚本自动的添加用户回复或者让两个对话相互几乎, 包含图片, 简单看看效果就好. 把所有setting和throughput放到INFRA.txt作为best_setting, 子agent不打断你做rollout. 做test的时候要测试高并发(25-50)长context(100k token)测试.
 1. 使用已经下载的mm lifelong数据集和预处理的MAGIC-video index (/raid/wg25r/mmlifelong_pilot), 构建我们自己的index: 所有表格全部转化成一个duckdb数据库, 保留原本表格结构, normalize所有的文本和时间格式(绝对时间还是相对时间, 人类可读时间还是秒数, 等, 建议用SQL数据库支持的相对时间格式(有些视频是不知道绝对时间的, 尤其是游戏))使得JOIN更好兼容. duckdb需要开启只读模式. artifacts里面没有embedding, 需要重新抽取embedding, 抽取使用极高并发(around 8192 for text and 512 for video).
 2. 构建我们的harness (参考: 方法详情和代码结构)和简单单元测试, 完成这些测试. 完成harness之后, 停下来不要继续, 用户审核代码后再继续. 
 3. 对于pilot dataset: 根据视频与问题的连接关系构建图，并进行图划分（graph partitioning），保证训练集和测试集之间不存在重叠的问题连接。较大的分区作为训练集，较小的分区作为验证集.
@@ -35,8 +35,8 @@
 
 ### 阶段二: 预处理
 1. 下载MM-Lifelong数据集, 有可能已经存在cache
-2. 找一个空的GPU, 用docker开启Qwen/Qwen3-VL-Embedding-8B作为embedding server. 找另一个空的GPU, 用best_setting启动Qwen/Qwen3.8-27B本地模型. 如果没有两张空的卡, 挤在一张卡, embedding不需要很多空间, 或者找另一个显存还有剩余但是compute是空的的卡启动embedding. Embedding高并发同上. 
-3. 修改MAGIC-video中的预处理脚本, 用本地模型Qwen/Qwen3.8-27B, 生成index, 所以用它作为所有模型, reasoning设置成medium. 使用embedding server作为embedding. 需要全部重新生成不能使用pilot的, 因为模型变了. 产生artifacts非常耗时和资源, 所以必须用本地模型而不是云端. 
+2. 找一个空的GPU, 用docker开启Qwen/Qwen3-VL-Embedding-8B作为embedding server. 找另一个空的GPU, 用INFRA.txt中的Current best choice启动Inferact/Qwen3.8-Flash-Next-NVFP4本地模型. 如果没有两张空的卡, 挤在一张卡, embedding不需要很多空间, 或者找另一个显存还有剩余但是compute是空的的卡启动embedding. Embedding高并发同上.
+3. 修改MAGIC-video中的预处理脚本, 用本地模型Inferact/Qwen3.8-Flash-Next-NVFP4, 生成index, 所以用它作为所有模型, reasoning设置成medium. 使用embedding server作为embedding. 需要全部重新生成不能使用pilot的, 因为模型变了. 产生artifacts非常耗时和资源, 所以必须用本地模型而不是云端.
 4. 储存所有index并且转化成SQL格式保存在一个duckdb database
 
 ### 阶段三: "训练"和测试
@@ -45,7 +45,7 @@
 3. 记录比较结果. 
 
 ### 阶段四: 跨模型测试
-1. 启动一个vllm/sglang, 根据best_setting在一个GPU跑Qwen/Qwen3.8-27B [如果所有GPU不可用(VRAM<80% free OR always busy, it is fine if it has a small amount of VRAM being used), 暂停], medium, 测试mmlifelong测试集.由于是本地跑没有成本考量, 所以跑所有的mmlifelong测试集. 同样测试用SKILL.md和没有SKILL.md. 
+1. 启动一个vllm/sglang, 根据INFRA.txt中的Current best choice在物理GPU 5和6跑Inferact/Qwen3.8-Flash-Next-NVFP4 [如果GPU不可用(VRAM<80% free OR always busy, it is fine if it has a small amount of VRAM being used), 暂停], medium, 测试mmlifelong测试集.由于是本地跑没有成本考量, 所以跑所有的mmlifelong测试集. 同样测试用SKILL.md和没有SKILL.md.
 2. 记录和比较结果, 同样用deepseek/deepseek-v4-flash-0731的judge. 主要内部比较(with/without skill), 但是同时和阶段三比较, 和阶段三比较时比较同一子集. 
 
 
@@ -113,7 +113,7 @@ ORDER BY day;
 - agent_raise(): 特殊工具, agent发现当前状态明显不正常, 继续rollout没有意义, 例如数据库永远失败, 这时候agent raise一个error, 停止本次rollout, 上游决定是skip还是stop (参考规则).
 
 #### "训练"过程:
-1. 我们定义batch size代表n个问题和每个问题m个平行rollout. 把SKILL.md放入prompt对于一整个batch做平行rollout, 得到25个结果, 这是用用一个额外的judge call来判断模型答案正确性(打分/5), 这个分数记作s. wandb log这个s. 这个s也是qwen 3.8 27b产生. 
+1. 我们定义batch size代表n个问题和每个问题m个平行rollout. 把SKILL.md放入prompt对于一整个batch做平行rollout, 得到25个结果, 这是用用一个额外的judge call来判断模型答案正确性(打分/5), 这个分数记作s. wandb log这个s. 这个s也是Inferact/Qwen3.8-Flash-Next-NVFP4产生.
 2. 把正确答案和s(而不只是s)都给每一个rollout, 然后告诉他这是正确答案和你的分数, 同时插入META-SKILL.md (META-SKILL.md不是最开始放进去的), 你现在要做的就是去重新复盘这个结果, 包括重新回顾自己的trace和重新对数据库检索和探索, 找到你为什么对/为什么错的原因, 把这个原因总结出来, 记错relection, 同时这个反思过程有什么经验(帮助下一次反思), 记错meta-relection. 两个反思都要去掉具体内容变得抽象化 可以辅助任何问题而不是本次情况. 本次情况可以作为案例, 但是要去掉敏感信息防止数据泄露(比如具体某天中午午饭内容)
 3. 每一个问题的m个rollout的反思被另一个call总结起来, 然后对于n个总结和当前SKILL.md状态, 另一个agent(不是single call)生成一个patch来修改它产生新的skill. 这个修改必须使用patch而不是直接输出新的是为了防止大范围改动. 使用linux标准的patch格式, 如果patch失败就让这个这个agent得到错误(需要agent的原因)然后重写一个patch. reflection进入SKILL.md meta-reflection进入META-SKILL.md. 这个patch需要包含修改和删除, 而不只是无限量添加, 不然会爆炸. 删掉旧的错误的, 或者merge相似的, 或者补充现有的, 而不是永远加下去. 
 4. 下一个batch带着新的SKILL.md和META-SKILL.md继续. 
@@ -160,3 +160,12 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 
 
 This plan is a draft and has been refined into CODEX_PLAN.md
+
+## 当前进度（2026-08-26）
+
+1. 正式本地模型已改为`Inferact/Qwen3.8-Flash-Next-NVFP4`。后续启动必须使用`INFRA.txt`最上方的Current best choice：物理GPU 5和6、vLLM Docker `qwen38-flash-next`、tensor parallel 2、`max-num-seqs 200`、MTP 3、prefix caching和SimpleCPUOffloadConnector配置。
+2. Phase 1代码、Pilot DuckDB、离散视频clip cache、TorchCodec harness和embedding调度已经实现。完整测试为13项通过。当前代码提交为`edf4cdc`。
+3. Pilot视频clip cache已经完成：DuckDB和磁盘各9,167个clip，所有视频的最终边界与视频流时长一致。文本embedding已经生成813个shard，共416,029行。
+4. Pilot视频embedding仍在生成。记录进度时为746/9,167个shard；当前任务使用每个HTTP batch 2个视频、最多128个在途batch、每1秒启动一个batch。embedding服务关闭`mm_processor_cache`，全部运行时缓存和临时目录位于`/raid`，记录时健康检查为HTTP 200。
+5. 当前tmux任务为`stage1_pilot_video_embeddings`，运行日志为`logs/stage1_pilot_video_embeddings_batch2_128_1s.log`；embedding服务为`stage1_embedding_server_torchcodec`，日志为`logs/stage1_embedding_server_no_mm_cache_all_raid.log`。实现和排障记录在`notes/VIDEO_EMBEDDING_PIPELINE.md`。
+6. 当前对话只继续观察视频embedding直到生成完成。生成完成后由用户开启新对话，再从实际落盘产物继续后续Phase 1验证和审查，不提前进入Pilot。
