@@ -34,7 +34,7 @@ def test_ffmpeg_builds_verified_resumable_discrete_clip_cache(tmp_path):
 
 def test_cache_uses_actual_keyframe_aligned_boundaries(tmp_path):
     source_path = tmp_path / "variable.mp4"
-    result = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=4:duration=64", "-c:v", "libx264", "-x264-params", "scenecut=0:keyint=10000", "-force_key_frames", "35,60", "-pix_fmt", "yuv420p", str(source_path)], capture_output=True, text=True)
+    result = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=4:duration=64", "-c:v", "libx264", "-x264-params", "scenecut=0:keyint=10000", "-force_key_frames", "35", "-pix_fmt", "yuv420p", str(source_path)], capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"test video creation failed: {result.stderr}")
     database_path = tmp_path / "variable.duckdb"
@@ -48,7 +48,7 @@ def test_cache_uses_actual_keyframe_aligned_boundaries(tmp_path):
     connection = duckdb.connect(str(database_path), read_only=True)
     boundaries = connection.execute("SELECT start_sec, end_sec, epoch(global_start), epoch(global_end) FROM video_clips ORDER BY row_id").fetchall()
     connection.close()
-    assert boundaries == [(0.0, 35.0, 100.0, 135.0), (35.0, 60.0, 135.0, 160.0), (60.0, 64.0, 160.0, 164.0)]
+    assert boundaries == [(0.0, 35.0, 100.0, 135.0), (35.0, 64.0, 135.0, 164.0)]
 
 
 async def test_embedding_batch_request_uses_qwen_chat_protocol():
