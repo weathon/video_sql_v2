@@ -1,0 +1,15 @@
+.env
+*.db
+*.npz
+.venv/
+.venv_codex_*/
+.venv_infra_*/
+__pycache__/
+.pytest_cache/
+.wandb/
+wandb/
+data/*.duckdb
+runs/
+media/
+*.log
+infra_test/*_checkpoints/
