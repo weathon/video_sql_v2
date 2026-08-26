@@ -66,7 +66,7 @@ async def test_embedding_batch_request_uses_qwen_chat_protocol():
     assert "input" not in captured
 
 
-async def test_video_embeddings_use_one_local_clip_per_request_with_ten_second_launch_spacing(tmp_path, monkeypatch):
+async def test_video_embeddings_use_one_local_clip_per_request_with_one_second_launch_spacing(tmp_path, monkeypatch):
     database_path = tmp_path / "memory.duckdb"
     connection = duckdb.connect(str(database_path))
     connection.execute("CREATE TABLE videos(video_id VARCHAR, sequence_index INTEGER)")
@@ -97,6 +97,6 @@ async def test_video_embeddings_use_one_local_clip_per_request_with_ten_second_l
     assert requests[0][0][0][1]["content"][0]["video_url"]["url"] == (clip_dir / "000000.mp4").resolve().as_uri()
     assert requests[1][0][0][1]["content"][0]["video_url"]["url"] == (clip_dir / "000001.mp4").resolve().as_uri()
     assert len(sleeps) == 1
-    assert 9.9 < sleeps[0] <= 10.0
+    assert 0.9 < sleeps[0] <= 1.0
     assert np.load(shard_dir / "video-000000.npz")["row_ids"].tolist() == ["1:video_clips:0"]
     assert np.load(shard_dir / "video-000001.npz")["row_ids"].tolist() == ["1:video_clips:1"]

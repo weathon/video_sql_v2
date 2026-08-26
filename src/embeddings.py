@@ -19,7 +19,7 @@ TEXT_TABLES = {
     "topic_chains": "entity",
     "topic_facts": "text",
 }
-VIDEO_REQUEST_INTERVAL_SECONDS = 10.0
+VIDEO_REQUEST_INTERVAL_SECONDS = 1.0
 
 
 async def request_embeddings(client: httpx.AsyncClient, endpoint: str, model: str, conversations: list[list[dict]], row_ids: list[str], media_io_kwargs: dict | None) -> list[tuple[str, list[float]]]:
