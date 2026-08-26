@@ -255,7 +255,7 @@ async def main():
                         "finish_reason": choice["finish_reason"],
                         "usage": response_json["usage"],
                         "content": content,
-                        "reasoning": choice["message"]["reasoning_content"],
+                        "reasoning": choice["message"]["reasoning"],
                         "format_valid": len(final_lines) == 1,
                     }
                     if len(final_lines) != 1:
