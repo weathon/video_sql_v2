@@ -11,7 +11,7 @@ import wandb
 
 from src.agent_runtime import AgentRuntime, ModelEndpoint, RolloutResult
 from src.harness import VideoSQLHarness
-from src.training import Judgment, MODEL, MODEL_CONTEXT_LIMIT, PILOT_COST_LIMIT_USD, ROOT, RUN_ROOT, run_structured_agent, trace_for_judge, usage_and_cost
+from src.training import Judgment, MODEL, MODEL_CONTEXT_LIMIT, PILOT_COST_LIMIT_USD, ROOT, RUN_ROOT, run_structured_agent, usage_and_cost
 
 
 RETRYABLE_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError, ModelBehaviorError, MaxTurnsExceeded)
@@ -26,7 +26,7 @@ class PilotEvaluator:
         self.settings = ModelSettings(reasoning=Reasoning(effort="high"), truncation="disabled", prompt_cache_retention="24h", preserve_raw_usage=True)
         self.judge = Agent(
             name="pilot validation judge",
-            instructions="Score the candidate answer against the reference answer and the complete rollout trace. Use 5 for fully correct and complete, 4 for correct with a minor imprecision, 3 for partially correct with a material omission, 2 for some relevant progress with a major error, 1 for minimal relevant content, and 0 for wrong, unsupported, missing, or failed. Judge the actual answer and evidence, not effort.",
+            instructions="Compare only the candidate answer with the reference answer. Score semantic correctness and completeness, treating meaning-preserving paraphrases as correct. Use 5 for fully correct and complete, 4 for correct with a minor imprecision, 3 for partially correct with a material omission, 2 for some correct content with a major error, 1 for minimally correct content, and 0 for wrong or missing. Do not evaluate, request, or infer anything about the rollout trace, retrieval process, evidence, or effort.",
             model=self.model,
             model_settings=self.settings,
             output_type=Judgment,
@@ -84,13 +84,12 @@ class PilotEvaluator:
                     print(f"validation_rollout_retry condition={condition} question_id={question_id} attempt={attempt} error={type(error).__name__}: {error}")
                     if attempt == 3:
                         raise
-        trace = json.loads(Path(rollout.trace_path).read_text(encoding="utf-8"))
         judge_responses = []
         if rollout.status == "compaction_limit":
             score = 0
             judgment = None
         else:
-            judge_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "rollout_trace": trace_for_judge(trace)}, ensure_ascii=False)
+            judge_input = json.dumps({"reference_answer": question["answer"], "candidate_answer": rollout.answer}, ensure_ascii=False)
             judge_result = await run_structured_agent(self.judge, judge_input, "pilot-validation-judge", f"{condition}-question-{question_id}", judge_responses)
             judgment = judge_result.final_output.model_dump(mode="json")
             score = judgment["score"]

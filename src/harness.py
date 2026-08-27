@@ -191,7 +191,7 @@ class VideoSQLHarness:
                 column, row = index % 4, index // 4
                 canvas.paste(image, (column * 480, row * 300))
                 draw.text((column * 480 + 8, row * 300 + 274), f"{timestamp:.3f}s", fill="white")
-            path = self.media_dir / f"sample-{video_id}-{start_sec:.3f}-{end_sec:.3f}-p{page_index}.jpg"
+            path = self.media_dir / f"sample-{video_id}-{start_sec:.3f}-{end_sec:.3f}-fps{fps:g}-crop{x1}-{x2}-{y1}-{y2}-caption{int(return_caption)}-p{page_index}.jpg"
             canvas.save(path)
             pages.append(str(path))
         return {"contact_sheets": pages, "frame_timestamps": timestamps, "captions": [{"start_sec": start, "end_sec": end, "text": text} for start, end, text in captions]}

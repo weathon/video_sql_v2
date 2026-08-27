@@ -95,7 +95,7 @@ def usage_and_cost(responses: list[dict]) -> tuple[dict, float]:
     return totals, cost
 
 
-def trace_for_judge(trace: dict) -> dict:
+def trace_for_reflection(trace: dict) -> dict:
     return {
         "question": trace["question"],
         "status": trace["status"],
@@ -134,7 +134,7 @@ class PilotTrainer:
         self.settings = ModelSettings(reasoning=Reasoning(effort="high"), truncation="disabled", prompt_cache_retention="24h", preserve_raw_usage=True)
         self.judge = Agent(
             name="pilot rollout judge",
-            instructions="Score the candidate answer against the reference answer and the complete rollout trace. Use 5 for fully correct and complete, 4 for correct with a minor imprecision, 3 for partially correct with a material omission, 2 for some relevant progress with a major error, 1 for minimal relevant content, and 0 for wrong, unsupported, missing, or failed. Judge the actual answer and evidence, not effort.",
+            instructions="Compare only the candidate answer with the reference answer. Score semantic correctness and completeness, treating meaning-preserving paraphrases as correct. Use 5 for fully correct and complete, 4 for correct with a minor imprecision, 3 for partially correct with a material omission, 2 for some correct content with a major error, 1 for minimally correct content, and 0 for wrong or missing. Do not evaluate, request, or infer anything about the rollout trace, retrieval process, evidence, or effort.",
             model=self.model,
             model_settings=self.settings,
             output_type=Judgment,
@@ -224,7 +224,7 @@ class PilotTrainer:
             judgment = None
             reflection = rollout.reflection
         else:
-            judge_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "rollout_trace": trace_for_judge(trace)}, ensure_ascii=False)
+            judge_input = json.dumps({"reference_answer": question["answer"], "candidate_answer": rollout.answer}, ensure_ascii=False)
             judge_result = await run_structured_agent(self.judge, judge_input, "pilot-judge", f"question-{question_id}-rollout-{rollout_index}", judge_responses)
             judgment = judge_result.final_output.model_dump(mode="json")
             score = judgment["score"]
@@ -235,7 +235,7 @@ class PilotTrainer:
                 model_settings=self.settings,
                 output_type=Reflection,
             )
-            reflection_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "judgment": judgment, "rollout_trace": trace_for_judge(trace)}, ensure_ascii=False)
+            reflection_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "judgment": judgment, "rollout_trace": trace_for_reflection(trace)}, ensure_ascii=False)
             reflection_result = await run_structured_agent(reflection_agent, reflection_input, "pilot-reflection", f"question-{question_id}-rollout-{rollout_index}", reflection_responses)
             reflection = reflection_result.final_output.model_dump(mode="json")
         responses = []

@@ -57,17 +57,24 @@ class FakeRunner:
     compact_inputs = []
     reflection_input = None
     run_count = 0
+    streamed_agents = []
+    streamed_inputs = []
 
     @classmethod
-    def run_streamed(cls, *args, **kwargs):
+    def run_streamed(cls, agent, input, **kwargs):
+        cls.streamed_agents.append(agent)
+        cls.streamed_inputs.append(input)
         return FakeStream()
 
     @classmethod
     async def run(cls, agent, input, **kwargs):
         cls.run_count += 1
-        if agent.name == "rollout compactor":
-            assert "base64" not in input
-            assert "/tmp/contact.jpg" in input
+        if agent.name == "main":
+            assert agent is cls.streamed_agents[-1]
+            assert "base64" not in json.dumps(input)
+            assert "/tmp/contact.jpg" in json.dumps(input)
+            assert input[-1]["role"] == "user"
+            assert "fixed compaction prompt" in input[-1]["content"]
             cls.compact_inputs.append(input)
             return type("Result", (), {"final_output": f"handoff-{len(cls.compact_inputs)}", "raw_responses": []})()
         assert agent.name == "compaction-limit reflection"
@@ -83,6 +90,8 @@ async def test_third_compaction_scores_zero_and_runs_fixed_reflection(tmp_path, 
     FakeRunner.compact_inputs = []
     FakeRunner.reflection_input = None
     FakeRunner.run_count = 0
+    FakeRunner.streamed_agents = []
+    FakeRunner.streamed_inputs = []
     runtime = object.__new__(AgentRuntime)
     runtime.endpoint = ModelEndpoint("qwen", "secret", "http://local", "high", None)
     runtime.context_limit = 100_000
@@ -106,6 +115,7 @@ async def test_third_compaction_scores_zero_and_runs_fixed_reflection(tmp_path, 
     assert "base64" not in trace_path.read_text(encoding="utf-8")
     assert "/tmp/contact.jpg" in trace_path.read_text(encoding="utf-8")
     assert FakeRunner.run_count == 4
+    assert FakeRunner.streamed_inputs == ["question", [{"role": "user", "content": "Trusted compacted handoff from the prior conversation:\n\nhandoff-1"}], [{"role": "user", "content": "Trusted compacted handoff from the prior conversation:\n\nhandoff-2"}]]
     assert FakeAgent.created[-1].instructions == "fixed reflection prompt"
     assert json.loads(FakeRunner.reflection_input) == {"compactions_completed": 3, "trusted_handoff": "handoff-3"}
 

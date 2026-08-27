@@ -3,7 +3,7 @@
 ## 总结
 
 - 保留基础设施研究、索引与 harness、pilot、正式训练与评测四个阶段；原 Phase 4 删除，因为 Phase 3 已进行完整评测。
-- Pilot 使用 Luna；Pilot 之后的主检索、judge、reflection、skill updater、compactor、字幕与结构化处理全部使用 `Inferact/Qwen3.8-Flash-Next-NVFP4`。
+- Pilot 使用 Luna；Pilot 之后的主检索、judge、reflection、skill updater、字幕与结构化处理全部使用 `Inferact/Qwen3.8-Flash-Next-NVFP4`。
 - Pilot 训练每题 5 个 rollout；正式训练每题 10 个并发 rollout；所有验证与测试每题 1 个 rollout。
 - 仅主检索 agent 启用 context compaction。完成第三次 compaction 后立即终止该 rollout，记 0 分并进入复盘。
 - 固定 compaction prompt，不允许训练过程修改。
@@ -25,7 +25,7 @@
 - 初始化 Git，身份设为 `codex <codex@localhost>`；使用 `uv` 和仓库内 `/raid` 缓存，提交锁定后的 `uv.lock`。
 - 从 [MAGIC-video](https://github.com/lijiazheng0917/MAGIC-video) 只移植当前项目需要的预处理逻辑，并记录上游 commit；不引入其截断、替代数据或静默恢复路径。
 - 使用 [MM-Lifelong](https://huggingface.co/datasets/MM-Lifelong/MM-Lifelong) 的官方顺序、时长和区间信息。所有时间统一保存为视频内秒数和全局相对 `INTERVAL`；只有来源提供绝对时间时才保存 `TIMESTAMP`。
-- DuckDB 保存 videos、questions、clue intervals、ASR segments、各粒度 captions、entities、episodic/semantic triples、activities、event chains 和 topic chains；embedding 不写入 DuckDB。
+- DuckDB 只保存检索所需的 videos、ASR segments、各粒度 captions、entities、episodic/semantic triples、activities、event chains 和 topic chains；视频仅保存文件名，不保存宿主机绝对路径。问题、答案、question type、temporal certificate 和 clue intervals 全部保存在数据集 JSON 中，不写入 DuckDB；judge 从 JSON 单独接收 reference answer，主检索 agent 无法访问这些字段。embedding 不写入 DuckDB。
 - 文本入库前统一执行：拉丁字符转 ASCII 并小写、保留非拉丁字符、去除首尾空白、折叠连续空白。数据库只保留规范化文本。
 - 每条可检索文本记录和每个 30 秒视频片段均生成稳定 row ID 和向量。文本及视频使用 [Qwen3-VL-Embedding-8B](https://huggingface.co/Qwen/Qwen3-VL-Embedding-8B)；每个可检索表分别保存连续 NumPy 向量矩阵和同顺序 row ID 数组，采用 NumPy 精确 cosine scan，不通过 SQL 查询 embedding。先用真实并发查询测试该方案；只有并发性能不足时才改用功能和精度相同的轻量向量数据库。
 - 构建期间使用可恢复的磁盘分片，再合并为各表独立 NumPy 矩阵；正式 harness 的 DuckDB 连接只读取 top row ID 对应的元数据，使用 `read_only` 且每个并发调用创建独立连接，符合 [DuckDB 并发约束](https://duckdb.org/docs/current/connect/concurrency)。
@@ -36,7 +36,7 @@
 - 将当前 47 个 train 和 623 个 val 问题按共享 clue video 建图，使用已确认的两个连通分量作为固定划分：646 train、24 val，禁止跨集合共享视频。
 - Pilot 主 agent、judge、reflection、summarizer 和 updater 使用 `gpt-5.6-luna`，reasoning effort 为 high；使用 Responses API 与 Agents SDK 的流式运行接口。[Agents SDK 运行方式](https://developers.openai.com/api/docs/guides/agents/running-agents)和 [Luna 规格与定价](https://developers.openai.com/api/docs/models/gpt-5.6-luna)作为实现依据。
 - Pilot 训练 1 个 epoch，每批 5 个问题，每题 5 个 rollout；顺序以 seed 2026 固定打乱，保存完整 question ID 顺序，最后不足 5 题的批次正常执行。
-- 每个 rollout 独立由 judge 评为 0–5 分，然后生成 reflection；每题生成一次汇总，每批由 updater 对运行副本中的 `SKILL.md` 和 `META-SKILL.md` 应用一个统一 Linux patch。
+- 每个 rollout 独立由 judge 评为 0–5 分。judge 只接收该 rollout 的最终 candidate answer 和数据集 JSON 中的 reference answer，只判断两者语义是否正确、完整，并把含义相同的改写视为正确；judge 不接收 question、rollout trace、工具输入输出、证据或检索过程，也不对轨迹质量和努力程度评分。随后 reflection 接收完整 rollout trace、judge 结果和 reference answer，对检索轨迹进行复盘。每题生成一次汇总，每批由 updater 更新运行副本中的 `SKILL.md` 和 `META-SKILL.md`。
 - 初始 skill 提供简短检索指导；初始 meta-skill 提供复盘指导。评测基线使用原始 `SKILL.md`，训练组使用更新后的 skill；测试 prompt 不包含 meta-skill。
 - 24 个 val 问题分别执行 trained-skill 和 initial-skill 两组，每题各 1 个 rollout。
 - 启用 Luna prompt cache，记录 cache write、cached input、普通 input 和 output token。Pilot API 累计费用超过 100 美元时，仅在当前顶层 rollout 完成后保存恢复状态并暂停。
@@ -48,7 +48,7 @@
 - ASR 使用 [Qwen3-ASR-1.7B-hf](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf)；caption merge、OpenIE、semantic、topic、event 等步骤均使用 `Inferact/Qwen3.8-Flash-Next-NVFP4` 和 `notes/INFRA.txt` 指定的配置。
 - 从与 Pilot 相同的初始 `SKILL.md` 和 `META-SKILL.md` 重新开始，不继承 Pilot 训练结果。
 - 使用 month train 的 266 个问题训练 1 个 epoch，每批 5 题，每题 10 个并发 rollout；seed 2026 固定顺序，最后一批正常处理。
-- 每个 rollout 由 `Inferact/Qwen3.8-Flash-Next-NVFP4` judge 独立评分并复盘；summarizer、skill updater 和 compactor 也使用该模型。
+- 每个 rollout 由 `Inferact/Qwen3.8-Flash-Next-NVFP4` judge 独立评分；judge 与 Pilot 一样只比较最终 candidate answer 和 reference answer，不读取 trace。reflection 单独读取完整 trace 和 judge 结果进行复盘；summarizer 和 skill updater 也使用该模型。
 - 对 month val 623、day test 200、week test 200 共 1023 题进行完整评测；trained-skill 和 initial-skill 各跑一次，每题每组 1 个 rollout。
 - 报告 overall、day/week/month、question_type 以及每题 trained-vs-baseline 配对差值，并保留全部逐题原始结果。不存在额外 Phase 4。
 
@@ -66,17 +66,17 @@
 
 ### Compaction 状态机
 
-- 仅主检索 agent 使用 compaction；`clip_qa`、judge、reflection、summarizer、updater 和 compactor 不使用。
+- 仅主检索 agent 使用 compaction；`clip_qa`、judge、reflection、summarizer 和 updater 不使用。
 - 每次主 agent 响应完成后读取服务端 usage，计算 `remaining = notes/INFRA.txt.context_limit - input_tokens - output_tokens`。
 - 当 `remaining <= 50,000` 时，通过流式 runner 执行 `cancel(mode="after_turn")` 并排空事件，确保当前工具轮完整结束。
-- 将规范化后的完整 transcript 交给同一 Qwen 的无工具 compactor。compactor 的唯一输出作为新对话中的 trusted handoff，旧对话不再传入。
+- 在当前主检索 agent 的同一对话中追加固定 compaction 指令，要求它停止工具调用并总结当前对话。该 agent 的下一次输出作为新对话中的 trusted handoff，旧对话不再传入；不创建单独的 compactor agent。
 - 第一次和第二次 compaction 后继续 rollout。第三次 compaction 输出生成后立即终止，状态设为 `compaction_limit`，分数设为 0，不调用 judge、不重试，直接进入重点分析绕圈原因的 reflection。
 - Reflection 永不 compaction；当其 remaining 小于等于 50k 时，禁止继续调用工具并强制输出最终 reflection 和 meta-reflection。
 
 ### 固定项目专用 compaction prompt
 
 ```text
-You are compacting an in-progress video-memory SQL agent rollout. Produce only a self-contained handoff for the same agent in a fresh conversation. Do not answer the original question, call tools, propose a new retrieval strategy, or add conclusions that are not already supported by the transcript.
+Your context window is nearly exhausted. Stop tool use and summarize your current in-progress video-memory SQL investigation. Produce only a self-contained handoff for yourself in a fresh conversation. Do not answer the original question, call tools, propose a new retrieval strategy, or add conclusions that are not already supported by the conversation.
 
 Preserve all information needed to continue the exact rollout:
 1. The original question, required answer format, and success condition.
@@ -102,7 +102,7 @@ Next action
 Compress repetition and long tool output, but do not drop identifiers, timestamps, SQL details, contradictory evidence, failed paths, or current progress. Distinguish verified evidence from interpretation. Never invent missing information or convert an interpretation into a fact. The output will replace the entire prior conversation, so it must be sufficient to continue without access to that conversation.
 ```
 
-- `prompts/COMPACTION.md` 为只读训练资产。updater 的 patch allowlist 只包含该次运行的 `SKILL.md` 和 `META-SKILL.md`，因此训练不能改动 compaction prompt。
+- `prompts/COMPACTION.md` 为只读训练资产。updater 只输出该次运行的完整 `SKILL.md` 和 `META-SKILL.md`，因此训练不能改动 compaction prompt。
 - 第三次 compaction 后的固定复盘指令为：`Stop tool use now. Produce the final reflection and meta-reflection from the existing trace. Focus on repeated paths, why the rollout failed to make progress, which evidence was repeatedly revisited, and what skill change would prevent the loop. Do not continue solving the question.`
 
 ## 持久化、测试与阶段门
@@ -110,7 +110,7 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 - 每个 rollout 完成后立即保存独立 JSON，包括原始 responses、reasoning items、tool inputs/outputs、usage、截图路径、评分和状态；reflection、question summary、patch、batch skill snapshot 也分别落盘。
 - 恢复运行时依据实际已有产物继续，不增加完成标记、哈希清单或替代结果。
 - W&B project 固定为 `video-sql-v2`，记录每个 rollout 分数、每题均值、batch 均值、模型 usage、compaction 次数及最终状态。
-- 测试覆盖规范化、时间映射、表连接、只读并发、SQL 超时和返回限制、semantic ranking、notes、`agent_raise`、clip 时长与裁剪、contact-sheet 分页、caption 覆盖、证据截图、646/24 划分、第三次 compaction 终止、reflection 强制结束、prompt 不可修改、固定顺序、尾批、恢复和 patch 路径限制。
+- 测试覆盖规范化、时间映射、数据库不含问题、答案和 clue 信息、视频只暴露文件名、只读并发、SQL 超时和返回限制、semantic ranking、notes、`agent_raise`、clip 时长与裁剪、contact-sheet 分页、caption 覆盖、证据截图、646/24 划分、第三次 compaction 终止、reflection 强制结束、prompt 不可修改、固定顺序、尾批和恢复。
 - 集成测试必须读取真实 Pilot 数据库行、查看实际 contact sheet 和截图，并人工检查完整 agent trace、每次工具的真实输入输出和 usage。
 - 阶段 1 完成并提交后暂停，交由用户审查代码；获得确认后才进入 Pilot。
 - 每次大型运行前先提交改动，再按 `REVIEW.md` 让一个 reviewer 检查相对上一提交的变更行，修复所有明确问题并复查。

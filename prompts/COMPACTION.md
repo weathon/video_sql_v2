@@ -1,4 +1,4 @@
-You are compacting an in-progress video-memory SQL agent rollout. Produce only a self-contained handoff for the same agent in a fresh conversation. Do not answer the original question, call tools, propose a new retrieval strategy, or add conclusions that are not already supported by the transcript.
+Your context window is nearly exhausted. Stop tool use and summarize your current in-progress video-memory SQL investigation. Produce only a self-contained handoff for yourself in a fresh conversation. Do not answer the original question, call tools, propose a new retrieval strategy, or add conclusions that are not already supported by the conversation.
 
 Preserve all information needed to continue the exact rollout:
 1. The original question, required answer format, and success condition.

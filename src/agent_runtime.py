@@ -86,54 +86,54 @@ class AgentRuntime:
         )
 
     def main_tools(self, nested_tool_traces: list[dict]):
-        @function_tool
+        @function_tool(failure_error_function=None)
         def run_sql(sql: str) -> dict:
             """Run read-only DuckDB SQL. Results are limited to 100 rows and long cells to 500 characters."""
             return self.harness.run_sql(sql)
 
-        @function_tool
+        @function_tool(failure_error_function=None)
         def semantic_search(query: str, n: int, table: str) -> dict:
             """Search an embedding-enabled table. The table must be one listed in the database schema."""
             return self.harness.semantic_search(query, n, table)
 
-        @function_tool
+        @function_tool(failure_error_function=None)
         def add_note(text: str) -> dict:
             """Persist a note for this rollout."""
             return self.harness.add_note(text)
 
-        @function_tool
+        @function_tool(failure_error_function=None)
         def read_notes() -> dict:
             """Read all persisted notes for this rollout."""
             return self.harness.read_notes()
 
-        @function_tool
+        @function_tool(failure_error_function=None)
         def agent_raise(reason: str):
             """Abort this rollout because a required dependency or state is broken."""
             self.harness.agent_raise(reason)
 
-        @function_tool
+        @function_tool(failure_error_function=None)
         async def clip_qa(video_id: str, start_sec: float, end_sec: float, question: str):
             """Inspect a video segment with a nested visual agent. Prefer segments under 10 minutes; segments over 20 minutes are rejected."""
             if end_sec - start_sec > 1200:
                 return {"status": "rejected", "error": "clip_qa segments must be at most 20 minutes"}
 
-            @function_tool
+            @function_tool(failure_error_function=None)
             def sample_video(sample_start_sec: float, sample_end_sec: float, fps: float, x1: int, x2: int, y1: int, y2: int, return_caption: bool):
                 """Sample this clip into timestamped 4x3 contact sheets. Crop coordinates are integers from 0 to 1000."""
                 if sample_start_sec < start_sec or sample_end_sec > end_sec:
                     raise ValueError(f"sample interval must stay inside clip_qa interval {start_sec}-{end_sec}")
                 result = self.harness.sample_video(video_id, sample_start_sec, sample_end_sec, fps, x1, x2, y1, y2, return_caption)
-                text = json.dumps({"frame_timestamps": result["frame_timestamps"], "captions": result["captions"], "contact_sheets": result["contact_sheets"]}, ensure_ascii=False)
+                text = json.dumps({"frame_timestamps": result["frame_timestamps"], "captions": result["captions"], "contact_sheets": [Path(path).name for path in result["contact_sheets"]]}, ensure_ascii=False)
                 outputs = [ToolOutputText(text=text)]
                 outputs.extend(ToolOutputImage(image_url=data_url(Path(path)), detail="high") for path in result["contact_sheets"])
                 return outputs
 
-            @function_tool
+            @function_tool(failure_error_function=None)
             def add_clip_note(text: str) -> dict:
                 """Persist a note for this clip investigation."""
                 return self.harness.add_note(f"clip:{video_id}:{start_sec}-{end_sec} {text}")
 
-            @function_tool
+            @function_tool(failure_error_function=None)
             def read_clip_notes() -> dict:
                 """Read notes available to this clip investigation."""
                 return self.harness.read_notes()
@@ -146,14 +146,26 @@ class AgentRuntime:
                 tools=[sample_video, add_clip_note, read_clip_notes],
                 output_type=ClipAnswer,
             )
-            result = await Runner.run(clip_agent, question, max_turns=50, run_config=RunConfig(reasoning_item_id_policy="preserve"))
-            nested_tool_traces.append({
+            nested_trace = {
                 "tool": "clip_qa",
                 "input": {"video_id": video_id, "start_sec": start_sec, "end_sec": end_sec, "question": question},
-                "transcript": normalize_trace(result.to_input_list(mode="normalized")),
-                "responses": [{"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in result.raw_responses],
-            })
-            answer = result.final_output
+                "transcript": [],
+                "responses": [],
+            }
+            nested_tool_traces.append(nested_trace)
+            clip_stream = Runner.run_streamed(clip_agent, question, max_turns=50, run_config=RunConfig(reasoning_item_id_policy="preserve"))
+            saved_clip_responses = 0
+            async for event in clip_stream.stream_events():
+                if event.type == "raw_response_event" and event.data.type == "response.completed":
+                    nested_trace["responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in clip_stream.raw_responses[saved_clip_responses:])
+                    saved_clip_responses = len(clip_stream.raw_responses)
+            nested_trace["responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in clip_stream.raw_responses[saved_clip_responses:])
+            nested_trace["transcript"] = normalize_trace(clip_stream.to_input_list(mode="normalized"))
+            if clip_stream.run_loop_exception:
+                raise clip_stream.run_loop_exception
+            answer = clip_stream.final_output
+            if answer is None:
+                raise RuntimeError("clip agent ended without output")
             if answer.status == "unknown":
                 return answer.model_dump()
             if not answer.evidence_timestamps:
@@ -162,7 +174,7 @@ class AgentRuntime:
                 raise ValueError(f"evidence timestamps must stay inside clip_qa interval {start_sec}-{end_sec}")
             screenshots = self.harness.evidence_screenshots(video_id, answer.evidence_timestamps)
             answer_payload = answer.model_dump()
-            answer_payload["evidence_screenshots"] = screenshots
+            answer_payload["evidence_screenshots"] = [Path(path).name for path in screenshots]
             outputs = [ToolOutputText(text=json.dumps(answer_payload, ensure_ascii=False))]
             outputs.extend(ToolOutputImage(image_url=data_url(Path(path)), detail="high") for path in screenshots)
             return outputs
@@ -191,6 +203,7 @@ class AgentRuntime:
                 run_config=RunConfig(reasoning_item_id_policy="preserve"),
                 auto_previous_response_id=not enable_compaction,
             )
+            saved_stream_responses = 0
             compact_after_turn = False
             async for event in stream.stream_events():
                 if event.type != "raw_response_event" or event.data.type != "response.completed":
@@ -198,6 +211,8 @@ class AgentRuntime:
                 response = event.data.response
                 serialized = response.model_dump(mode="json")
                 trace["responses"].append(serialized)
+                trace["model_responses"].extend({"output": [item.model_dump(mode="json") for item in model_response.output], "usage": serialize_usage(model_response.usage), "response_id": model_response.response_id, "request_id": model_response.request_id, "raw_usage": model_response.raw_usage} for model_response in stream.raw_responses[saved_stream_responses:])
+                saved_stream_responses = len(stream.raw_responses)
                 trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
                 usage = response.usage
                 remaining = self.context_limit - usage.input_tokens - usage.output_tokens
@@ -205,7 +220,7 @@ class AgentRuntime:
                 if enable_compaction and remaining <= 50_000 and has_tool_call:
                     compact_after_turn = True
                     stream.cancel(mode="after_turn")
-            trace["model_responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in stream.raw_responses)
+            trace["model_responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in stream.raw_responses[saved_stream_responses:])
             trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
             if stream.run_loop_exception:
                 raise stream.run_loop_exception
@@ -220,10 +235,10 @@ class AgentRuntime:
                 trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
                 return RolloutResult(status="answered", answer=str(stream.final_output), score=None, reflection=None, compactions=compactions, trace_path=str(trace_path))
 
-            compactor = Agent(name="rollout compactor", instructions=self.compaction_prompt, model=self.model, model_settings=self.settings)
-            compacted = await Runner.run(compactor, f"Compactions already completed for this rollout: {compactions}\n\n" + json.dumps(transcript, ensure_ascii=False), max_turns=1, run_config=RunConfig(reasoning_item_id_policy="preserve"))
+            compaction_input = transcript + [{"role": "user", "content": f"{self.compaction_prompt}\n\nCompactions already completed for this rollout: {compactions}"}]
+            compacted = await Runner.run(agent, compaction_input, max_turns=1, run_config=RunConfig(reasoning_item_id_policy="preserve"))
             if compacted.final_output is None:
-                raise RuntimeError("compactor ended without a handoff")
+                raise RuntimeError("main agent ended compaction without a handoff")
             compactions += 1
             trace["compactions"].append({
                 "index": compactions,
