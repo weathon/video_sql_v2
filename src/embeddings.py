@@ -120,11 +120,11 @@ def import_shards(database_path: Path, model: str, shard_dir: Path) -> None:
     for path in sorted(shard_dir.glob("text-*.npz")):
         shard = np.load(path)
         for table, row_id, vector in zip(shard["tables"], shard["row_ids"], shard["vectors"], strict=True):
-            connection.execute("INSERT INTO embeddings VALUES (?, ?, ?, ?, ?)", [str(table), str(row_id), "text", model, vector.tolist()])
+            connection.execute("INSERT OR REPLACE INTO embeddings VALUES (?, ?, ?, ?, ?)", [str(table), str(row_id), "text", model, vector.tolist()])
     for path in sorted(shard_dir.glob("video-*.npz")):
         shard = np.load(path)
         for row_id, vector in zip(shard["row_ids"], shard["vectors"], strict=True):
-            connection.execute("INSERT INTO embeddings VALUES (?, ?, ?, ?, ?)", ["video_clips", str(row_id), "video", model, vector.tolist()])
+            connection.execute("INSERT OR REPLACE INTO embeddings VALUES (?, ?, ?, ?, ?)", ["video_clips", str(row_id), "video", model, vector.tolist()])
     connection.execute("COMMIT")
     connection.execute("CHECKPOINT")
     connection.close()
