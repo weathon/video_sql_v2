@@ -5,8 +5,11 @@ requires-python = ">=3.12"
 dependencies = [
   "anyascii",
   "duckdb",
+  "faster-whisper==1.2.1",
   "httpx",
   "numpy",
+  "nvidia-cublas-cu12==12.8.3.14",
+  "nvidia-cudnn-cu12==9.7.1.26",
   "openai",
   "openai-agents",
   "pillow",
