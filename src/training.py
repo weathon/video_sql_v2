@@ -105,6 +105,10 @@ def trace_for_reflection(trace: dict) -> dict:
     }
 
 
+def serialize_judge_input(reference_answer: str, candidate_answer: str) -> str:
+    return json.dumps({"reference_answer": reference_answer, "candidate_answer": candidate_answer}, ensure_ascii=False)
+
+
 async def run_structured_agent(agent: Agent, agent_input: str, workflow_name: str, group_id: str, responses: list[dict]):
     corrected_input = agent_input
     for attempt in range(1, 4):
@@ -224,7 +228,7 @@ class PilotTrainer:
             judgment = None
             reflection = rollout.reflection
         else:
-            judge_input = json.dumps({"reference_answer": question["answer"], "candidate_answer": rollout.answer}, ensure_ascii=False)
+            judge_input = serialize_judge_input(question["answer"], rollout.answer)
             judge_result = await run_structured_agent(self.judge, judge_input, "pilot-judge", f"question-{question_id}-rollout-{rollout_index}", judge_responses)
             judgment = judge_result.final_output.model_dump(mode="json")
             score = judgment["score"]

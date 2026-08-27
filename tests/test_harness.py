@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import duckdb
@@ -78,6 +79,15 @@ def test_sql_search_notes_and_video(tmp_path, monkeypatch):
     for path in sampled["contact_sheets"]:
         with Image.open(path) as image:
             assert image.size == (1920, 900)
+    parallel_args = [
+        ("1", 0, 4, 2, 0, 1000, 0, 1000, True),
+        ("1", 0, 4, 4, 200, 800, 100, 900, False),
+    ]
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        parallel_samples = list(executor.map(lambda arguments: harness.sample_video(*arguments), parallel_args))
+    parallel_paths = [path for result in parallel_samples for path in result["contact_sheets"]]
+    assert len(parallel_paths) == len(set(parallel_paths))
+    assert all(Path(path).stat().st_size > 0 for path in parallel_paths)
     screenshots = harness.evidence_screenshots("1", [0.5, 2.5])
     assert len(screenshots) == 2
     assert all(Path(path).is_file() for path in screenshots)

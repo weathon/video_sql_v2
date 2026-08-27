@@ -11,7 +11,7 @@ import wandb
 
 from src.agent_runtime import AgentRuntime, ModelEndpoint, RolloutResult
 from src.harness import VideoSQLHarness
-from src.training import Judgment, MODEL, MODEL_CONTEXT_LIMIT, PILOT_COST_LIMIT_USD, ROOT, RUN_ROOT, run_structured_agent, usage_and_cost
+from src.training import Judgment, MODEL, MODEL_CONTEXT_LIMIT, PILOT_COST_LIMIT_USD, ROOT, RUN_ROOT, run_structured_agent, serialize_judge_input, usage_and_cost
 
 
 RETRYABLE_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError, ModelBehaviorError, MaxTurnsExceeded)
@@ -89,7 +89,7 @@ class PilotEvaluator:
             score = 0
             judgment = None
         else:
-            judge_input = json.dumps({"reference_answer": question["answer"], "candidate_answer": rollout.answer}, ensure_ascii=False)
+            judge_input = serialize_judge_input(question["answer"], rollout.answer)
             judge_result = await run_structured_agent(self.judge, judge_input, "pilot-validation-judge", f"{condition}-question-{question_id}", judge_responses)
             judgment = judge_result.final_output.model_dump(mode="json")
             score = judgment["score"]

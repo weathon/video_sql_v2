@@ -155,12 +155,14 @@ class AgentRuntime:
             nested_tool_traces.append(nested_trace)
             clip_stream = Runner.run_streamed(clip_agent, question, max_turns=50, run_config=RunConfig(reasoning_item_id_policy="preserve"))
             saved_clip_responses = 0
-            async for event in clip_stream.stream_events():
-                if event.type == "raw_response_event" and event.data.type == "response.completed":
-                    nested_trace["responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in clip_stream.raw_responses[saved_clip_responses:])
-                    saved_clip_responses = len(clip_stream.raw_responses)
-            nested_trace["responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in clip_stream.raw_responses[saved_clip_responses:])
-            nested_trace["transcript"] = normalize_trace(clip_stream.to_input_list(mode="normalized"))
+            try:
+                async for event in clip_stream.stream_events():
+                    if event.type == "raw_response_event" and event.data.type == "response.completed":
+                        nested_trace["responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in clip_stream.raw_responses[saved_clip_responses:])
+                        saved_clip_responses = len(clip_stream.raw_responses)
+            finally:
+                nested_trace["responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in clip_stream.raw_responses[saved_clip_responses:])
+                nested_trace["transcript"] = normalize_trace(clip_stream.to_input_list(mode="normalized"))
             if clip_stream.run_loop_exception:
                 raise clip_stream.run_loop_exception
             answer = clip_stream.final_output
@@ -205,23 +207,25 @@ class AgentRuntime:
             )
             saved_stream_responses = 0
             compact_after_turn = False
-            async for event in stream.stream_events():
-                if event.type != "raw_response_event" or event.data.type != "response.completed":
-                    continue
-                response = event.data.response
-                serialized = response.model_dump(mode="json")
-                trace["responses"].append(serialized)
-                trace["model_responses"].extend({"output": [item.model_dump(mode="json") for item in model_response.output], "usage": serialize_usage(model_response.usage), "response_id": model_response.response_id, "request_id": model_response.request_id, "raw_usage": model_response.raw_usage} for model_response in stream.raw_responses[saved_stream_responses:])
-                saved_stream_responses = len(stream.raw_responses)
+            try:
+                async for event in stream.stream_events():
+                    if event.type != "raw_response_event" or event.data.type != "response.completed":
+                        continue
+                    response = event.data.response
+                    serialized = response.model_dump(mode="json")
+                    trace["responses"].append(serialized)
+                    trace["model_responses"].extend({"output": [item.model_dump(mode="json") for item in model_response.output], "usage": serialize_usage(model_response.usage), "response_id": model_response.response_id, "request_id": model_response.request_id, "raw_usage": model_response.raw_usage} for model_response in stream.raw_responses[saved_stream_responses:])
+                    saved_stream_responses = len(stream.raw_responses)
+                    trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
+                    usage = response.usage
+                    remaining = self.context_limit - usage.input_tokens - usage.output_tokens
+                    has_tool_call = any(item.type == "function_call" for item in response.output)
+                    if enable_compaction and remaining <= 50_000 and has_tool_call:
+                        compact_after_turn = True
+                        stream.cancel(mode="after_turn")
+            finally:
+                trace["model_responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in stream.raw_responses[saved_stream_responses:])
                 trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
-                usage = response.usage
-                remaining = self.context_limit - usage.input_tokens - usage.output_tokens
-                has_tool_call = any(item.type == "function_call" for item in response.output)
-                if enable_compaction and remaining <= 50_000 and has_tool_call:
-                    compact_after_turn = True
-                    stream.cancel(mode="after_turn")
-            trace["model_responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in stream.raw_responses[saved_stream_responses:])
-            trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
             if stream.run_loop_exception:
                 raise stream.run_loop_exception
             transcript = normalize_trace(stream.to_input_list(mode="normalized"))

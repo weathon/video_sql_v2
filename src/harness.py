@@ -1,6 +1,7 @@
 import json
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
+from uuid import uuid4
 
 import duckdb
 import httpx
@@ -183,6 +184,7 @@ class VideoSQLHarness:
             raise RuntimeError(f"cached clips did not cover requested interval video={video_id} start={start_sec} end={end_sec}")
 
         pages = []
+        sample_id = uuid4().hex
         for page_index, page_start in enumerate(range(0, len(frames), 12)):
             page_frames = frames[page_start:page_start + 12]
             canvas = Image.new("RGB", (1920, 900), "black")
@@ -191,7 +193,7 @@ class VideoSQLHarness:
                 column, row = index % 4, index // 4
                 canvas.paste(image, (column * 480, row * 300))
                 draw.text((column * 480 + 8, row * 300 + 274), f"{timestamp:.3f}s", fill="white")
-            path = self.media_dir / f"sample-{video_id}-{start_sec:.3f}-{end_sec:.3f}-fps{fps:g}-crop{x1}-{x2}-{y1}-{y2}-caption{int(return_caption)}-p{page_index}.jpg"
+            path = self.media_dir / f"sample-{video_id}-{start_sec:.3f}-{end_sec:.3f}-fps{fps:g}-crop{x1}-{x2}-{y1}-{y2}-caption{int(return_caption)}-{sample_id}-p{page_index}.jpg"
             canvas.save(path)
             pages.append(str(path))
         return {"contact_sheets": pages, "frame_timestamps": timestamps, "captions": [{"start_sec": start, "end_sec": end, "text": text} for start, end, text in captions]}

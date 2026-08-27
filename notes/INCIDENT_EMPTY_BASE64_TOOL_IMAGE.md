@@ -10,7 +10,7 @@ Twenty-eight Pilot `clip_qa` calls failed with an OpenAI 400 error stating that 
 
 ## Fix
 
-- Contact-sheet filenames now include fps, all four crop coordinates, and the caption flag in addition to video ID, interval, and page number.
+- Contact-sheet filenames now include fps, all four crop coordinates, the caption flag, and a unique call ID in addition to video ID, interval, and page number.
 - Function tools use `failure_error_function=None`, so SDK and tool failures propagate as their real exceptions instead of becoming generic model-visible tool output.
 - Nested clip runs stream and record their responses, usage, and partial transcript before propagating a run failure.
 
