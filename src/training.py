@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import random
 import shutil
-import subprocess
 
 from agents import Agent, ModelSettings, OpenAIResponsesModel, RunConfig, Runner
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
@@ -51,8 +50,9 @@ class QuestionSummary(BaseModel):
     summary: str
 
 
-class SkillPatch(BaseModel):
-    patch: str
+class SkillUpdate(BaseModel):
+    skill_md: str
+    meta_skill_md: str
 
 
 def serialize_responses(result) -> list[dict]:
@@ -148,10 +148,10 @@ class PilotTrainer:
         )
         self.updater = Agent(
             name="pilot skill updater",
-            instructions="Update both SKILL.md and META-SKILL.md from the five question summaries. Return one standard git-style unified Linux patch with paths exactly a/SKILL.md, b/SKILL.md, a/META-SKILL.md, and b/META-SKILL.md. Touch no other path. Keep changes short and reusable; never encode question-specific answers.",
+            instructions="Update SKILL.md and META-SKILL.md from the five question summaries. Return the complete new content of both files in the structured fields skill_md and meta_skill_md. Change only what is needed: preserve all unchanged text verbatim and do not rewrite, reorganize, or broadly rephrase either file. Keep necessary changes short and reusable; never encode question-specific answers.",
             model=self.model,
             model_settings=self.settings,
-            output_type=SkillPatch,
+            output_type=SkillUpdate,
         )
         self.cumulative_cost = 0.0
         for path in list(RUN_ROOT.glob("train/question-*/rollout-*/result.json")) + list(RUN_ROOT.glob("train/question-*/summary.json")) + list(RUN_ROOT.glob("batches/batch-*/updater.json")):
@@ -317,15 +317,8 @@ class PilotTrainer:
                 continue
             if updater_path.exists():
                 updater_payload = json.loads(updater_path.read_text(encoding="utf-8"))
-                apply_check = subprocess.run(["patch", "-p1", "--batch", "--forward", "--dry-run"], cwd=skill_dir, input=updater_payload["applied_patch"], text=True, capture_output=True)
-                if apply_check.returncode == 0:
-                    applied = subprocess.run(["patch", "-p1", "--batch", "--forward"], cwd=skill_dir, input=updater_payload["applied_patch"], text=True, capture_output=True)
-                    if applied.returncode != 0:
-                        raise RuntimeError(f"validated saved skill patch failed during application batch={batch_index}: {applied.stdout}{applied.stderr}")
-                else:
-                    reverse_check = subprocess.run(["patch", "-p1", "--batch", "--reverse", "--forward", "--dry-run"], cwd=skill_dir, input=updater_payload["applied_patch"], text=True, capture_output=True)
-                    if reverse_check.returncode != 0:
-                        raise RuntimeError(f"saved updater patch is neither applicable nor already applied batch={batch_index}: {apply_check.stdout}{apply_check.stderr}{reverse_check.stdout}{reverse_check.stderr}")
+                skill_path.write_text(updater_payload["skill_md"], encoding="utf-8")
+                meta_skill_path.write_text(updater_payload["meta_skill_md"], encoding="utf-8")
                 batch_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(skill_path, snapshot_skill)
                 shutil.copyfile(meta_skill_path, snapshot_meta_skill)
@@ -380,36 +373,15 @@ class PilotTrainer:
                     return
 
             batch_dir.mkdir(parents=True, exist_ok=True)
-            updater_attempts = []
             updater_input = json.dumps({"current_skill": skill, "current_meta_skill": meta_skill, "question_summaries": [{"question_id": item["question_id"], "summary": item["summary"]} for item in batch_summaries]}, ensure_ascii=False)
-            for attempt in range(1, 4):
-                updater_responses = []
-                updater_result = await run_structured_agent(self.updater, updater_input, "pilot-skill-updater", f"batch-{batch_index}", updater_responses)
-                candidate_patch = updater_result.final_output.patch
-                updater_attempts.append({"attempt": attempt, "patch": candidate_patch, "responses": updater_responses})
-                headers = {line for line in candidate_patch.splitlines() if line.startswith("--- ") or line.startswith("+++ ")}
-                expected_headers = {"--- a/SKILL.md", "+++ b/SKILL.md", "--- a/META-SKILL.md", "+++ b/META-SKILL.md"}
-                if headers != expected_headers:
-                    error = f"patch headers must be exactly {sorted(expected_headers)}, received {sorted(headers)}"
-                else:
-                    dry_run = subprocess.run(["patch", "-p1", "--batch", "--dry-run"], cwd=skill_dir, input=candidate_patch, text=True, capture_output=True)
-                    if dry_run.returncode == 0:
-                        break
-                    error = dry_run.stdout + dry_run.stderr
-                print(f"updater_patch_retry batch={batch_index} attempt={attempt} error={error}")
-                if attempt == 3:
-                    raise RuntimeError(f"skill updater failed to produce an applicable allowlisted patch: {error}")
-                updater_input += f"\n\nThe previous patch was rejected with this exact error:\n{error}\nReturn a corrected complete patch."
-            all_updater_responses = [response for attempt_payload in updater_attempts for response in attempt_payload["responses"]]
-            updater_usage, updater_cost = usage_and_cost(all_updater_responses)
-            updater_payload = {"batch_index": batch_index, "question_ids": batch_ids, "attempts": updater_attempts, "applied_patch": candidate_patch, "patch_stdout": None, "usage": updater_usage, "cost_usd": updater_cost}
+            updater_responses = []
+            updater_result = await run_structured_agent(self.updater, updater_input, "pilot-skill-updater", f"batch-{batch_index}", updater_responses)
+            updater_usage, updater_cost = usage_and_cost(updater_responses)
+            updater_payload = {"batch_index": batch_index, "question_ids": batch_ids, "skill_md": updater_result.final_output.skill_md, "meta_skill_md": updater_result.final_output.meta_skill_md, "responses": updater_responses, "usage": updater_usage, "cost_usd": updater_cost}
             updater_path.write_text(json.dumps(updater_payload, ensure_ascii=False, indent=2), encoding="utf-8")
             self.cumulative_cost += updater_cost
-            applied = subprocess.run(["patch", "-p1", "--batch"], cwd=skill_dir, input=candidate_patch, text=True, capture_output=True)
-            if applied.returncode != 0:
-                raise RuntimeError(f"validated skill patch failed during application: {applied.stdout}{applied.stderr}")
-            updater_payload["patch_stdout"] = applied.stdout
-            updater_path.write_text(json.dumps(updater_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            skill_path.write_text(updater_payload["skill_md"], encoding="utf-8")
+            meta_skill_path.write_text(updater_payload["meta_skill_md"], encoding="utf-8")
             shutil.copyfile(skill_path, snapshot_skill)
             shutil.copyfile(meta_skill_path, snapshot_meta_skill)
             self.wandb_run.log({"pilot/batch_mean_score": sum(batch_scores) / len(batch_scores), "pilot/batch_index": batch_index, "pilot/cumulative_cost_usd": self.cumulative_cost})
