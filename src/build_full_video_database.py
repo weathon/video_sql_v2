@@ -12,6 +12,7 @@ def build_full_video_database(dataset_root: Path, database_path: Path, clip_dir:
     month_train = read_json(dataset_root / "month" / "train.json")
     month_val = read_json(dataset_root / "month" / "val.json")
     month_offsets = derive_offsets([("month_train", month_train), ("month_val", month_val)])
+    month_offsets["2"] = 42900.0
 
     week_questions = read_json(dataset_root / "week" / "test.json")
     week_offset_candidates: dict[str, set[float]] = {}
