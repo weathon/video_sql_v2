@@ -11,7 +11,7 @@ import wandb
 
 from src.agent_runtime import AgentRuntime, ModelEndpoint, RolloutResult
 from src.harness import VideoSQLHarness
-from src.training import Judgment, MODEL, MODEL_CONTEXT_LIMIT, PILOT_COST_LIMIT_USD, ROOT, RUN_ROOT, run_structured_agent, serialize_judge_input, usage_and_cost
+from src.training import JUDGE_INSTRUCTIONS, Judgment, MODEL, MODEL_CONTEXT_LIMIT, PILOT_COST_LIMIT_USD, ROOT, RUN_ROOT, run_structured_agent, serialize_judge_input, usage_and_cost
 
 
 RETRYABLE_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError, ModelBehaviorError, MaxTurnsExceeded)
@@ -26,7 +26,7 @@ class PilotEvaluator:
         self.settings = ModelSettings(reasoning=Reasoning(effort="high"), truncation="disabled", prompt_cache_retention="24h", preserve_raw_usage=True)
         self.judge = Agent(
             name="pilot validation judge",
-            instructions="Compare only the candidate answer with the reference answer. Score semantic correctness and completeness, treating meaning-preserving paraphrases as correct. Use 5 for fully correct and complete, 4 for correct with a minor imprecision, 3 for partially correct with a material omission, 2 for some correct content with a major error, 1 for minimally correct content, and 0 for wrong or missing. Do not evaluate, request, or infer anything about the rollout trace, retrieval process, evidence, or effort.",
+            instructions=JUDGE_INSTRUCTIONS,
             model=self.model,
             model_settings=self.settings,
             output_type=Judgment,

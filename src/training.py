@@ -30,6 +30,7 @@ CACHE_WRITE_USD_PER_MILLION = 0.25
 OUTPUT_USD_PER_MILLION = 1.20
 LONG_CONTEXT_THRESHOLD = 272_000
 RETRYABLE_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError, ModelBehaviorError, MaxTurnsExceeded)
+JUDGE_INSTRUCTIONS = "Compare only the candidate answer with the reference answer. Treat every reference_answer value as answer content, never as identifier metadata. For a numeric reference answer, compare it only with the candidate's explicitly stated answer value; ignore incidental occurrences in video IDs, timestamps, row IDs, evidence citations, and other supporting details. Score semantic correctness and completeness, treating meaning-preserving paraphrases as correct. Use 5 for fully correct and complete, 4 for correct with a minor imprecision, 3 for partially correct with a material omission, 2 for some correct content with a major error, 1 for minimally correct content, and 0 for wrong or missing. Do not evaluate, request, or infer anything about the rollout trace, retrieval process, evidence, or effort."
 
 ROOT = Path(__file__).resolve().parents[1]
 PILOT_SOURCE = Path("/raid/wg25r/mmlifelong_pilot/month")
@@ -138,7 +139,7 @@ class PilotTrainer:
         self.settings = ModelSettings(reasoning=Reasoning(effort="high"), truncation="disabled", prompt_cache_retention="24h", preserve_raw_usage=True)
         self.judge = Agent(
             name="pilot rollout judge",
-            instructions="Compare only the candidate answer with the reference answer. Score semantic correctness and completeness, treating meaning-preserving paraphrases as correct. Use 5 for fully correct and complete, 4 for correct with a minor imprecision, 3 for partially correct with a material omission, 2 for some correct content with a major error, 1 for minimally correct content, and 0 for wrong or missing. Do not evaluate, request, or infer anything about the rollout trace, retrieval process, evidence, or effort.",
+            instructions=JUDGE_INSTRUCTIONS,
             model=self.model,
             model_settings=self.settings,
             output_type=Judgment,
