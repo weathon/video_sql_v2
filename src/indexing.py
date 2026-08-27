@@ -81,7 +81,7 @@ def build_database(pilot_root: Path, database_path: Path) -> None:
         offset = offsets[path.stem]
         connection.execute(
             "INSERT INTO videos VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [path.stem, sequence_index, "month", str(path), duration, interval_at(offset, 0), interval_at(offset, duration)],
+            [path.stem, sequence_index, "month", path.name, duration, interval_at(offset, 0), interval_at(offset, duration)],
         )
         clip_index = 0
         start = 0.0
@@ -93,21 +93,6 @@ def build_database(pilot_root: Path, database_path: Path) -> None:
             )
             clip_index += 1
             start = end
-
-    for split, questions in question_sets:
-        for question in questions:
-            question_id = int(question["index"])
-            connection.execute(
-                "INSERT INTO questions VALUES (?, ?, ?, ?, ?, ?)",
-                [question_id, split, normalize_text(question["question"]), normalize_text(question["answer"]), normalize_text(question["question_type"]), normalize_text(question["temporal_certificate"])],
-            )
-            for clue_order, clue in enumerate(question["clue_interval"]):
-                video_id = str(clue["video_id"])
-                for interval_order, (start, end) in enumerate(clue["intervals"]):
-                    connection.execute(
-                        "INSERT INTO question_clues VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        [question_id, video_id, clue_order, interval_order, start, end, interval_at(offsets[video_id], start), interval_at(offsets[video_id], end)],
-                    )
 
     artifact_root = pilot_root / "artifacts" / "mmlifelong"
     caption_granularities = {"30sec": 30, "3min": 180, "10min": 600, "1h": 3600}

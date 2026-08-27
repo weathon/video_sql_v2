@@ -14,20 +14,20 @@ def test_ffmpeg_builds_verified_resumable_discrete_clip_cache(tmp_path):
         raise RuntimeError(f"test video creation failed: {result.stderr}")
     database_path = tmp_path / "cache.duckdb"
     connection = duckdb.connect(str(database_path))
-    connection.execute("CREATE TABLE videos(video_id VARCHAR, video_path VARCHAR, sequence_index INTEGER, duration_sec DOUBLE, global_start INTERVAL)")
+    connection.execute("CREATE TABLE videos(video_id VARCHAR, filename VARCHAR, sequence_index INTEGER, duration_sec DOUBLE, global_start INTERVAL)")
     connection.execute("CREATE TABLE video_clips(row_id VARCHAR, video_id VARCHAR, start_sec DOUBLE, end_sec DOUBLE, global_start INTERVAL, global_end INTERVAL)")
-    connection.execute("INSERT INTO videos VALUES ('1', ?, 0, 34, INTERVAL 0 SECOND)", [str(source_path)])
+    connection.execute("INSERT INTO videos VALUES ('1', ?, 0, 34, INTERVAL 0 SECOND)", [source_path.name])
     connection.execute("INSERT INTO video_clips VALUES ('1:video_clips:0', '1', 0, 30, INTERVAL 0 SECOND, INTERVAL 30 SECOND), ('1:video_clips:1', '1', 30, 34, INTERVAL 30 SECOND, INTERVAL 34 SECOND)")
     connection.close()
     clip_dir = tmp_path / "clips"
-    cache_video_clips(database_path, clip_dir)
+    cache_video_clips(database_path, tmp_path, clip_dir)
     clip_path = clip_dir / "1" / "000000.mp4"
     second_clip_path = clip_dir / "1" / "000001.mp4"
     assert clip_path.is_file()
     assert clip_path.stat().st_size > 0
     assert second_clip_path.is_file()
     second_clip_path.unlink()
-    cache_video_clips(database_path, clip_dir)
+    cache_video_clips(database_path, tmp_path, clip_dir)
     assert second_clip_path.is_file()
     assert second_clip_path.stat().st_size > 0
 
@@ -39,12 +39,12 @@ def test_cache_uses_actual_keyframe_aligned_boundaries(tmp_path):
         raise RuntimeError(f"test video creation failed: {result.stderr}")
     database_path = tmp_path / "variable.duckdb"
     connection = duckdb.connect(str(database_path))
-    connection.execute("CREATE TABLE videos(video_id VARCHAR, video_path VARCHAR, sequence_index INTEGER, duration_sec DOUBLE, global_start INTERVAL)")
+    connection.execute("CREATE TABLE videos(video_id VARCHAR, filename VARCHAR, sequence_index INTEGER, duration_sec DOUBLE, global_start INTERVAL)")
     connection.execute("CREATE TABLE video_clips(row_id VARCHAR, video_id VARCHAR, start_sec DOUBLE, end_sec DOUBLE, global_start INTERVAL, global_end INTERVAL)")
-    connection.execute("INSERT INTO videos VALUES ('1', ?, 0, 64, INTERVAL 100 SECOND)", [str(source_path)])
+    connection.execute("INSERT INTO videos VALUES ('1', ?, 0, 64, INTERVAL 100 SECOND)", [source_path.name])
     connection.execute("INSERT INTO video_clips VALUES ('1:video_clips:0', '1', 0, 30, INTERVAL 100 SECOND, INTERVAL 130 SECOND), ('1:video_clips:1', '1', 30, 60, INTERVAL 130 SECOND, INTERVAL 160 SECOND), ('1:video_clips:2', '1', 60, 64, INTERVAL 160 SECOND, INTERVAL 164 SECOND)")
     connection.close()
-    cache_video_clips(database_path, tmp_path / "clips")
+    cache_video_clips(database_path, tmp_path, tmp_path / "clips")
     connection = duckdb.connect(str(database_path), read_only=True)
     boundaries = connection.execute("SELECT start_sec, end_sec, epoch(global_start), epoch(global_end) FROM video_clips ORDER BY row_id").fetchall()
     connection.close()

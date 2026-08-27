@@ -11,7 +11,10 @@ def test_schema_tables(tmp_path):
     connection.close()
     assert tables == {
         "activities", "asr_segments", "captions", "entities",
-        "episodic_triples", "event_chains", "event_steps", "question_clues",
-        "questions", "semantic_triples", "topic_chains", "topic_facts",
+        "episodic_triples", "event_chains", "event_steps", "semantic_triples",
+        "topic_chains", "topic_facts",
         "video_clips", "videos",
     }
+    schema = Path("src/schema.sql").read_text(encoding="utf-8")
+    assert "answer" not in schema
+    assert "question_clues" not in schema

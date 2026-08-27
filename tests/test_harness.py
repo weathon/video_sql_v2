@@ -20,7 +20,7 @@ class EmbeddingResponse:
 def create_database(path: Path, video_path: Path):
     connection = duckdb.connect(str(path))
     connection.execute(Path("src/schema.sql").read_text(encoding="utf-8"))
-    connection.execute("INSERT INTO videos VALUES ('1', 0, 'test', ?, 4.0, INTERVAL 0 SECOND, INTERVAL 4 SECOND)", [str(video_path)])
+    connection.execute("INSERT INTO videos VALUES ('1', 0, 'test', ?, 4.0, INTERVAL 0 SECOND, INTERVAL 4 SECOND)", [video_path.name])
     connection.execute("INSERT INTO captions VALUES ('c1', '1', 'merged', 30, 0, 4, INTERVAL 0 SECOND, INTERVAL 4 SECOND, 'alpha memory')")
     connection.execute("INSERT INTO video_clips VALUES ('1:video_clips:0', '1', 0, 4, INTERVAL 0 SECOND, INTERVAL 4 SECOND)")
     connection.close()
