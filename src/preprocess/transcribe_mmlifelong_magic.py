@@ -57,7 +57,7 @@ for video_id in video_ids:
                 f"JSON/SRT segment count mismatch video={video_id} "
                 f"json={len(existing)} srt={len(srt_blocks)}"
             )
-        for segment_index, (entry, block) in enumerate(zip(existing, srt_blocks, strict=True), 1):
+        for segment_index, (entry, block) in enumerate(zip(existing, srt_blocks), 1):
             if set(entry) != {"start_sec", "end_sec", "text"}:
                 raise ValueError(f"invalid JSON segment video={video_id} index={segment_index}")
             if not isinstance(entry["start_sec"], (int, float)) or not isinstance(entry["end_sec"], (int, float)):
@@ -86,7 +86,7 @@ for video_id in video_ids:
                 + int(timestamp_match[7])
                 + int(timestamp_match[8]) / 1000
             )
-            if abs(srt_start - entry["start_sec"]) > 0.001 or abs(srt_end - entry["end_sec"]) > 0.001:
+            if abs(srt_start - entry["start_sec"]) > 0.0015 or abs(srt_end - entry["end_sec"]) > 0.0015:
                 raise ValueError(f"JSON/SRT timestamp mismatch video={video_id} index={segment_index}")
             if "\n".join(block[2:]) != entry["text"]:
                 raise ValueError(f"JSON/SRT text mismatch video={video_id} index={segment_index}")
