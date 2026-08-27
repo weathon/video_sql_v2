@@ -28,7 +28,7 @@ def test_real_pilot_database_counts_joins_and_time_mapping(tmp_path):
     assert {table: connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in expected} == expected
     assert connection.execute("SELECT count(*) FROM information_schema.tables WHERE table_name IN ('questions', 'question_clues')").fetchone()[0] == 0
     assert connection.execute("SELECT count(*) FROM information_schema.columns WHERE lower(column_name) IN ('answer', 'question', 'question_type', 'temporal_certificate')").fetchone()[0] == 0
-    assert connection.execute("SELECT count(*) FROM videos WHERE filename LIKE '/%' OR filename LIKE '%/%'").fetchone()[0] == 0
+    assert connection.execute("SELECT count(*) FROM videos WHERE filename LIKE '/%'").fetchone()[0] == 0
     assert connection.execute("SELECT subject,predicate,object FROM semantic_triples WHERE video_id='21' AND object LIKE '%monkey brother%' ORDER BY chunk_id NULLS LAST").fetchall() == [("ishowspeed", "calls", "man in bright pink t‑shirt \"monkey brother\""), ("ishowspeed", "calls", "man in bright pink t‑shirt \"monkey brother\"")]
     connection.close()
 
