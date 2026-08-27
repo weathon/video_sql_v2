@@ -191,7 +191,7 @@ class PilotTrainer:
                 raise ValueError(f"unknown saved rollout status: {existing_trace['status']}")
             break
         if rollout is None:
-            attempt_dirs = list(rollout_dir.glob("attempt-*"))
+            attempt_dirs = [path for path in rollout_dir.glob("attempt-*") if (path / "trace.json").exists() or (path / "error.json").exists()]
             next_attempt = max(int(path.name.removeprefix("attempt-")) for path in attempt_dirs) + 1 if attempt_dirs else 1
             if next_attempt > 3:
                 raise RuntimeError(f"rollout retries exhausted before resume question_id={question_id} rollout={rollout_index}")
