@@ -235,7 +235,7 @@ class PilotTrainer:
                 model_settings=self.settings,
                 output_type=Reflection,
             )
-            reflection_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "judgment": judgment, "rollout_trace": trace}, ensure_ascii=False)
+            reflection_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "judgment": judgment, "rollout_trace": trace_for_judge(trace)}, ensure_ascii=False)
             reflection_result = await run_structured_agent(reflection_agent, reflection_input, "pilot-reflection", f"question-{question_id}-rollout-{rollout_index}", reflection_responses)
             reflection = reflection_result.final_output.model_dump(mode="json")
         responses = []
