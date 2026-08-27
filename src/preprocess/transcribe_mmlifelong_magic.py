@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -49,6 +50,46 @@ for video_id in video_ids:
             existing = json.load(handle)
         if not isinstance(existing, list):
             raise TypeError(f"expected list in {json_path}")
+        with srt_path.open(encoding="utf-8") as handle:
+            srt_blocks = [block.splitlines() for block in handle.read().strip().split("\n\n") if block.strip()]
+        if len(srt_blocks) != len(existing):
+            raise ValueError(
+                f"JSON/SRT segment count mismatch video={video_id} "
+                f"json={len(existing)} srt={len(srt_blocks)}"
+            )
+        for segment_index, (entry, block) in enumerate(zip(existing, srt_blocks, strict=True), 1):
+            if set(entry) != {"start_sec", "end_sec", "text"}:
+                raise ValueError(f"invalid JSON segment video={video_id} index={segment_index}")
+            if not isinstance(entry["start_sec"], (int, float)) or not isinstance(entry["end_sec"], (int, float)):
+                raise TypeError(f"invalid timestamps video={video_id} index={segment_index}")
+            if entry["start_sec"] < 0 or entry["end_sec"] < entry["start_sec"]:
+                raise ValueError(f"invalid timestamp range video={video_id} index={segment_index}")
+            if not isinstance(entry["text"], str):
+                raise TypeError(f"invalid text video={video_id} index={segment_index}")
+            if len(block) < 3 or block[0] != str(segment_index):
+                raise ValueError(f"invalid SRT block video={video_id} index={segment_index}")
+            timestamp_match = re.fullmatch(
+                r"(\d{2}):(\d{2}):(\d{2}),(\d{3}) --> (\d{2}):(\d{2}):(\d{2}),(\d{3})",
+                block[1],
+            )
+            if timestamp_match is None:
+                raise ValueError(f"invalid SRT timestamp video={video_id} index={segment_index}")
+            srt_start = (
+                int(timestamp_match[1]) * 3600
+                + int(timestamp_match[2]) * 60
+                + int(timestamp_match[3])
+                + int(timestamp_match[4]) / 1000
+            )
+            srt_end = (
+                int(timestamp_match[5]) * 3600
+                + int(timestamp_match[6]) * 60
+                + int(timestamp_match[7])
+                + int(timestamp_match[8]) / 1000
+            )
+            if abs(srt_start - entry["start_sec"]) > 0.001 or abs(srt_end - entry["end_sec"]) > 0.001:
+                raise ValueError(f"JSON/SRT timestamp mismatch video={video_id} index={segment_index}")
+            if "\n".join(block[2:]) != entry["text"]:
+                raise ValueError(f"JSON/SRT text mismatch video={video_id} index={segment_index}")
         completed_videos += 1
         completed_segments += len(existing)
         print(f"skip_complete video={video_id} segments={len(existing)}", flush=True)
@@ -114,10 +155,10 @@ for video_id in video_ids:
     video_elapsed = time.monotonic() - video_started
     completed_videos += 1
     completed_segments += len(results)
-    realtime_factor = info.duration / video_elapsed
+    realtime_speed = info.duration / video_elapsed
     print(
         f"transcribe_complete video={video_id} segments={len(results)} "
-        f"elapsed={video_elapsed:.3f} realtime_factor={realtime_factor:.3f} "
+        f"elapsed={video_elapsed:.3f} realtime_speed={realtime_speed:.3f} "
         f"json={json_path} srt={srt_path}",
         flush=True,
     )
@@ -128,7 +169,7 @@ for video_id in video_ids:
         "last_video_audio_hours": info.duration / 3600,
         "last_video_speech_hours": info.duration_after_vad / 3600,
         "last_video_elapsed_seconds": video_elapsed,
-        "last_video_realtime_factor": realtime_factor,
+        "last_video_realtime_speed": realtime_speed,
     })
 
 job_elapsed = time.monotonic() - job_started
