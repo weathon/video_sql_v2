@@ -50,7 +50,7 @@ def build_full_video_database(dataset_root: Path, database_path: Path, clip_dir:
     for path in month_paths:
         duration = video_duration(path)
         offset = month_offsets[path.stem]
-        video_rows.append([path.stem, len(video_rows), "month", str(path), duration, interval_at(offset, 0), interval_at(offset, duration)])
+        video_rows.append([path.stem, len(video_rows), "month", path.relative_to(dataset_root / "videos").as_posix(), duration, interval_at(offset, 0), interval_at(offset, duration)])
         start = 0.0
         clip_index = 0
         while start < duration:
@@ -62,7 +62,7 @@ def build_full_video_database(dataset_root: Path, database_path: Path, clip_dir:
     for path in day_paths:
         video_duration(path)
         duration = 84910.8140625
-        video_rows.append([path.stem, len(video_rows), "day", str(path), duration, interval_at(0, 0), interval_at(0, duration)])
+        video_rows.append([path.stem, len(video_rows), "day", path.relative_to(dataset_root / "videos").as_posix(), duration, interval_at(0, 0), interval_at(0, duration)])
         start = 0.0
         clip_index = 0
         while start < duration:
@@ -96,7 +96,7 @@ def build_full_video_database(dataset_root: Path, database_path: Path, clip_dir:
             clip_rows.append([f"{video_id}:video_clips:{clip_index}", video_id, start, end, interval_at(offset, start), interval_at(offset, end)])
             start = end
             week_link_count += 1
-        video_rows.append([video_id, len(video_rows), "week", str(day_dir), start, interval_at(offset, 0), interval_at(offset, start)])
+        video_rows.append([video_id, len(video_rows), "week", day_dir.relative_to(dataset_root / "videos").as_posix(), start, interval_at(offset, 0), interval_at(offset, start)])
 
     database_path.parent.mkdir(parents=True, exist_ok=True)
     if database_path.exists():

@@ -2,28 +2,8 @@ CREATE TABLE videos (
     video_id VARCHAR PRIMARY KEY,
     sequence_index INTEGER NOT NULL,
     source_split VARCHAR NOT NULL,
-    video_path VARCHAR NOT NULL,
+    filename VARCHAR NOT NULL,
     duration_sec DOUBLE NOT NULL,
-    global_start INTERVAL NOT NULL,
-    global_end INTERVAL NOT NULL
-);
-
-CREATE TABLE questions (
-    question_id BIGINT PRIMARY KEY,
-    source_split VARCHAR NOT NULL,
-    question VARCHAR NOT NULL,
-    answer VARCHAR NOT NULL,
-    question_type VARCHAR NOT NULL,
-    temporal_certificate VARCHAR NOT NULL
-);
-
-CREATE TABLE question_clues (
-    question_id BIGINT NOT NULL,
-    video_id VARCHAR NOT NULL,
-    clue_order INTEGER NOT NULL,
-    interval_order INTEGER NOT NULL,
-    start_sec DOUBLE NOT NULL,
-    end_sec DOUBLE NOT NULL,
     global_start INTERVAL NOT NULL,
     global_end INTERVAL NOT NULL
 );
@@ -141,8 +121,6 @@ CREATE TABLE video_clips (
     global_end INTERVAL NOT NULL
 );
 
-CREATE INDEX question_clues_question_idx ON question_clues(question_id);
-CREATE INDEX question_clues_video_idx ON question_clues(video_id, start_sec);
 CREATE INDEX asr_video_time_idx ON asr_segments(video_id, start_sec);
 CREATE INDEX captions_video_time_idx ON captions(video_id, start_sec);
 CREATE INDEX episodic_video_time_idx ON episodic_triples(video_id, start_sec);

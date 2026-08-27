@@ -7,10 +7,11 @@ import duckdb
 from torchcodec.decoders import VideoDecoder
 
 
-def cache_video_clips(database_path: Path, clip_dir: Path) -> None:
+def cache_video_clips(database_path: Path, video_root: Path, clip_dir: Path) -> None:
     connection = duckdb.connect(str(database_path))
-    videos = connection.execute("SELECT video_id, video_path, duration_sec, global_start FROM videos ORDER BY sequence_index").fetchall()
-    for video_id, video_path, video_duration, video_global_start in videos:
+    videos = connection.execute("SELECT video_id, filename, duration_sec, global_start FROM videos ORDER BY sequence_index").fetchall()
+    for video_id, filename, video_duration, video_global_start in videos:
+        video_path = video_root / filename
         clips = connection.execute("SELECT row_id, start_sec, end_sec FROM video_clips WHERE video_id = ? ORDER BY start_sec", [video_id]).fetchall()
         video_clip_dir = clip_dir / video_id
         video_clip_dir.mkdir(parents=True, exist_ok=True)
@@ -35,7 +36,7 @@ def cache_video_clips(database_path: Path, clip_dir: Path) -> None:
             if start_index:
                 command.extend(["-ss", str(sum(clip_durations))])
             command.extend([
-                "-i", video_path, "-map", "0:v:0", "-an", "-c:v", "copy",
+                "-i", str(video_path), "-map", "0:v:0", "-an", "-c:v", "copy",
                 "-f", "segment", "-segment_time", "30", "-reset_timestamps", "1",
                 "-segment_start_number", str(start_index),
                 str(output_pattern),
@@ -84,6 +85,7 @@ def cache_video_clips(database_path: Path, clip_dir: Path) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument("--video-root", type=Path, required=True)
     parser.add_argument("--clip-dir", type=Path, required=True)
     arguments = parser.parse_args()
-    cache_video_clips(arguments.database, arguments.clip_dir)
+    cache_video_clips(arguments.database, arguments.video_root, arguments.clip_dir)
