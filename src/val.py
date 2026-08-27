@@ -9,9 +9,9 @@ from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalSer
 from openai.types.shared import Reasoning
 import wandb
 
-from src.agent_runtime import AgentRuntime, ModelEndpoint
+from src.agent_runtime import AgentRuntime, ModelEndpoint, RolloutResult
 from src.harness import VideoSQLHarness
-from src.training import Judgment, MODEL, MODEL_CONTEXT_LIMIT, PILOT_COST_LIMIT_USD, ROOT, RUN_ROOT, run_structured_agent, usage_and_cost
+from src.training import Judgment, MODEL, MODEL_CONTEXT_LIMIT, PILOT_COST_LIMIT_USD, ROOT, RUN_ROOT, run_structured_agent, trace_for_judge, usage_and_cost
 
 
 RETRYABLE_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError, ModelBehaviorError, MaxTurnsExceeded)
@@ -46,34 +46,47 @@ class PilotEvaluator:
             payload["new_result"] = False
             return payload
         question_dir.mkdir(parents=True, exist_ok=True)
-        for attempt in range(1, 4):
-            attempt_dir = question_dir / f"attempt-{attempt}"
-            harness = VideoSQLHarness(
-                ROOT / "data" / "pilot.duckdb",
-                "http://127.0.0.1:8012/v1/embeddings",
-                "qwen3-vl-embedding-8b",
-                ROOT / "data" / "embedding_index",
-                ROOT / "data" / "video_clips",
-                attempt_dir / "media",
-                attempt_dir / "notes.json",
-            )
-            runtime = AgentRuntime(harness, self.endpoint, self.client, MODEL_CONTEXT_LIMIT, ROOT / "prompts" / "COMPACTION.md", ROOT / "prompts" / "REFLECTION_FINAL.md")
-            try:
-                rollout = await runtime.run_rollout(question["question"], skill, attempt_dir / "trace.json", True)
-                break
-            except RETRYABLE_ERRORS as error:
-                attempt_dir.mkdir(parents=True, exist_ok=True)
-                (attempt_dir / "error.json").write_text(json.dumps({"type": type(error).__name__, "message": str(error)}, ensure_ascii=False, indent=2), encoding="utf-8")
-                print(f"validation_rollout_retry condition={condition} question_id={question_id} attempt={attempt} error={type(error).__name__}: {error}")
-                if attempt == 3:
-                    raise
+        rollout = None
+        for existing_trace_path in sorted(question_dir.glob("attempt-*/trace.json"), reverse=True):
+            existing_trace = json.loads(existing_trace_path.read_text(encoding="utf-8"))
+            if "status" not in existing_trace:
+                continue
+            if existing_trace["status"] == "answered":
+                rollout = RolloutResult(status="answered", answer=existing_trace["answer"], score=None, reflection=None, compactions=len(existing_trace["compactions"]), trace_path=str(existing_trace_path))
+            elif existing_trace["status"] == "compaction_limit":
+                rollout = RolloutResult(status="compaction_limit", answer=None, score=0, reflection=existing_trace["reflection"], compactions=len(existing_trace["compactions"]), trace_path=str(existing_trace_path))
+            else:
+                raise ValueError(f"unknown saved rollout status: {existing_trace['status']}")
+            break
+        if rollout is None:
+            for attempt in range(1, 4):
+                attempt_dir = question_dir / f"attempt-{attempt}"
+                harness = VideoSQLHarness(
+                    ROOT / "data" / "pilot.duckdb",
+                    "http://127.0.0.1:8012/v1/embeddings",
+                    "qwen3-vl-embedding-8b",
+                    ROOT / "data" / "embedding_index",
+                    ROOT / "data" / "video_clips",
+                    attempt_dir / "media",
+                    attempt_dir / "notes.json",
+                )
+                runtime = AgentRuntime(harness, self.endpoint, self.client, MODEL_CONTEXT_LIMIT, ROOT / "prompts" / "COMPACTION.md", ROOT / "prompts" / "REFLECTION_FINAL.md")
+                try:
+                    rollout = await runtime.run_rollout(question["question"], skill, attempt_dir / "trace.json", True)
+                    break
+                except RETRYABLE_ERRORS as error:
+                    attempt_dir.mkdir(parents=True, exist_ok=True)
+                    (attempt_dir / "error.json").write_text(json.dumps({"type": type(error).__name__, "message": str(error)}, ensure_ascii=False, indent=2), encoding="utf-8")
+                    print(f"validation_rollout_retry condition={condition} question_id={question_id} attempt={attempt} error={type(error).__name__}: {error}")
+                    if attempt == 3:
+                        raise
         trace = json.loads(Path(rollout.trace_path).read_text(encoding="utf-8"))
         judge_responses = []
         if rollout.status == "compaction_limit":
             score = 0
             judgment = None
         else:
-            judge_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "rollout_trace": trace}, ensure_ascii=False)
+            judge_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "rollout_trace": trace_for_judge(trace)}, ensure_ascii=False)
             judge_result = await run_structured_agent(self.judge, judge_input, "pilot-validation-judge", f"{condition}-question-{question_id}", judge_responses)
             judgment = judge_result.final_output.model_dump(mode="json")
             score = judgment["score"]

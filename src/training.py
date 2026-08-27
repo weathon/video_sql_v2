@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 import wandb
 from wandb.sdk.lib.runid import generate_id
 
-from src.agent_runtime import AgentRuntime, ModelEndpoint, serialize_usage
+from src.agent_runtime import AgentRuntime, ModelEndpoint, RolloutResult, serialize_usage
 from src.harness import VideoSQLHarness
 from src.splits import graph_partition
 
@@ -95,6 +95,17 @@ def usage_and_cost(responses: list[dict]) -> tuple[dict, float]:
     return totals, cost
 
 
+def trace_for_judge(trace: dict) -> dict:
+    return {
+        "question": trace["question"],
+        "status": trace["status"],
+        "answer": trace["answer"],
+        "turns": trace["turns"],
+        "nested_tool_traces": [{"tool": item["tool"], "input": item["input"], "transcript": item["transcript"]} for item in trace["nested_tool_traces"]],
+        "compactions": [{"index": item["index"], "handoff": item["handoff"]} for item in trace["compactions"]],
+    }
+
+
 async def run_structured_agent(agent: Agent, agent_input: str, workflow_name: str, group_id: str, responses: list[dict]):
     corrected_input = agent_input
     for attempt in range(1, 4):
@@ -167,27 +178,40 @@ class PilotTrainer:
             return payload
         rollout_dir.mkdir(parents=True, exist_ok=True)
 
-        for attempt in range(1, 4):
-            attempt_dir = rollout_dir / f"attempt-{attempt}"
-            harness = VideoSQLHarness(
-                ROOT / "data" / "pilot.duckdb",
-                "http://127.0.0.1:8012/v1/embeddings",
-                "qwen3-vl-embedding-8b",
-                ROOT / "data" / "embedding_index",
-                ROOT / "data" / "video_clips",
-                attempt_dir / "media",
-                attempt_dir / "notes.json",
-            )
-            runtime = AgentRuntime(harness, self.endpoint, self.client, MODEL_CONTEXT_LIMIT, ROOT / "prompts" / "COMPACTION.md", ROOT / "prompts" / "REFLECTION_FINAL.md")
-            try:
-                rollout = await runtime.run_rollout(question["question"], skill, attempt_dir / "trace.json", True)
-                break
-            except RETRYABLE_ERRORS as error:
-                attempt_dir.mkdir(parents=True, exist_ok=True)
-                (attempt_dir / "error.json").write_text(json.dumps({"type": type(error).__name__, "message": str(error)}, ensure_ascii=False, indent=2), encoding="utf-8")
-                print(f"rollout_retry question_id={question_id} rollout={rollout_index} attempt={attempt} error={type(error).__name__}: {error}")
-                if attempt == 3:
-                    raise
+        rollout = None
+        for existing_trace_path in sorted(rollout_dir.glob("attempt-*/trace.json"), reverse=True):
+            existing_trace = json.loads(existing_trace_path.read_text(encoding="utf-8"))
+            if "status" not in existing_trace:
+                continue
+            if existing_trace["status"] == "answered":
+                rollout = RolloutResult(status="answered", answer=existing_trace["answer"], score=None, reflection=None, compactions=len(existing_trace["compactions"]), trace_path=str(existing_trace_path))
+            elif existing_trace["status"] == "compaction_limit":
+                rollout = RolloutResult(status="compaction_limit", answer=None, score=0, reflection=existing_trace["reflection"], compactions=len(existing_trace["compactions"]), trace_path=str(existing_trace_path))
+            else:
+                raise ValueError(f"unknown saved rollout status: {existing_trace['status']}")
+            break
+        if rollout is None:
+            for attempt in range(1, 4):
+                attempt_dir = rollout_dir / f"attempt-{attempt}"
+                harness = VideoSQLHarness(
+                    ROOT / "data" / "pilot.duckdb",
+                    "http://127.0.0.1:8012/v1/embeddings",
+                    "qwen3-vl-embedding-8b",
+                    ROOT / "data" / "embedding_index",
+                    ROOT / "data" / "video_clips",
+                    attempt_dir / "media",
+                    attempt_dir / "notes.json",
+                )
+                runtime = AgentRuntime(harness, self.endpoint, self.client, MODEL_CONTEXT_LIMIT, ROOT / "prompts" / "COMPACTION.md", ROOT / "prompts" / "REFLECTION_FINAL.md")
+                try:
+                    rollout = await runtime.run_rollout(question["question"], skill, attempt_dir / "trace.json", True)
+                    break
+                except RETRYABLE_ERRORS as error:
+                    attempt_dir.mkdir(parents=True, exist_ok=True)
+                    (attempt_dir / "error.json").write_text(json.dumps({"type": type(error).__name__, "message": str(error)}, ensure_ascii=False, indent=2), encoding="utf-8")
+                    print(f"rollout_retry question_id={question_id} rollout={rollout_index} attempt={attempt} error={type(error).__name__}: {error}")
+                    if attempt == 3:
+                        raise
 
         trace = json.loads(Path(rollout.trace_path).read_text(encoding="utf-8"))
         judge_responses = []
@@ -197,7 +221,7 @@ class PilotTrainer:
             judgment = None
             reflection = rollout.reflection
         else:
-            judge_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "rollout_trace": trace}, ensure_ascii=False)
+            judge_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "rollout_trace": trace_for_judge(trace)}, ensure_ascii=False)
             judge_result = await run_structured_agent(self.judge, judge_input, "pilot-judge", f"question-{question_id}-rollout-{rollout_index}", judge_responses)
             judgment = judge_result.final_output.model_dump(mode="json")
             score = judgment["score"]
