@@ -66,7 +66,7 @@ async def test_embedding_batch_request_uses_qwen_chat_protocol():
     assert "input" not in captured
 
 
-async def test_video_embeddings_use_two_local_clips_per_request_with_one_second_launch_spacing(tmp_path, monkeypatch):
+async def test_video_embeddings_use_one_local_clip_per_request_without_launch_spacing_and_skip_500(tmp_path, monkeypatch):
     database_path = tmp_path / "memory.duckdb"
     connection = duckdb.connect(str(database_path))
     connection.execute("CREATE TABLE videos(video_id VARCHAR, sequence_index INTEGER)")
@@ -79,25 +79,23 @@ async def test_video_embeddings_use_two_local_clips_per_request_with_one_second_
     for index in range(9):
         (clip_dir / f"{index:06d}.mp4").write_bytes(str(index).encode())
     requests = []
-    sleeps = []
 
     async def fake_request(client, endpoint, model, conversations, row_ids, media_io_kwargs):
         requests.append((conversations, row_ids, media_io_kwargs))
+        if row_ids == ["1:video_clips:3"]:
+            request = httpx.Request("POST", endpoint)
+            response = httpx.Response(500, request=request)
+            raise httpx.HTTPStatusError("server error", request=request, response=response)
         return [(row_id, [float(index), 0.0]) for index, row_id in enumerate(row_ids)]
 
-    async def fake_sleep(seconds):
-        sleeps.append(seconds)
-
     monkeypatch.setattr("src.embeddings.request_embeddings", fake_request)
-    monkeypatch.setattr("src.embeddings.asyncio.sleep", fake_sleep)
     shard_dir = tmp_path / "shards"
     await embed_video(database_path, "http://embedding", "qwen", 128, shard_dir, tmp_path / "clips")
-    assert len(requests) == 5
-    assert [request[1] for request in requests] == [["1:video_clips:0", "1:video_clips:1"], ["1:video_clips:2", "1:video_clips:3"], ["1:video_clips:4", "1:video_clips:5"], ["1:video_clips:6", "1:video_clips:7"], ["1:video_clips:8"]]
+    assert len(requests) == 9
+    assert [request[1] for request in requests] == [[f"1:video_clips:{index}"] for index in range(9)]
     assert requests[0][0][0][1]["content"][0]["video_url"]["url"] == (clip_dir / "000000.mp4").resolve().as_uri()
-    assert requests[3][0][1][1]["content"][0]["video_url"]["url"] == (clip_dir / "000007.mp4").resolve().as_uri()
-    assert requests[4][0][0][1]["content"][0]["video_url"]["url"] == (clip_dir / "000008.mp4").resolve().as_uri()
-    assert len(sleeps) == 4
-    assert all(0.9 < seconds <= 1.0 for seconds in sleeps)
+    assert requests[7][0][0][1]["content"][0]["video_url"]["url"] == (clip_dir / "000007.mp4").resolve().as_uri()
+    assert requests[8][0][0][1]["content"][0]["video_url"]["url"] == (clip_dir / "000008.mp4").resolve().as_uri()
     assert np.load(shard_dir / "video-000000.npz")["row_ids"].tolist() == ["1:video_clips:0"]
+    assert not (shard_dir / "video-000003.npz").exists()
     assert np.load(shard_dir / "video-000008.npz")["row_ids"].tolist() == ["1:video_clips:8"]

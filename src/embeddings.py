@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 from pathlib import Path
-import time
 
 import duckdb
 import httpx
@@ -19,8 +18,7 @@ TEXT_TABLES = {
     "topic_chains": "entity",
     "topic_facts": "text",
 }
-VIDEO_REQUEST_BATCH_SIZE = 2
-VIDEO_REQUEST_INTERVAL_SECONDS = 1.0
+VIDEO_REQUEST_BATCH_SIZE = 1
 
 
 async def request_embeddings(client: httpx.AsyncClient, endpoint: str, model: str, conversations: list[list[dict]], row_ids: list[str], media_io_kwargs: dict | None) -> list[tuple[str, list[float]]]:
@@ -69,7 +67,14 @@ async def embed_video_batch(client: httpx.AsyncClient, endpoint: str, model: str
             {"role": "user", "content": [{"type": "video_url", "video_url": {"url": clip_path.resolve().as_uri()}}, {"type": "text", "text": ""}]},
             {"role": "assistant", "content": [{"type": "text", "text": ""}]},
         ] for _, clip_path, _ in batch]
-        results = await request_embeddings(client, endpoint, model, conversations, [row_id for row_id, _, _ in batch], None)
+        try:
+            results = await request_embeddings(client, endpoint, model, conversations, [row_id for row_id, _, _ in batch], None)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 500:
+                raise
+            for row_id, clip_path, _ in batch:
+                print(f"video_embedding_skip row_id={row_id} clip_path={clip_path} status=500")
+            return
         for (row_id, vector), (_, _, shard_path) in zip(results, batch, strict=True):
             np.savez(shard_path, row_ids=np.array([row_id]), vectors=np.array([vector], dtype=np.float32))
             print(f"video_embedding_shard path={shard_path} rows=1")
@@ -101,16 +106,10 @@ async def embed_video(database_path: Path, endpoint: str, model: str, max_in_fli
             raise FileNotFoundError(clip_path)
         pending.append((row_id, clip_path, shard_path))
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-        last_launch = None
         async with asyncio.TaskGroup() as tasks:
             for start in range(0, len(pending), VIDEO_REQUEST_BATCH_SIZE):
                 batch = pending[start:start + VIDEO_REQUEST_BATCH_SIZE]
                 await semaphore.acquire()
-                if last_launch is not None:
-                    delay = VIDEO_REQUEST_INTERVAL_SECONDS - (time.monotonic() - last_launch)
-                    if delay > 0:
-                        await asyncio.sleep(delay)
-                last_launch = time.monotonic()
                 tasks.create_task(embed_video_batch(client, endpoint, model, batch, semaphore))
 
 
