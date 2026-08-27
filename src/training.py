@@ -94,16 +94,20 @@ def usage_and_cost(responses: list[dict]) -> tuple[dict, float]:
     return totals, cost
 
 
-async def run_structured_agent(agent: Agent, agent_input: str, workflow_name: str, group_id: str):
+async def run_structured_agent(agent: Agent, agent_input: str, workflow_name: str, group_id: str, responses: list[dict]):
     corrected_input = agent_input
     for attempt in range(1, 4):
         try:
-            return await Runner.run(agent, corrected_input, max_turns=1, run_config=RunConfig(reasoning_item_id_policy="preserve", workflow_name=workflow_name, group_id=group_id))
+            result = await Runner.run(agent, corrected_input, max_turns=1, run_config=RunConfig(reasoning_item_id_policy="preserve", workflow_name=workflow_name, group_id=group_id))
+            responses.extend(serialize_responses(result))
+            return result
         except (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError) as error:
             print(f"llm_boundary_retry workflow={workflow_name} group_id={group_id} attempt={attempt} error={type(error).__name__}: {error}")
             if attempt == 3:
                 raise
         except ModelBehaviorError as error:
+            if error.run_data is not None:
+                responses.extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in error.run_data.raw_responses)
             print(f"llm_structure_retry workflow={workflow_name} group_id={group_id} attempt={attempt} error={error}")
             if attempt == 3:
                 raise
@@ -175,7 +179,7 @@ class PilotTrainer:
             )
             runtime = AgentRuntime(harness, self.endpoint, self.client, MODEL_CONTEXT_LIMIT, ROOT / "prompts" / "COMPACTION.md", ROOT / "prompts" / "REFLECTION_FINAL.md")
             try:
-                rollout = await runtime.run_rollout(question["question"], skill, attempt_dir / "trace.json", False)
+                rollout = await runtime.run_rollout(question["question"], skill, attempt_dir / "trace.json", True)
                 break
             except RETRYABLE_ERRORS as error:
                 attempt_dir.mkdir(parents=True, exist_ok=True)
@@ -185,23 +189,37 @@ class PilotTrainer:
                     raise
 
         trace = json.loads(Path(rollout.trace_path).read_text(encoding="utf-8"))
-        judge_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "rollout_trace": trace}, ensure_ascii=False)
-        judge_result = await run_structured_agent(self.judge, judge_input, "pilot-judge", f"question-{question_id}-rollout-{rollout_index}")
-        judgment = judge_result.final_output
-        reflection_agent = Agent(
-            name="pilot rollout reflection",
-            instructions="Produce a reflection and a meta-reflection from the complete rollout trace, reference answer, and judge result. Follow the supplied META-SKILL. Identify the retrieval decision that caused success or failure and a reusable correction without leaking the specific answer.\n\nMETA-SKILL:\n" + meta_skill,
-            model=self.model,
-            model_settings=self.settings,
-            output_type=Reflection,
-        )
-        reflection_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "judgment": judgment.model_dump(mode="json"), "rollout_trace": trace}, ensure_ascii=False)
-        reflection_result = await run_structured_agent(reflection_agent, reflection_input, "pilot-reflection", f"question-{question_id}-rollout-{rollout_index}")
-        responses = list(trace["model_responses"])
-        for nested_trace in trace["nested_tool_traces"]:
-            responses.extend(nested_trace["responses"])
-        judge_responses = serialize_responses(judge_result)
-        reflection_responses = serialize_responses(reflection_result)
+        judge_responses = []
+        reflection_responses = []
+        if rollout.status == "compaction_limit":
+            score = 0
+            judgment = None
+            reflection = rollout.reflection
+        else:
+            judge_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "rollout_trace": trace}, ensure_ascii=False)
+            judge_result = await run_structured_agent(self.judge, judge_input, "pilot-judge", f"question-{question_id}-rollout-{rollout_index}", judge_responses)
+            judgment = judge_result.final_output.model_dump(mode="json")
+            score = judgment["score"]
+            reflection_agent = Agent(
+                name="pilot rollout reflection",
+                instructions="Produce a reflection and a meta-reflection from the complete rollout trace, reference answer, and judge result. Follow the supplied META-SKILL. Identify the retrieval decision that caused success or failure and a reusable correction without leaking the specific answer.\n\nMETA-SKILL:\n" + meta_skill,
+                model=self.model,
+                model_settings=self.settings,
+                output_type=Reflection,
+            )
+            reflection_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "judgment": judgment, "rollout_trace": trace}, ensure_ascii=False)
+            reflection_result = await run_structured_agent(reflection_agent, reflection_input, "pilot-reflection", f"question-{question_id}-rollout-{rollout_index}", reflection_responses)
+            reflection = reflection_result.final_output.model_dump(mode="json")
+        responses = []
+        for attempt_trace_path in sorted(rollout_dir.glob("attempt-*/trace.json")):
+            attempt_trace = json.loads(attempt_trace_path.read_text(encoding="utf-8"))
+            responses.extend(attempt_trace["model_responses"])
+            for nested_trace in attempt_trace["nested_tool_traces"]:
+                responses.extend(nested_trace["responses"])
+            for compaction in attempt_trace["compactions"]:
+                responses.extend(compaction["responses"])
+            if "reflection_responses" in attempt_trace:
+                responses.extend(attempt_trace["reflection_responses"])
         responses.extend(judge_responses)
         responses.extend(reflection_responses)
         usage, cost = usage_and_cost(responses)
@@ -209,10 +227,11 @@ class PilotTrainer:
             "question_id": question_id,
             "rollout_index": rollout_index,
             "status": rollout.status,
+            "compactions": rollout.compactions,
             "answer": rollout.answer,
-            "score": judgment.score,
-            "judgment": judgment.model_dump(mode="json"),
-            "reflection": reflection_result.final_output.model_dump(mode="json"),
+            "score": score,
+            "judgment": judgment,
+            "reflection": reflection,
             "trace_path": rollout.trace_path,
             "judge_responses": judge_responses,
             "reflection_responses": reflection_responses,
@@ -262,11 +281,34 @@ class PilotTrainer:
             batch_dir = RUN_ROOT / "batches" / f"batch-{batch_index:03d}"
             snapshot_skill = batch_dir / "SKILL.md"
             snapshot_meta_skill = batch_dir / "META-SKILL.md"
+            updater_path = batch_dir / "updater.json"
             if snapshot_skill.exists() and snapshot_meta_skill.exists():
                 if skill_path.read_text(encoding="utf-8") != snapshot_skill.read_text(encoding="utf-8") or meta_skill_path.read_text(encoding="utf-8") != snapshot_meta_skill.read_text(encoding="utf-8"):
                     shutil.copyfile(snapshot_skill, skill_path)
                     shutil.copyfile(snapshot_meta_skill, meta_skill_path)
                 continue
+            if updater_path.exists():
+                updater_payload = json.loads(updater_path.read_text(encoding="utf-8"))
+                apply_check = subprocess.run(["patch", "-p1", "--batch", "--dry-run"], cwd=skill_dir, input=updater_payload["applied_patch"], text=True, capture_output=True)
+                if apply_check.returncode == 0:
+                    applied = subprocess.run(["patch", "-p1", "--batch"], cwd=skill_dir, input=updater_payload["applied_patch"], text=True, capture_output=True)
+                    if applied.returncode != 0:
+                        raise RuntimeError(f"validated saved skill patch failed during application batch={batch_index}: {applied.stdout}{applied.stderr}")
+                else:
+                    reverse_check = subprocess.run(["patch", "-p1", "--batch", "--reverse", "--dry-run"], cwd=skill_dir, input=updater_payload["applied_patch"], text=True, capture_output=True)
+                    if reverse_check.returncode != 0:
+                        raise RuntimeError(f"saved updater patch is neither applicable nor already applied batch={batch_index}: {apply_check.stdout}{apply_check.stderr}{reverse_check.stdout}{reverse_check.stderr}")
+                batch_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(skill_path, snapshot_skill)
+                shutil.copyfile(meta_skill_path, snapshot_meta_skill)
+                if self.cumulative_cost > PILOT_COST_LIMIT_USD:
+                    print(f"pilot_cost_limit_reached cumulative_cost_usd={self.cumulative_cost:.6f} recovered_batch={batch_index}")
+                    self.wandb_run.finish()
+                    await self.client.close()
+                    return
+                continue
+            if snapshot_skill.exists() != snapshot_meta_skill.exists():
+                raise RuntimeError(f"incomplete batch skill snapshot without updater artifact batch={batch_index}")
             skill = skill_path.read_text(encoding="utf-8")
             meta_skill = meta_skill_path.read_text(encoding="utf-8")
             batch_summaries = []
@@ -280,15 +322,20 @@ class PilotTrainer:
                     if rollout_result["new_result"]:
                         self.cumulative_cost += rollout_result["cost_usd"]
                     batch_scores.append(rollout_result["score"])
-                    self.wandb_run.log({"pilot/rollout_score": rollout_result["score"], "pilot/question_id": question_id, "pilot/batch_index": batch_index, "pilot/cumulative_cost_usd": self.cumulative_cost, **{f"pilot/usage_{key}": value for key, value in rollout_result["usage"].items()}})
+                    self.wandb_run.log({"pilot/rollout_score": rollout_result["score"], "pilot/question_id": question_id, "pilot/batch_index": batch_index, "pilot/final_status": rollout_result["status"], "pilot/compactions": rollout_result["compactions"], "pilot/cumulative_cost_usd": self.cumulative_cost, **{f"pilot/usage_{key}": value for key, value in rollout_result["usage"].items()}})
+                if self.cumulative_cost > PILOT_COST_LIMIT_USD:
+                    print(f"pilot_cost_limit_reached cumulative_cost_usd={self.cumulative_cost:.6f} completed_question_id={question_id}")
+                    self.wandb_run.finish()
+                    await self.client.close()
+                    return
                 question_dir = RUN_ROOT / "train" / f"question-{question_id}"
                 summary_path = question_dir / "summary.json"
                 if summary_path.exists():
                     summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
                 else:
                     summary_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "rollouts": [{"answer": result["answer"], "score": result["score"], "judgment": result["judgment"], "reflection": result["reflection"]} for result in rollout_results]}, ensure_ascii=False)
-                    summary_result = await run_structured_agent(self.summarizer, summary_input, "pilot-question-summary", f"question-{question_id}")
-                    summary_responses = serialize_responses(summary_result)
+                    summary_responses = []
+                    summary_result = await run_structured_agent(self.summarizer, summary_input, "pilot-question-summary", f"question-{question_id}", summary_responses)
                     summary_usage, summary_cost = usage_and_cost(summary_responses)
                     summary_payload = {"question_id": question_id, "summary": summary_result.final_output.summary, "responses": summary_responses, "usage": summary_usage, "cost_usd": summary_cost}
                     summary_path.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -303,12 +350,11 @@ class PilotTrainer:
                     return
 
             batch_dir.mkdir(parents=True, exist_ok=True)
-            updater_path = batch_dir / "updater.json"
             updater_attempts = []
             updater_input = json.dumps({"current_skill": skill, "current_meta_skill": meta_skill, "question_summaries": [{"question_id": item["question_id"], "summary": item["summary"]} for item in batch_summaries]}, ensure_ascii=False)
             for attempt in range(1, 4):
-                updater_result = await run_structured_agent(self.updater, updater_input, "pilot-skill-updater", f"batch-{batch_index}")
-                updater_responses = serialize_responses(updater_result)
+                updater_responses = []
+                updater_result = await run_structured_agent(self.updater, updater_input, "pilot-skill-updater", f"batch-{batch_index}", updater_responses)
                 candidate_patch = updater_result.final_output.patch
                 updater_attempts.append({"attempt": attempt, "patch": candidate_patch, "responses": updater_responses})
                 headers = {line for line in candidate_patch.splitlines() if line.startswith("--- ") or line.startswith("+++ ")}
@@ -324,17 +370,25 @@ class PilotTrainer:
                 if attempt == 3:
                     raise RuntimeError(f"skill updater failed to produce an applicable allowlisted patch: {error}")
                 updater_input += f"\n\nThe previous patch was rejected with this exact error:\n{error}\nReturn a corrected complete patch."
+            all_updater_responses = [response for attempt_payload in updater_attempts for response in attempt_payload["responses"]]
+            updater_usage, updater_cost = usage_and_cost(all_updater_responses)
+            updater_payload = {"batch_index": batch_index, "question_ids": batch_ids, "attempts": updater_attempts, "applied_patch": candidate_patch, "patch_stdout": None, "usage": updater_usage, "cost_usd": updater_cost}
+            updater_path.write_text(json.dumps(updater_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.cumulative_cost += updater_cost
             applied = subprocess.run(["patch", "-p1", "--batch"], cwd=skill_dir, input=candidate_patch, text=True, capture_output=True)
             if applied.returncode != 0:
                 raise RuntimeError(f"validated skill patch failed during application: {applied.stdout}{applied.stderr}")
-            all_updater_responses = [response for attempt_payload in updater_attempts for response in attempt_payload["responses"]]
-            updater_usage, updater_cost = usage_and_cost(all_updater_responses)
-            updater_path.write_text(json.dumps({"batch_index": batch_index, "question_ids": batch_ids, "attempts": updater_attempts, "applied_patch": candidate_patch, "patch_stdout": applied.stdout, "usage": updater_usage, "cost_usd": updater_cost}, ensure_ascii=False, indent=2), encoding="utf-8")
-            self.cumulative_cost += updater_cost
+            updater_payload["patch_stdout"] = applied.stdout
+            updater_path.write_text(json.dumps(updater_payload, ensure_ascii=False, indent=2), encoding="utf-8")
             shutil.copyfile(skill_path, snapshot_skill)
             shutil.copyfile(meta_skill_path, snapshot_meta_skill)
             self.wandb_run.log({"pilot/batch_mean_score": sum(batch_scores) / len(batch_scores), "pilot/batch_index": batch_index, "pilot/cumulative_cost_usd": self.cumulative_cost})
             print(f"pilot_batch_complete batch={batch_index} questions={batch_ids} mean_score={sum(batch_scores) / len(batch_scores):.6f} cumulative_cost_usd={self.cumulative_cost:.6f}")
+            if self.cumulative_cost > PILOT_COST_LIMIT_USD:
+                print(f"pilot_cost_limit_reached cumulative_cost_usd={self.cumulative_cost:.6f} completed_batch={batch_index}")
+                self.wandb_run.finish()
+                await self.client.close()
+                return
 
         self.wandb_run.finish()
         await self.client.close()

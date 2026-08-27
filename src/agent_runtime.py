@@ -205,9 +205,10 @@ class AgentRuntime:
                 if enable_compaction and remaining <= 50_000 and has_tool_call:
                     compact_after_turn = True
                     stream.cancel(mode="after_turn")
+            trace["model_responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in stream.raw_responses)
+            trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
             if stream.run_loop_exception:
                 raise stream.run_loop_exception
-            trace["model_responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in stream.raw_responses)
             transcript = normalize_trace(stream.to_input_list(mode="normalized"))
             trace["turns"].append(transcript)
             trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")

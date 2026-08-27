@@ -11,7 +11,7 @@ import wandb
 
 from src.agent_runtime import AgentRuntime, ModelEndpoint
 from src.harness import VideoSQLHarness
-from src.training import Judgment, MODEL, MODEL_CONTEXT_LIMIT, PILOT_COST_LIMIT_USD, ROOT, RUN_ROOT, serialize_responses, run_structured_agent, usage_and_cost
+from src.training import Judgment, MODEL, MODEL_CONTEXT_LIMIT, PILOT_COST_LIMIT_USD, ROOT, RUN_ROOT, run_structured_agent, usage_and_cost
 
 
 RETRYABLE_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError, ModelBehaviorError, MaxTurnsExceeded)
@@ -59,7 +59,7 @@ class PilotEvaluator:
             )
             runtime = AgentRuntime(harness, self.endpoint, self.client, MODEL_CONTEXT_LIMIT, ROOT / "prompts" / "COMPACTION.md", ROOT / "prompts" / "REFLECTION_FINAL.md")
             try:
-                rollout = await runtime.run_rollout(question["question"], skill, attempt_dir / "trace.json", False)
+                rollout = await runtime.run_rollout(question["question"], skill, attempt_dir / "trace.json", True)
                 break
             except RETRYABLE_ERRORS as error:
                 attempt_dir.mkdir(parents=True, exist_ok=True)
@@ -68,22 +68,38 @@ class PilotEvaluator:
                 if attempt == 3:
                     raise
         trace = json.loads(Path(rollout.trace_path).read_text(encoding="utf-8"))
-        judge_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "rollout_trace": trace}, ensure_ascii=False)
-        judge_result = await run_structured_agent(self.judge, judge_input, "pilot-validation-judge", f"{condition}-question-{question_id}")
-        responses = list(trace["model_responses"])
-        for nested_trace in trace["nested_tool_traces"]:
-            responses.extend(nested_trace["responses"])
-        judge_responses = serialize_responses(judge_result)
+        judge_responses = []
+        if rollout.status == "compaction_limit":
+            score = 0
+            judgment = None
+        else:
+            judge_input = json.dumps({"question": question["question"], "reference_answer": question["answer"], "candidate_answer": rollout.answer, "rollout_trace": trace}, ensure_ascii=False)
+            judge_result = await run_structured_agent(self.judge, judge_input, "pilot-validation-judge", f"{condition}-question-{question_id}", judge_responses)
+            judgment = judge_result.final_output.model_dump(mode="json")
+            score = judgment["score"]
+        responses = []
+        for attempt_trace_path in sorted(question_dir.glob("attempt-*/trace.json")):
+            attempt_trace = json.loads(attempt_trace_path.read_text(encoding="utf-8"))
+            responses.extend(attempt_trace["model_responses"])
+            for nested_trace in attempt_trace["nested_tool_traces"]:
+                responses.extend(nested_trace["responses"])
+            for compaction in attempt_trace["compactions"]:
+                responses.extend(compaction["responses"])
+            if "reflection_responses" in attempt_trace:
+                responses.extend(attempt_trace["reflection_responses"])
         responses.extend(judge_responses)
         usage, cost = usage_and_cost(responses)
         payload = {
             "condition": condition,
             "question_id": question_id,
             "question_type": question["question_type"],
+            "status": rollout.status,
+            "compactions": rollout.compactions,
             "answer": rollout.answer,
             "reference_answer": question["answer"],
-            "score": judge_result.final_output.score,
-            "judgment": judge_result.final_output.model_dump(mode="json"),
+            "score": score,
+            "judgment": judgment,
+            "reflection": rollout.reflection,
             "trace_path": rollout.trace_path,
             "judge_responses": judge_responses,
             "usage": usage,
@@ -101,19 +117,20 @@ class PilotEvaluator:
         }
         results_by_condition = {}
         for condition, skill in conditions.items():
-            async with asyncio.TaskGroup() as tasks:
-                tasks_by_id = {int(question["index"]): tasks.create_task(self.run_question(question, condition, skill)) for question in questions}
-            results = {question_id: task.result() for question_id, task in tasks_by_id.items()}
-            results_by_condition[condition] = results
-            for question_id, result in results.items():
+            results = {}
+            for question in questions:
+                question_id = int(question["index"])
+                result = await self.run_question(question, condition, skill)
+                results[question_id] = result
                 if result["new_result"]:
                     self.cumulative_cost += result["cost_usd"]
-                self.wandb_run.log({f"pilot_val/{condition}_score": result["score"], "pilot_val/question_id": question_id, "pilot/cumulative_cost_usd": self.cumulative_cost, **{f"pilot_val/{condition}_usage_{key}": value for key, value in result["usage"].items()}})
-            if self.cumulative_cost > PILOT_COST_LIMIT_USD:
-                print(f"pilot_cost_limit_reached cumulative_cost_usd={self.cumulative_cost:.6f} completed_validation_condition={condition}")
-                self.wandb_run.finish()
-                await self.client.close()
-                return
+                self.wandb_run.log({f"pilot_val/{condition}_score": result["score"], "pilot_val/question_id": question_id, f"pilot_val/{condition}_final_status": result["status"], f"pilot_val/{condition}_compactions": result["compactions"], "pilot/cumulative_cost_usd": self.cumulative_cost, **{f"pilot_val/{condition}_usage_{key}": value for key, value in result["usage"].items()}})
+                if self.cumulative_cost > PILOT_COST_LIMIT_USD:
+                    print(f"pilot_cost_limit_reached cumulative_cost_usd={self.cumulative_cost:.6f} completed_validation_condition={condition} completed_question_id={question_id}")
+                    self.wandb_run.finish()
+                    await self.client.close()
+                    return
+            results_by_condition[condition] = results
 
         paired = []
         by_type = {}
