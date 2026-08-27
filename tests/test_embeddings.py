@@ -90,7 +90,7 @@ async def test_video_embeddings_use_one_local_clip_per_request_without_launch_sp
 
     monkeypatch.setattr("src.embeddings.request_embeddings", fake_request)
     shard_dir = tmp_path / "shards"
-    await embed_video(database_path, "http://embedding", "qwen", 128, shard_dir, tmp_path / "clips")
+    await embed_video(database_path, "http://embedding", "qwen", 64, shard_dir, tmp_path / "clips")
     assert len(requests) == 9
     assert [request[1] for request in requests] == [[f"1:video_clips:{index}"] for index in range(9)]
     assert requests[0][0][0][1]["content"][0]["video_url"]["url"] == (clip_dir / "000000.mp4").resolve().as_uri()

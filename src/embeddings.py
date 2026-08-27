@@ -84,8 +84,8 @@ async def embed_video_batch(client: httpx.AsyncClient, endpoint: str, model: str
 
 
 async def embed_video(database_path: Path, endpoint: str, model: str, max_in_flight: int, shard_dir: Path, clip_dir: Path) -> None:
-    if max_in_flight != 128:
-        raise ValueError(f"video max in-flight requests must be 128, got {max_in_flight}")
+    if max_in_flight != 64:
+        raise ValueError(f"video max in-flight requests must be 64, got {max_in_flight}")
     connection = duckdb.connect(str(database_path), read_only=True)
     rows = connection.execute("SELECT c.row_id, c.video_id FROM video_clips c JOIN videos v USING(video_id) ORDER BY v.sequence_index, c.start_sec").fetchall()
     connection.close()
