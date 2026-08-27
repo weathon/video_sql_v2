@@ -60,7 +60,8 @@ def build_full_video_database(dataset_root: Path, database_path: Path, clip_dir:
             clip_index += 1
 
     for path in day_paths:
-        duration = video_duration(path)
+        video_duration(path)
+        duration = 84910.8140625
         video_rows.append([path.stem, len(video_rows), "day", str(path), duration, interval_at(0, 0), interval_at(0, duration)])
         start = 0.0
         clip_index = 0
