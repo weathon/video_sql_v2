@@ -289,18 +289,20 @@ class PilotTrainer:
                 continue
             if updater_path.exists():
                 updater_payload = json.loads(updater_path.read_text(encoding="utf-8"))
-                apply_check = subprocess.run(["patch", "-p1", "--batch", "--dry-run"], cwd=skill_dir, input=updater_payload["applied_patch"], text=True, capture_output=True)
+                apply_check = subprocess.run(["patch", "-p1", "--batch", "--forward", "--dry-run"], cwd=skill_dir, input=updater_payload["applied_patch"], text=True, capture_output=True)
                 if apply_check.returncode == 0:
-                    applied = subprocess.run(["patch", "-p1", "--batch"], cwd=skill_dir, input=updater_payload["applied_patch"], text=True, capture_output=True)
+                    applied = subprocess.run(["patch", "-p1", "--batch", "--forward"], cwd=skill_dir, input=updater_payload["applied_patch"], text=True, capture_output=True)
                     if applied.returncode != 0:
                         raise RuntimeError(f"validated saved skill patch failed during application batch={batch_index}: {applied.stdout}{applied.stderr}")
                 else:
-                    reverse_check = subprocess.run(["patch", "-p1", "--batch", "--reverse", "--dry-run"], cwd=skill_dir, input=updater_payload["applied_patch"], text=True, capture_output=True)
+                    reverse_check = subprocess.run(["patch", "-p1", "--batch", "--reverse", "--forward", "--dry-run"], cwd=skill_dir, input=updater_payload["applied_patch"], text=True, capture_output=True)
                     if reverse_check.returncode != 0:
                         raise RuntimeError(f"saved updater patch is neither applicable nor already applied batch={batch_index}: {apply_check.stdout}{apply_check.stderr}{reverse_check.stdout}{reverse_check.stderr}")
                 batch_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(skill_path, snapshot_skill)
                 shutil.copyfile(meta_skill_path, snapshot_meta_skill)
+                recovered_batch_scores = [json.loads((RUN_ROOT / "train" / f"question-{question_id}" / f"rollout-{rollout_index}" / "result.json").read_text(encoding="utf-8"))["score"] for question_id in batch_ids for rollout_index in range(ROLLOUTS_PER_QUESTION)]
+                self.wandb_run.log({"pilot/batch_mean_score": sum(recovered_batch_scores) / len(recovered_batch_scores), "pilot/batch_index": batch_index, "pilot/cumulative_cost_usd": self.cumulative_cost})
                 if self.cumulative_cost > PILOT_COST_LIMIT_USD:
                     print(f"pilot_cost_limit_reached cumulative_cost_usd={self.cumulative_cost:.6f} recovered_batch={batch_index}")
                     self.wandb_run.finish()
