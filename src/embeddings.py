@@ -70,10 +70,11 @@ async def embed_video_batch(client: httpx.AsyncClient, endpoint: str, model: str
         try:
             results = await request_embeddings(client, endpoint, model, conversations, [row_id for row_id, _, _ in batch], None)
         except httpx.HTTPStatusError as error:
-            if error.response.status_code != 500:
+            payload = error.response.json()
+            if error.response.status_code != 500 or payload["exception_type"] != "RuntimeError" or payload["detail"] != "Requested next frame while there are no more frames left to decode.":
                 raise
             for row_id, clip_path, _ in batch:
-                print(f"video_embedding_skip row_id={row_id} clip_path={clip_path} status=500")
+                print(f"video_embedding_skip row_id={row_id} clip_path={clip_path} exception_type={payload['exception_type']} detail={payload['detail']}")
             return
         for (row_id, vector), (_, _, shard_path) in zip(results, batch, strict=True):
             np.savez(shard_path, row_ids=np.array([row_id]), vectors=np.array([vector], dtype=np.float32))

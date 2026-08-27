@@ -8,4 +8,4 @@ Crash when the failure can invalidate more than one sample or the run configurat
 
 For concurrent work, catch only the classified sample-local exception inside that sample's task. Unknown exceptions must still propagate and terminate the run.
 
-The 2026-08-26 video embedding run established one project-specific case: an independent one-clip video embedding request returning HTTP 500 because TorchCodec requested a frame past the end of that clip is a sample-local failure. Skip that whole clip, leave its embedding shard absent, and continue other clips. Non-500 HTTP errors and all non-HTTP errors still crash.
+The 2026-08-26 video embedding run established one project-specific case: an independent one-clip video embedding request returning HTTP 500 with `exception_type=RuntimeError` and `detail=Requested next frame while there are no more frames left to decode.` is a sample-local TorchCodec failure. Skip that whole clip, leave its embedding shard absent, and continue other clips. A local vLLM middleware exposes the exception type and message so no other HTTP 500 is classified as this case. Every other HTTP error and all non-HTTP errors still crash.

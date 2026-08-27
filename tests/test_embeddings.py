@@ -84,7 +84,7 @@ async def test_video_embeddings_use_one_local_clip_per_request_without_launch_sp
         requests.append((conversations, row_ids, media_io_kwargs))
         if row_ids == ["1:video_clips:3"]:
             request = httpx.Request("POST", endpoint)
-            response = httpx.Response(500, request=request)
+            response = httpx.Response(500, request=request, json={"exception_type": "RuntimeError", "detail": "Requested next frame while there are no more frames left to decode."})
             raise httpx.HTTPStatusError("server error", request=request, response=response)
         return [(row_id, [float(index), 0.0]) for index, row_id in enumerate(row_ids)]
 

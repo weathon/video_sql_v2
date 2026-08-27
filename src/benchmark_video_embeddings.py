@@ -41,10 +41,11 @@ async def benchmark(arguments) -> None:
                 try:
                     result = await request_embeddings(client, arguments.endpoint, arguments.model, conversations, [row_id], None)
                 except httpx.HTTPStatusError as error:
-                    if error.response.status_code != 500:
+                    payload = error.response.json()
+                    if error.response.status_code != 500 or payload["exception_type"] != "RuntimeError" or payload["detail"] != "Requested next frame while there are no more frames left to decode.":
                         raise
                     skipped.append(row_id)
-                    print(f"benchmark_skip row_id={row_id} clip_path={clip_path} status=500")
+                    print(f"benchmark_skip row_id={row_id} clip_path={clip_path} exception_type={payload['exception_type']} detail={payload['detail']}")
                     return
                 latency = time.perf_counter() - started
                 np.savez(arguments.output_dir / f"video-{position:06d}.npz", row_ids=np.array([row_id]), vectors=np.array([result[0][1]], dtype=np.float32))
