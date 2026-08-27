@@ -191,7 +191,11 @@ class PilotTrainer:
                 raise ValueError(f"unknown saved rollout status: {existing_trace['status']}")
             break
         if rollout is None:
-            for attempt in range(1, 4):
+            attempt_dirs = list(rollout_dir.glob("attempt-*"))
+            next_attempt = max(int(path.name.removeprefix("attempt-")) for path in attempt_dirs) + 1 if attempt_dirs else 1
+            if next_attempt > 3:
+                raise RuntimeError(f"rollout retries exhausted before resume question_id={question_id} rollout={rollout_index}")
+            for attempt in range(next_attempt, 4):
                 attempt_dir = rollout_dir / f"attempt-{attempt}"
                 harness = VideoSQLHarness(
                     ROOT / "data" / "pilot.duckdb",

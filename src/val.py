@@ -59,7 +59,11 @@ class PilotEvaluator:
                 raise ValueError(f"unknown saved rollout status: {existing_trace['status']}")
             break
         if rollout is None:
-            for attempt in range(1, 4):
+            attempt_dirs = list(question_dir.glob("attempt-*"))
+            next_attempt = max(int(path.name.removeprefix("attempt-")) for path in attempt_dirs) + 1 if attempt_dirs else 1
+            if next_attempt > 3:
+                raise RuntimeError(f"validation rollout retries exhausted before resume condition={condition} question_id={question_id}")
+            for attempt in range(next_attempt, 4):
                 attempt_dir = question_dir / f"attempt-{attempt}"
                 harness = VideoSQLHarness(
                     ROOT / "data" / "pilot.duckdb",
