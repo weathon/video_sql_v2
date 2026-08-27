@@ -9,27 +9,31 @@ from faster_whisper import WhisperModel
 
 
 logging.basicConfig(level=logging.INFO)
-video_dir = Path("/raid/wg25r/mmlifelong_pilot/videos/month")
-output_root = Path("/raid/wg25r/video_sql_v2/runs/magic_whisper_all")
-video_ids = ["4", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"]
+video_root = Path("/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443/videos")
+output_root = Path("/raid/wg25r/video_sql_v2/runs/magic_whisper_full")
+video_paths = (
+    sorted((video_root / "month").glob("*.mp4"), key=lambda path: int(path.stem))
+    + sorted((video_root / "day").glob("*.mp4"), key=lambda path: int(path.stem))
+    + sorted((video_root / "week").glob("*/*.mp4"))
+)
 
-for video_id in video_ids:
-    video_path = video_dir / f"{video_id}.mp4"
+for video_path in video_paths:
     if not video_path.is_file():
         raise FileNotFoundError(video_path)
 
 run = wandb.init(
     project="video-sql-v2",
-    name="magic-whisper-mmlifelong-all",
+    name="magic-whisper-mmlifelong-full",
     config={
         "source": "MAGIC-video@0f2273f7f07360cc58588399553b5a6ea758b084",
+        "dataset": "MM-Lifelong/MM-Lifelong@248aa82039a574e63a2e524746a7cd8f32330443",
         "model": "large-v3-turbo",
         "device": "cuda",
         "compute_type": "float16",
         "beam_size": 5,
         "vad_filter": True,
         "vad_min_silence_duration_ms": 500,
-        "video_ids": video_ids,
+        "video_files": len(video_paths),
     },
 )
 
@@ -38,12 +42,13 @@ completed_videos = 0
 completed_segments = 0
 model = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
 
-for video_id in video_ids:
-    video_path = video_dir / f"{video_id}.mp4"
-    whisper_dir = output_root / video_id / "whisper"
+for video_path in video_paths:
+    relative_path = video_path.relative_to(video_root)
+    video_key = relative_path.as_posix()
+    whisper_dir = output_root / relative_path.parent / relative_path.stem / "whisper"
     whisper_dir.mkdir(parents=True, exist_ok=True)
-    json_path = whisper_dir / f"{video_id}_whisper.json"
-    srt_path = whisper_dir / f"{video_id}_whisper.srt"
+    json_path = whisper_dir / f"{relative_path.stem}_whisper.json"
+    srt_path = whisper_dir / f"{relative_path.stem}_whisper.srt"
 
     if json_path.is_file() and srt_path.is_file():
         with json_path.open(encoding="utf-8") as handle:
@@ -54,26 +59,26 @@ for video_id in video_ids:
             srt_blocks = [block.splitlines() for block in handle.read().strip().split("\n\n") if block.strip()]
         if len(srt_blocks) != len(existing):
             raise ValueError(
-                f"JSON/SRT segment count mismatch video={video_id} "
+                f"JSON/SRT segment count mismatch video={video_key} "
                 f"json={len(existing)} srt={len(srt_blocks)}"
             )
         for segment_index, (entry, block) in enumerate(zip(existing, srt_blocks), 1):
             if set(entry) != {"start_sec", "end_sec", "text"}:
-                raise ValueError(f"invalid JSON segment video={video_id} index={segment_index}")
+                raise ValueError(f"invalid JSON segment video={video_key} index={segment_index}")
             if not isinstance(entry["start_sec"], (int, float)) or not isinstance(entry["end_sec"], (int, float)):
-                raise TypeError(f"invalid timestamps video={video_id} index={segment_index}")
+                raise TypeError(f"invalid timestamps video={video_key} index={segment_index}")
             if entry["start_sec"] < 0 or entry["end_sec"] < entry["start_sec"]:
-                raise ValueError(f"invalid timestamp range video={video_id} index={segment_index}")
+                raise ValueError(f"invalid timestamp range video={video_key} index={segment_index}")
             if not isinstance(entry["text"], str):
-                raise TypeError(f"invalid text video={video_id} index={segment_index}")
+                raise TypeError(f"invalid text video={video_key} index={segment_index}")
             if len(block) < 3 or block[0] != str(segment_index):
-                raise ValueError(f"invalid SRT block video={video_id} index={segment_index}")
+                raise ValueError(f"invalid SRT block video={video_key} index={segment_index}")
             timestamp_match = re.fullmatch(
                 r"(\d{2}):(\d{2}):(\d{2}),(\d{3}) --> (\d{2}):(\d{2}):(\d{2}),(\d{3})",
                 block[1],
             )
             if timestamp_match is None:
-                raise ValueError(f"invalid SRT timestamp video={video_id} index={segment_index}")
+                raise ValueError(f"invalid SRT timestamp video={video_key} index={segment_index}")
             srt_start = (
                 int(timestamp_match[1]) * 3600
                 + int(timestamp_match[2]) * 60
@@ -87,17 +92,17 @@ for video_id in video_ids:
                 + int(timestamp_match[8]) / 1000
             )
             if abs(srt_start - entry["start_sec"]) > 0.0015 or abs(srt_end - entry["end_sec"]) > 0.0015:
-                raise ValueError(f"JSON/SRT timestamp mismatch video={video_id} index={segment_index}")
+                raise ValueError(f"JSON/SRT timestamp mismatch video={video_key} index={segment_index}")
             if "\n".join(block[2:]) != entry["text"]:
-                raise ValueError(f"JSON/SRT text mismatch video={video_id} index={segment_index}")
+                raise ValueError(f"JSON/SRT text mismatch video={video_key} index={segment_index}")
         completed_videos += 1
         completed_segments += len(existing)
-        print(f"skip_complete video={video_id} segments={len(existing)}", flush=True)
+        print(f"skip_complete video={video_key} segments={len(existing)}", flush=True)
         run.log({"completed_videos": completed_videos, "completed_segments": completed_segments})
         continue
 
     video_started = time.monotonic()
-    print(f"transcribe_start video={video_id} path={video_path}", flush=True)
+    print(f"transcribe_start video={video_key} path={video_path}", flush=True)
     segments, info = model.transcribe(
         str(video_path),
         beam_size=5,
@@ -105,7 +110,7 @@ for video_id in video_ids:
         vad_parameters={"min_silence_duration_ms": 500},
     )
     print(
-        f"vad_complete video={video_id} duration={info.duration:.3f} "
+        f"vad_complete video={video_key} duration={info.duration:.3f} "
         f"duration_after_vad={info.duration_after_vad:.3f} options={info.vad_options}",
         flush=True,
     )
@@ -137,12 +142,12 @@ for video_id in video_ids:
 
         if segment_index % 250 == 0:
             print(
-                f"transcribe_progress video={video_id} segments={segment_index} "
+                f"transcribe_progress video={video_key} segments={segment_index} "
                 f"media_end={segment.end:.3f}",
                 flush=True,
             )
             run.log({
-                "current_video": int(video_id),
+                "current_video": video_key,
                 "current_video_segments": segment_index,
                 "current_media_end_sec": segment.end,
             })
@@ -157,7 +162,7 @@ for video_id in video_ids:
     completed_segments += len(results)
     realtime_speed = info.duration / video_elapsed
     print(
-        f"transcribe_complete video={video_id} segments={len(results)} "
+        f"transcribe_complete video={video_key} segments={len(results)} "
         f"elapsed={video_elapsed:.3f} realtime_speed={realtime_speed:.3f} "
         f"json={json_path} srt={srt_path}",
         flush=True,
@@ -165,7 +170,7 @@ for video_id in video_ids:
     run.log({
         "completed_videos": completed_videos,
         "completed_segments": completed_segments,
-        "last_video": int(video_id),
+        "last_video": video_key,
         "last_video_audio_hours": info.duration / 3600,
         "last_video_speech_hours": info.duration_after_vad / 3600,
         "last_video_elapsed_seconds": video_elapsed,
