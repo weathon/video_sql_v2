@@ -33,7 +33,7 @@ def test_real_pilot_database_counts_joins_and_time_mapping(tmp_path):
     assert connection.execute("SELECT subject,predicate,object FROM semantic_triples WHERE video_id='21' AND object LIKE '%monkey brother%' ORDER BY chunk_id NULLS LAST").fetchall() == [("ishowspeed", "calls", "man in bright pink t‑shirt \"monkey brother\""), ("ishowspeed", "calls", "man in bright pink t‑shirt \"monkey brother\"")]
     connection.close()
 
-    harness = VideoSQLHarness(DATABASE, "http://embedding", "qwen", Path("data/video_clips"), tmp_path / "media", tmp_path / "notes.json")
+    harness = VideoSQLHarness(DATABASE, "http://embedding", "qwen", Path("data/embedding_index"), Path("data/video_clips"), tmp_path / "media", tmp_path / "notes.json")
     with ThreadPoolExecutor(max_workers=16) as executor:
         results = list(executor.map(lambda _: harness.run_sql("SELECT count(*) FROM questions"), range(32)))
     assert all(result["rows"] == [[670]] for result in results)

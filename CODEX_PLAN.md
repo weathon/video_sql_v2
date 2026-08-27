@@ -12,12 +12,12 @@
 
 ### 0. 完成本地 Qwen 基础设施研究
 
-- 继续完成 `INFRA.txt`，不能接受当前失败的 vLLM 日志作为结论。
+- 继续完成 `notes/INFRA.txt`，不能接受当前失败的 vLLM 日志作为结论。
 - 使用真实约 100k-token 多模态对话测试 25–50 个并发请求，检查实际回答和完整调用轨迹。
 - 记录最终服务命令、服务框架和版本、GPU 数量、context limit、并发能力、官方 generation config、图像限制、吞吐量、首 token 延迟及整体延迟。
 - 移除现有 `temperature=0`；客户端不覆盖 temperature、top-p、top-k，也不设置输入或输出 token 上限。
-- 后续所有本地 Qwen 运行只使用最终 `INFRA.txt` 中确认的配置。
-- 正式本地模型固定为 `Inferact/Qwen3.8-Flash-Next-NVFP4`，使用四张完全空闲的 GPU 做 tensor parallel 4。除 GPU 部署和 tensor parallel 外，使用 `INFRA.txt` 最上方 Current best choice 的全部参数。
+- 后续所有本地 Qwen 运行只使用最终 `notes/INFRA.txt` 中确认的配置。
+- 正式本地模型固定为 `Inferact/Qwen3.8-Flash-Next-NVFP4`，使用四张完全空闲的 GPU 做 tensor parallel 4。除 GPU 部署和 tensor parallel 外，使用 `notes/INFRA.txt` 最上方 Current best choice 的全部参数。
 - Qwen3-VL-Embedding-8B embedding server 放在显存已经占用约一半但 compute 空闲的 shared GPU；四张完全空闲的 GPU 只用于正式本地模型。
 
 ### 1. 仓库、索引和 harness
@@ -25,10 +25,10 @@
 - 初始化 Git，身份设为 `codex <codex@localhost>`；使用 `uv` 和仓库内 `/raid` 缓存，提交锁定后的 `uv.lock`。
 - 从 [MAGIC-video](https://github.com/lijiazheng0917/MAGIC-video) 只移植当前项目需要的预处理逻辑，并记录上游 commit；不引入其截断、替代数据或静默恢复路径。
 - 使用 [MM-Lifelong](https://huggingface.co/datasets/MM-Lifelong/MM-Lifelong) 的官方顺序、时长和区间信息。所有时间统一保存为视频内秒数和全局相对 `INTERVAL`；只有来源提供绝对时间时才保存 `TIMESTAMP`。
-- DuckDB 保存 videos、questions、clue intervals、ASR segments、各粒度 captions、entities、episodic/semantic triples、activities、event chains、topic chains 和 embeddings。
+- DuckDB 保存 videos、questions、clue intervals、ASR segments、各粒度 captions、entities、episodic/semantic triples、activities、event chains 和 topic chains；embedding 不写入 DuckDB。
 - 文本入库前统一执行：拉丁字符转 ASCII 并小写、保留非拉丁字符、去除首尾空白、折叠连续空白。数据库只保留规范化文本。
-- 每条可检索文本记录和每个 30 秒视频片段均生成稳定 row ID 和向量。文本及视频使用 [Qwen3-VL-Embedding-8B](https://huggingface.co/Qwen/Qwen3-VL-Embedding-8B)，采用 DuckDB 精确 cosine scan。
-- 构建期间使用写连接和可恢复的磁盘分片；正式 harness 使用 `read_only`，每个并发调用创建独立连接，符合 [DuckDB 并发约束](https://duckdb.org/docs/current/connect/concurrency)。
+- 每条可检索文本记录和每个 30 秒视频片段均生成稳定 row ID 和向量。文本及视频使用 [Qwen3-VL-Embedding-8B](https://huggingface.co/Qwen/Qwen3-VL-Embedding-8B)；每个可检索表分别保存连续 NumPy 向量矩阵和同顺序 row ID 数组，采用 NumPy 精确 cosine scan，不通过 SQL 查询 embedding。先用真实并发查询测试该方案；只有并发性能不足时才改用功能和精度相同的轻量向量数据库。
+- 构建期间使用可恢复的磁盘分片，再合并为各表独立 NumPy 矩阵；正式 harness 的 DuckDB 连接只读取 top row ID 对应的元数据，使用 `read_only` 且每个并发调用创建独立连接，符合 [DuckDB 并发约束](https://duckdb.org/docs/current/connect/concurrency)。
 - 建议目录为 `src/preprocess/`、`src/indexing.py`、`src/harness.py`、`src/training.py`、`src/val.py`、`skills/initial/`、`prompts/COMPACTION.md`、`tests/`、`notes/`；运行产物写入忽略的 `runs/`。
 
 ### 2. Pilot
@@ -45,7 +45,7 @@
 ### 3. 正式本地模型训练与完整评测
 
 - 使用 datasets/Hugging Face 下载机制获取正式数据；重新生成全部正式数据，不复用 Pilot 产物。
-- ASR 使用 [Qwen3-ASR-1.7B-hf](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf)；caption merge、OpenIE、semantic、topic、event 等步骤均使用 `Inferact/Qwen3.8-Flash-Next-NVFP4` 和 `INFRA.txt` 指定的配置。
+- ASR 使用 [Qwen3-ASR-1.7B-hf](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf)；caption merge、OpenIE、semantic、topic、event 等步骤均使用 `Inferact/Qwen3.8-Flash-Next-NVFP4` 和 `notes/INFRA.txt` 指定的配置。
 - 从与 Pilot 相同的初始 `SKILL.md` 和 `META-SKILL.md` 重新开始，不继承 Pilot 训练结果。
 - 使用 month train 的 266 个问题训练 1 个 epoch，每批 5 题，每题 10 个并发 rollout；seed 2026 固定顺序，最后一批正常处理。
 - 每个 rollout 由 `Inferact/Qwen3.8-Flash-Next-NVFP4` judge 独立评分并复盘；summarizer、skill updater 和 compactor 也使用该模型。
@@ -67,7 +67,7 @@
 ### Compaction 状态机
 
 - 仅主检索 agent 使用 compaction；`clip_qa`、judge、reflection、summarizer、updater 和 compactor 不使用。
-- 每次主 agent 响应完成后读取服务端 usage，计算 `remaining = INFRA.txt.context_limit - input_tokens - output_tokens`。
+- 每次主 agent 响应完成后读取服务端 usage，计算 `remaining = notes/INFRA.txt.context_limit - input_tokens - output_tokens`。
 - 当 `remaining <= 50,000` 时，通过流式 runner 执行 `cancel(mode="after_turn")` 并排空事件，确保当前工具轮完整结束。
 - 将规范化后的完整 transcript 交给同一 Qwen 的无工具 compactor。compactor 的唯一输出作为新对话中的 trusted handoff，旧对话不再传入。
 - 第一次和第二次 compaction 后继续 rollout。第三次 compaction 输出生成后立即终止，状态设为 `compaction_limit`，分数设为 0，不调用 judge、不重试，直接进入重点分析绕圈原因的 reflection。
@@ -118,9 +118,9 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 
 ## 当前进度（2026-08-26）
 
-1. Phase 1 代码、Pilot DuckDB、离散视频 clip cache、TorchCodec harness 和 embedding 调度已经实现，完整测试为 13 项通过。当前 embedding 调度代码提交为 `de6a67e`，实现和排障记录为 `notes/VIDEO_EMBEDDING_PIPELINE.md`。
+1. Phase 1 代码、Pilot DuckDB、离散视频 clip cache、TorchCodec harness 和 embedding 调度已经实现；embedding 存储正在从 DuckDB 改为每表独立 NumPy 矩阵。
 2. Pilot 视频 clip cache 已经完成：DuckDB 和磁盘各 9,167 个 clip，所有视频的最终边界与视频流时长一致。文本 embedding 已经生成 813 个 shard，共 416,029 行。
-3. Pilot 视频 embedding 仍在生成。记录进度时为 996/9,167 个 shard；当前任务使用每个 HTTP batch 2 个视频、最多 128 个在途 batch、每 1 秒启动一个 batch。embedding 服务关闭 `mm_processor_cache`，全部运行时缓存和临时目录位于 `/raid`，记录时健康检查为 HTTP 200。
-4. 当前 tmux 任务为 `stage1_pilot_video_embeddings`，运行日志为 `logs/stage1_pilot_video_embeddings_batch2_128_1s.log`；embedding 服务为 `stage1_embedding_server_torchcodec`，日志为 `logs/stage1_embedding_server_no_mm_cache_all_raid.log`。
-5. 正式本地模型已经改为 `Inferact/Qwen3.8-Flash-Next-NVFP4`。后续使用四张完全空闲的 GPU 做 tensor parallel 4；embedding server 放在显存已经占用约一半但 compute 空闲的 shared GPU。除 GPU 部署和 tensor parallel 外，使用 `INFRA.txt` 最上方 Current best choice 的配置。
-6. 当前对话只继续观察视频 embedding 直到生成完成。生成完成后由用户开启新对话，再从实际落盘产物继续后续 Phase 1 验证和审查，不提前进入 Pilot。
+3. Pilot 视频 embedding shard 生成已经结束：9,164 个成功，`14:video_clips:557`、`17:video_clips:557`、`21:video_clips:557` 因已确认的 TorchCodec 视频末尾错误按整 clip 跳过。
+4. 原 DuckDB 逐行 embedding 导入已停止，不作为最终存储；下一步从现有 shard 构建每表独立 NumPy 矩阵并测试真实并发 semantic search。
+5. 正式本地模型已经改为 `Inferact/Qwen3.8-Flash-Next-NVFP4`。后续使用四张完全空闲的 GPU 做 tensor parallel 4；embedding server 放在显存已经占用约一半但 compute 空闲的 shared GPU。除 GPU 部署和 tensor parallel 外，使用 `notes/INFRA.txt` 最上方 Current best choice 的配置。
+6. 当前目标是在 NumPy semantic search 并发验证通过后完成 Phase 1 验证和审查，然后使用 Luna 连续运行并完成 Pilot。

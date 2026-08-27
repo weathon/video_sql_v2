@@ -141,15 +141,6 @@ CREATE TABLE video_clips (
     global_end INTERVAL NOT NULL
 );
 
-CREATE TABLE embeddings (
-    source_table VARCHAR NOT NULL,
-    row_id VARCHAR NOT NULL,
-    modality VARCHAR NOT NULL,
-    model VARCHAR NOT NULL,
-    vector FLOAT[] NOT NULL,
-    PRIMARY KEY (source_table, row_id)
-);
-
 CREATE INDEX question_clues_question_idx ON question_clues(question_id);
 CREATE INDEX question_clues_video_idx ON question_clues(video_id, start_sec);
 CREATE INDEX asr_video_time_idx ON asr_segments(video_id, start_sec);

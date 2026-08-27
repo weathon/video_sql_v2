@@ -48,10 +48,13 @@ class Notes:
 
 
 class VideoSQLHarness:
-    def __init__(self, database_path: Path, embedding_endpoint: str, embedding_model: str, clip_dir: Path, media_dir: Path, notes_path: Path):
+    def __init__(self, database_path: Path, embedding_endpoint: str, embedding_model: str, embedding_index_dir: Path, clip_dir: Path, media_dir: Path, notes_path: Path):
         self.database_path = database_path
         self.embedding_endpoint = embedding_endpoint
         self.embedding_model = embedding_model
+        self.embedding_index_dir = embedding_index_dir
+        self.embedding_matrices = {}
+        self.embedding_row_ids = {}
         self.clip_dir = clip_dir
         self.media_dir = media_dir
         self.media_dir.mkdir(parents=True, exist_ok=True)
@@ -107,22 +110,30 @@ class VideoSQLHarness:
             timeout=1800,
         )
         response.raise_for_status()
-        vector = response.json()["data"][0]["embedding"]
+        vector = np.asarray(response.json()["data"][0]["embedding"], dtype=np.float32)
+        vector_norm = np.linalg.norm(vector)
+        if vector_norm == 0:
+            raise ValueError("semantic search query embedding has zero norm")
+        if table not in self.embedding_matrices:
+            self.embedding_matrices[table] = np.load(self.embedding_index_dir / f"{table}.vectors.npy", mmap_mode="r")
+            self.embedding_row_ids[table] = np.load(self.embedding_index_dir / f"{table}.row_ids.npy", mmap_mode="r")
+        matrix = self.embedding_matrices[table]
+        row_ids = self.embedding_row_ids[table]
+        if matrix.shape[0] != len(row_ids) or matrix.shape[1] != len(vector):
+            raise ValueError(f"semantic index shape mismatch table={table} matrix={matrix.shape} row_ids={len(row_ids)} query={len(vector)}")
+        if not 1 <= n <= len(row_ids):
+            raise ValueError(f"n must be between 1 and {len(row_ids)} for table {table}")
+        scores = matrix @ (vector / vector_norm)
+        selected = np.arange(len(scores)) if n == len(scores) else np.argpartition(scores, len(scores) - n)[-n:]
+        selected = selected[np.argsort(scores[selected])[::-1]]
+        selected_row_ids = [str(row_ids[index]) for index in selected]
         text_column, video_column, start_column, end_column = SEARCH_TABLES[table]
         connection = duckdb.connect(str(self.database_path), read_only=True)
-        rows = connection.execute(
-            f"""
-            SELECT s.row_id, s.{video_column}, {start_column}, {end_column}, {text_column},
-                   list_cosine_similarity(e.vector, ?::FLOAT[]) AS score
-            FROM {table} s JOIN embeddings e
-              ON e.source_table = ? AND e.row_id = s.row_id
-            ORDER BY score DESC
-            LIMIT ?
-            """,
-            [vector, table, n],
-        ).fetchall()
+        placeholders = ",".join("?" for _ in selected_row_ids)
+        rows = connection.execute(f"SELECT row_id, {video_column}, {start_column}, {end_column}, {text_column} FROM {table} WHERE row_id IN ({placeholders})", selected_row_ids).fetchall()
         connection.close()
-        return {"table": table, "results": [{"row_id": row_id, "video_id": video_id, "start_sec": start, "end_sec": end, "text": text[:500], "score": score} for row_id, video_id, start, end, text, score in rows]}
+        rows_by_id = {row[0]: row[1:] for row in rows}
+        return {"table": table, "results": [{"row_id": row_id, "video_id": rows_by_id[row_id][0], "start_sec": rows_by_id[row_id][1], "end_sec": rows_by_id[row_id][2], "text": rows_by_id[row_id][3][:500], "score": float(scores[index])} for row_id, index in zip(selected_row_ids, selected, strict=True)]}
 
     def add_note(self, text: str) -> dict:
         return self.notes.add(text)

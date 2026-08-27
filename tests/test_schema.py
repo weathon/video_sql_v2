@@ -10,7 +10,7 @@ def test_schema_tables(tmp_path):
     tables = {row[0] for row in connection.execute("SHOW TABLES").fetchall()}
     connection.close()
     assert tables == {
-        "activities", "asr_segments", "captions", "embeddings", "entities",
+        "activities", "asr_segments", "captions", "entities",
         "episodic_triples", "event_chains", "event_steps", "question_clues",
         "questions", "semantic_triples", "topic_chains", "topic_facts",
         "video_clips", "videos",

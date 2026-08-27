@@ -114,21 +114,85 @@ async def embed_video(database_path: Path, endpoint: str, model: str, max_in_fli
                 tasks.create_task(embed_video_batch(client, endpoint, model, batch, semaphore))
 
 
-def import_shards(database_path: Path, model: str, shard_dir: Path) -> None:
-    connection = duckdb.connect(str(database_path))
-    connection.execute("BEGIN TRANSACTION")
+def build_numpy_index(shard_dir: Path, index_dir: Path) -> None:
+    counts: dict[str, int] = {}
+    row_id_lengths: dict[str, int] = {}
+    embedding_dimension = 0
     for path in sorted(shard_dir.glob("text-*.npz")):
-        shard = np.load(path)
-        for table, row_id, vector in zip(shard["tables"], shard["row_ids"], shard["vectors"], strict=True):
-            connection.execute("INSERT OR REPLACE INTO embeddings VALUES (?, ?, ?, ?, ?)", [str(table), str(row_id), "text", model, vector.tolist()])
+        with np.load(path) as shard:
+            tables = shard["tables"].astype(str)
+            row_ids = shard["row_ids"].astype(str)
+            vectors = shard["vectors"]
+            if embedding_dimension == 0:
+                embedding_dimension = vectors.shape[1]
+            elif vectors.shape[1] != embedding_dimension:
+                raise ValueError(f"embedding dimension mismatch path={path} expected={embedding_dimension} actual={vectors.shape[1]}")
+            for table_value in np.unique(tables):
+                table = str(table_value)
+                selected = row_ids[tables == table]
+                if table not in counts:
+                    counts[table] = 0
+                    row_id_lengths[table] = 0
+                counts[table] += len(selected)
+                row_id_lengths[table] = max(row_id_lengths[table], max(len(row_id) for row_id in selected))
     for path in sorted(shard_dir.glob("video-*.npz")):
-        shard = np.load(path)
-        for row_id, vector in zip(shard["row_ids"], shard["vectors"], strict=True):
-            connection.execute("INSERT OR REPLACE INTO embeddings VALUES (?, ?, ?, ?, ?)", ["video_clips", str(row_id), "video", model, vector.tolist()])
-    connection.execute("COMMIT")
-    connection.execute("CHECKPOINT")
-    connection.close()
-    print(f"embedding_shards_imported path={database_path}")
+        with np.load(path) as shard:
+            row_ids = shard["row_ids"].astype(str)
+            vectors = shard["vectors"]
+            if embedding_dimension == 0:
+                embedding_dimension = vectors.shape[1]
+            elif vectors.shape[1] != embedding_dimension:
+                raise ValueError(f"embedding dimension mismatch path={path} expected={embedding_dimension} actual={vectors.shape[1]}")
+            if "video_clips" not in counts:
+                counts["video_clips"] = 0
+                row_id_lengths["video_clips"] = 0
+            counts["video_clips"] += len(row_ids)
+            row_id_lengths["video_clips"] = max(row_id_lengths["video_clips"], max(len(row_id) for row_id in row_ids))
+    if embedding_dimension == 0:
+        raise RuntimeError(f"no embedding shards found in {shard_dir}")
+
+    index_dir.mkdir(parents=True, exist_ok=True)
+    matrices = {table: np.lib.format.open_memmap(index_dir / f"{table}.vectors.npy", mode="w+", dtype=np.float32, shape=(count, embedding_dimension)) for table, count in counts.items()}
+    row_id_arrays = {table: np.lib.format.open_memmap(index_dir / f"{table}.row_ids.npy", mode="w+", dtype=f"<U{row_id_lengths[table]}", shape=(count,)) for table, count in counts.items()}
+    positions = {table: 0 for table in counts}
+
+    for path in sorted(shard_dir.glob("text-*.npz")):
+        with np.load(path) as shard:
+            tables = shard["tables"].astype(str)
+            row_ids = shard["row_ids"].astype(str)
+            vectors = shard["vectors"].astype(np.float32)
+            for table_value in np.unique(tables):
+                table = str(table_value)
+                selected = tables == table
+                table_vectors = vectors[selected]
+                norms = np.linalg.norm(table_vectors, axis=1)
+                if np.any(norms == 0):
+                    raise ValueError(f"zero-norm embedding path={path} table={table}")
+                start = positions[table]
+                end = start + int(selected.sum())
+                matrices[table][start:end] = table_vectors / norms[:, None]
+                row_id_arrays[table][start:end] = row_ids[selected]
+                positions[table] = end
+        print(f"embedding_text_shard_indexed path={path}")
+    for path in sorted(shard_dir.glob("video-*.npz")):
+        with np.load(path) as shard:
+            row_ids = shard["row_ids"].astype(str)
+            vectors = shard["vectors"].astype(np.float32)
+            norms = np.linalg.norm(vectors, axis=1)
+            if np.any(norms == 0):
+                raise ValueError(f"zero-norm embedding path={path} table=video_clips")
+            start = positions["video_clips"]
+            end = start + len(row_ids)
+            matrices["video_clips"][start:end] = vectors / norms[:, None]
+            row_id_arrays["video_clips"][start:end] = row_ids
+            positions["video_clips"] = end
+        print(f"embedding_video_shard_indexed path={path}")
+    if positions != counts:
+        raise RuntimeError(f"embedding index row counts do not match expected counts expected={counts} actual={positions}")
+    for table in counts:
+        matrices[table].flush()
+        row_id_arrays[table].flush()
+        print(f"embedding_numpy_index_written table={table} rows={counts[table]} dimensions={embedding_dimension}")
 
 
 if __name__ == "__main__":
@@ -139,8 +203,9 @@ if __name__ == "__main__":
     parser.add_argument("--text-batch-size", type=int, required=True)
     parser.add_argument("--video-max-in-flight", type=int, required=True)
     parser.add_argument("--shard-dir", type=Path, required=True)
+    parser.add_argument("--index-dir", type=Path, required=True)
     parser.add_argument("--clip-dir", type=Path, required=True)
     arguments = parser.parse_args()
     asyncio.run(embed_text(arguments.database, arguments.endpoint, arguments.model, arguments.text_batch_size, arguments.shard_dir))
     asyncio.run(embed_video(arguments.database, arguments.endpoint, arguments.model, arguments.video_max_in_flight, arguments.shard_dir, arguments.clip_dir))
-    import_shards(arguments.database, arguments.model, arguments.shard_dir)
+    build_numpy_index(arguments.shard_dir, arguments.index_dir)

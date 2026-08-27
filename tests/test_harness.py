@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import duckdb
+import numpy as np
 from PIL import Image
 import subprocess
 
@@ -22,7 +23,6 @@ def create_database(path: Path, video_path: Path):
     connection.execute("INSERT INTO videos VALUES ('1', 0, 'test', ?, 4.0, INTERVAL 0 SECOND, INTERVAL 4 SECOND)", [str(video_path)])
     connection.execute("INSERT INTO captions VALUES ('c1', '1', 'merged', 30, 0, 4, INTERVAL 0 SECOND, INTERVAL 4 SECOND, 'alpha memory')")
     connection.execute("INSERT INTO video_clips VALUES ('1:video_clips:0', '1', 0, 4, INTERVAL 0 SECOND, INTERVAL 4 SECOND)")
-    connection.execute("INSERT INTO embeddings VALUES ('captions', 'c1', 'text', 'test', [1.0, 0.0])")
     connection.close()
 
 
@@ -39,7 +39,11 @@ def test_sql_search_notes_and_video(tmp_path, monkeypatch):
     database_path = tmp_path / "memory.duckdb"
     create_video(video_path)
     create_database(database_path, video_path)
-    harness = VideoSQLHarness(database_path, "http://embedding", "test", clip_dir, tmp_path / "media", tmp_path / "notes.json")
+    embedding_index_dir = tmp_path / "embedding_index"
+    embedding_index_dir.mkdir()
+    np.save(embedding_index_dir / "captions.vectors.npy", np.array([[1.0, 0.0]], dtype=np.float32))
+    np.save(embedding_index_dir / "captions.row_ids.npy", np.array(["c1"]))
+    harness = VideoSQLHarness(database_path, "http://embedding", "test", embedding_index_dir, clip_dir, tmp_path / "media", tmp_path / "notes.json")
 
     connection = duckdb.connect(str(database_path))
     connection.execute("CREATE TABLE many AS SELECT range AS value, repeat('x', 600) AS text FROM range(101)")

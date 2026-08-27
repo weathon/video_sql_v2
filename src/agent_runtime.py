@@ -16,6 +16,18 @@ from src.harness import VideoSQLHarness
 IMAGE_DATA_URL = re.compile(r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
 
 
+def serialize_usage(usage) -> dict:
+    return {
+        "requests": usage.requests,
+        "input_tokens": usage.input_tokens,
+        "input_tokens_details": usage.input_tokens_details.model_dump(mode="json"),
+        "output_tokens": usage.output_tokens,
+        "output_tokens_details": usage.output_tokens_details.model_dump(mode="json"),
+        "total_tokens": usage.total_tokens,
+        "request_usage_entries": [{"input_tokens": entry.input_tokens, "input_tokens_details": entry.input_tokens_details.model_dump(mode="json"), "output_tokens": entry.output_tokens, "output_tokens_details": entry.output_tokens_details.model_dump(mode="json"), "total_tokens": entry.total_tokens} for entry in usage.request_usage_entries],
+    }
+
+
 def normalize_trace(value):
     if isinstance(value, dict):
         return {key: normalize_trace(item) for key, item in value.items()}
@@ -58,13 +70,12 @@ def data_url(path: Path) -> str:
 
 
 class AgentRuntime:
-    def __init__(self, harness: VideoSQLHarness, endpoint: ModelEndpoint, context_limit: int, compaction_prompt: Path, reflection_final_prompt: Path):
+    def __init__(self, harness: VideoSQLHarness, endpoint: ModelEndpoint, client: AsyncOpenAI, context_limit: int, compaction_prompt: Path, reflection_final_prompt: Path):
         self.harness = harness
         self.endpoint = endpoint
         self.context_limit = context_limit
         self.compaction_prompt = compaction_prompt.read_text(encoding="utf-8")
         self.reflection_final_prompt = reflection_final_prompt.read_text(encoding="utf-8")
-        client = AsyncOpenAI(api_key=endpoint.api_key, base_url=endpoint.base_url)
         self.model = OpenAIResponsesModel(model=endpoint.model, openai_client=client)
         self.settings = ModelSettings(
             reasoning=Reasoning(effort=endpoint.reasoning_effort),
@@ -140,7 +151,7 @@ class AgentRuntime:
                 "tool": "clip_qa",
                 "input": {"video_id": video_id, "start_sec": start_sec, "end_sec": end_sec, "question": question},
                 "transcript": normalize_trace(result.to_input_list(mode="normalized")),
-                "responses": [{"output": [item.model_dump(mode="json") for item in response.output], "usage": asdict(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in result.raw_responses],
+                "responses": [{"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in result.raw_responses],
             })
             answer = result.final_output
             if answer.status == "unknown":
@@ -168,7 +179,7 @@ class AgentRuntime:
         endpoint_trace = asdict(self.endpoint)
         del endpoint_trace["api_key"]
         nested_tool_traces: list[dict] = []
-        trace = {"question": question, "model": endpoint_trace, "responses": [], "turns": [], "nested_tool_traces": nested_tool_traces, "compactions": []}
+        trace = {"question": question, "model": endpoint_trace, "responses": [], "model_responses": [], "turns": [], "nested_tool_traces": nested_tool_traces, "compactions": []}
         current_input = question
         compactions = 0
         while True:
@@ -196,6 +207,7 @@ class AgentRuntime:
                     stream.cancel(mode="after_turn")
             if stream.run_loop_exception:
                 raise stream.run_loop_exception
+            trace["model_responses"].extend({"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in stream.raw_responses)
             transcript = normalize_trace(stream.to_input_list(mode="normalized"))
             trace["turns"].append(transcript)
             trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -215,7 +227,7 @@ class AgentRuntime:
             trace["compactions"].append({
                 "index": compactions,
                 "handoff": compacted.final_output,
-                "responses": [{"output": [item.model_dump(mode="json") for item in response.output], "usage": asdict(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in compacted.raw_responses],
+                "responses": [{"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in compacted.raw_responses],
             })
             trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
             if compactions == 3:
@@ -227,7 +239,7 @@ class AgentRuntime:
                 trace["status"] = "compaction_limit"
                 trace["score"] = 0
                 trace["reflection"] = reflection_result.final_output
-                trace["reflection_responses"] = [{"output": [item.model_dump(mode="json") for item in response.output], "usage": asdict(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in reflection_result.raw_responses]
+                trace["reflection_responses"] = [{"output": [item.model_dump(mode="json") for item in response.output], "usage": serialize_usage(response.usage), "response_id": response.response_id, "request_id": response.request_id, "raw_usage": response.raw_usage} for response in reflection_result.raw_responses]
                 trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
                 return RolloutResult(status="compaction_limit", answer=None, score=0, reflection=str(reflection_result.final_output), compactions=compactions, trace_path=str(trace_path))
             current_input = [{"role": "user", "content": f"Trusted compacted handoff from the prior conversation:\n\n{compacted.final_output}"}]

@@ -25,6 +25,7 @@ class FakeResponse:
 class FakeStream:
     run_loop_exception = None
     final_output = None
+    raw_responses = []
 
     def __init__(self):
         self.cancel_mode = None
