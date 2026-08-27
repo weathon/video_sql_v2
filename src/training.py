@@ -101,7 +101,6 @@ def trace_for_judge(trace: dict) -> dict:
         "status": trace["status"],
         "answer": trace["answer"],
         "turns": trace["turns"],
-        "nested_tool_traces": [{"tool": item["tool"], "input": item["input"], "transcript": item["transcript"]} for item in trace["nested_tool_traces"]],
         "compactions": [{"index": item["index"], "handoff": item["handoff"]} for item in trace["compactions"]],
     }
 
