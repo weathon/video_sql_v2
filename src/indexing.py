@@ -81,7 +81,7 @@ def build_database(pilot_root: Path, database_path: Path) -> None:
         offset = offsets[path.stem]
         connection.execute(
             "INSERT INTO videos VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [path.stem, sequence_index, "month", path.name, duration, interval_at(offset, 0), interval_at(offset, duration)],
+            [path.stem, sequence_index, "month", path.relative_to(pilot_root / "videos").as_posix(), duration, interval_at(offset, 0), interval_at(offset, duration)],
         )
         clip_index = 0
         start = 0.0
