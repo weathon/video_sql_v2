@@ -12,6 +12,7 @@ from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalSer
 from openai.types.shared import Reasoning
 from pydantic import BaseModel, Field
 import wandb
+from wandb.sdk.lib.runid import generate_id
 
 from src.agent_runtime import AgentRuntime, ModelEndpoint, serialize_usage
 from src.harness import VideoSQLHarness
@@ -152,7 +153,7 @@ class PilotTrainer:
             wandb_id = wandb_id_path.read_text(encoding="utf-8").strip()
             self.wandb_run = wandb.init(project="video-sql-v2", id=wandb_id, resume="must", name="pilot-luna-seed2026")
         else:
-            wandb_id = wandb.util.generate_id()
+            wandb_id = generate_id()
             self.wandb_run = wandb.init(project="video-sql-v2", id=wandb_id, resume="never", name="pilot-luna-seed2026")
             wandb_id_path.write_text(wandb_id + "\n", encoding="utf-8")
 
