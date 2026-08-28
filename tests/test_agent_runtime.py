@@ -199,7 +199,13 @@ async def test_clip_tools_expose_filenames_not_absolute_paths(tmp_path, monkeypa
     assert isinstance(sample_outputs[1], ToolOutputImage)
     rejected_context = ToolContext(None, tool_name="sample_video", tool_call_id="call-3", tool_arguments='{"sample_start_sec":-1,"sample_end_sec":2,"fps":1,"x1":0,"x2":1000,"y1":0,"y2":1000,"return_caption":true}')
     rejected_output = await sample_video.on_invoke_tool(rejected_context, '{"sample_start_sec":-1,"sample_end_sec":2,"fps":1,"x1":0,"x2":1000,"y1":0,"y2":1000,"return_caption":true}')
-    assert rejected_output == {"status": "rejected", "error": "sample interval must stay inside clip_qa interval 0.0-2.0"}
+    assert rejected_output == {"status": "rejected", "error": "sample_start_sec, sample_end_sec, and fps define an invalid sampling interval"}
+    zero_fps_output = await sample_video.on_invoke_tool(rejected_context, '{"sample_start_sec":0,"sample_end_sec":2,"fps":0,"x1":0,"x2":1000,"y1":0,"y2":1000,"return_caption":true}')
+    assert zero_fps_output == {"status": "rejected", "error": "sample_start_sec, sample_end_sec, and fps define an invalid sampling interval"}
+    invalid_crop_output = await sample_video.on_invoke_tool(rejected_context, '{"sample_start_sec":0,"sample_end_sec":2,"fps":1,"x1":500,"x2":500,"y1":0,"y2":1000,"return_caption":true}')
+    assert invalid_crop_output == {"status": "rejected", "error": "crop coordinates must satisfy 0 <= x1 < x2 <= 1000 and 0 <= y1 < y2 <= 1000"}
+    outside_clip_output = await sample_video.on_invoke_tool(rejected_context, '{"sample_start_sec":0,"sample_end_sec":3,"fps":1,"x1":0,"x2":1000,"y1":0,"y2":1000,"return_caption":true}')
+    assert outside_clip_output == {"status": "rejected", "error": "sample interval must stay inside clip_qa interval 0.0-2.0"}
 
 
 async def test_clip_stream_error_preserves_completed_responses_and_transcript(monkeypatch):

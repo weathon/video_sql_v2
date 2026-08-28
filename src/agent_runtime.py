@@ -120,6 +120,10 @@ class AgentRuntime:
             @function_tool(failure_error_function=None)
             def sample_video(sample_start_sec: float, sample_end_sec: float, fps: float, x1: int, x2: int, y1: int, y2: int, return_caption: bool):
                 """Sample this clip into timestamped 4x3 contact sheets. Crop coordinates are integers from 0 to 1000."""
+                if not 0 <= x1 < x2 <= 1000 or not 0 <= y1 < y2 <= 1000:
+                    return {"status": "rejected", "error": "crop coordinates must satisfy 0 <= x1 < x2 <= 1000 and 0 <= y1 < y2 <= 1000"}
+                if sample_start_sec < 0 or sample_end_sec <= sample_start_sec or fps <= 0:
+                    return {"status": "rejected", "error": "sample_start_sec, sample_end_sec, and fps define an invalid sampling interval"}
                 if sample_start_sec < start_sec or sample_end_sec > end_sec:
                     return {"status": "rejected", "error": f"sample interval must stay inside clip_qa interval {start_sec}-{end_sec}"}
                 result = self.harness.sample_video(video_id, sample_start_sec, sample_end_sec, fps, x1, x2, y1, y2, return_caption)
