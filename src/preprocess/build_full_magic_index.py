@@ -14,7 +14,7 @@ import duckdb
 from openai import APIConnectionError, APIError, AsyncOpenAI
 from pydantic import BaseModel, RootModel, field_validator, model_validator
 
-from src.preprocess.magic_index_prompts import ACTIVITY, ASR_SYSTEM, ENRICH, ENTITY_FILTER, EVENT_CHAIN, MERGE_SYSTEM, OPENIE_EXAMPLE, OPENIE_EXAMPLE_OUTPUT, OPENIE_SYSTEM, SEMANTIC_SYSTEM, TOPIC, TOPIC_SYSTEM, VIDEO_CAPTION, WEEK_EVENT_CHAIN_ROUND2
+from src.preprocess.magic_index_prompts import ACTIVITY, ASR_SYSTEM, ENRICH, ENTITY_FILTER, EVENT_CHAIN, MERGE_SYSTEM, OPENIE_EXAMPLE, OPENIE_EXAMPLE_OUTPUT, OPENIE_SYSTEM, SEMANTIC_EXAMPLE_INPUT, SEMANTIC_EXAMPLE_OUTPUT, SEMANTIC_SYSTEM, TOPIC, TOPIC_SYSTEM, VIDEO_CAPTION, WEEK_EVENT_CHAIN_ROUND2
 
 
 class CombinedOpenIE(BaseModel):
@@ -545,7 +545,12 @@ async def run_memory_stages(catalog: dict, levels: dict[str, list[dict]], model:
     async def extract_semantic(job, fill_round):
         openie = read_json(stage_path(root, "openie", job["key"]))
         triples_text = "\n".join(f"{index}. {triple}" for index, triple in enumerate(openie["triples"]))
-        messages = [{"role": "system", "content": SEMANTIC_SYSTEM}, {"role": "user", "content": f"Episodic triples:\n{triples_text}"}]
+        messages = [
+            {"role": "system", "content": SEMANTIC_SYSTEM},
+            {"role": "user", "content": SEMANTIC_EXAMPLE_INPUT},
+            {"role": "assistant", "content": SEMANTIC_EXAMPLE_OUTPUT},
+            {"role": "user", "content": f"Episodic triples:\n{triples_text}"},
+        ]
         result = await model.generate("semantic", job["key"], messages, messages, SemanticOutput)
         if result is None:
             append_failure(root, "semantic", job["key"], "ten model attempts failed", fill_round)
@@ -596,6 +601,13 @@ def entity_candidates(catalog: dict, levels: dict[str, list[dict]], memory: dict
             captions[item["video_id"]].append(read_json(path))
     output = {}
     for timeline in catalog["videos"]:
+        timeline_skip_words = skip_words
+        if timeline["video_id"] == "week":
+            timeline_skip_words = skip_words | {
+                "me", "my", "us", "shure", "katrina", "tasha", "lucia",
+                "alice", "nicous", "choiszt", "violet", "jack", "liu ting",
+                "huixin", "annie", "zitang", "it", "things", "stuff",
+            }
         entities = set()
         for job in memory["semantic_jobs"]:
             path = stage_path(root, "semantic", job["key"])
@@ -606,7 +618,7 @@ def entity_candidates(catalog: dict, levels: dict[str, list[dict]], memory: dict
                 continue
             for triple in result["semantic_triples"]:
                 for entity in (triple[0].lower().strip(), triple[2].lower().strip()):
-                    if len(entity) >= 2 and entity not in skip_words:
+                    if len(entity) >= 2 and entity not in timeline_skip_words:
                         entities.add(entity)
         mentions = {}
         for entity in entities:
@@ -622,6 +634,8 @@ async def run_topic_stages(catalog: dict, levels: dict[str, list[dict]], memory:
     candidates = entity_candidates(catalog, levels, memory, root)
     filter_jobs = []
     for video_id, entities in candidates.items():
+        if video_id == "week":
+            continue
         ordered = sorted(entities)
         for batch_index, start in enumerate(range(0, len(ordered), 100)):
             batch = ordered[start:start + 100]
@@ -643,6 +657,7 @@ async def run_topic_stages(catalog: dict, levels: dict[str, list[dict]], memory:
 
     await run_jobs("entity_filter", filter_jobs, concurrency, root, filter_entities)
     kept_by_video = defaultdict(list)
+    kept_by_video["week"] = sorted(candidates["week"])
     for job in filter_jobs:
         path = stage_path(root, "entity_filter", job["key"])
         if path.is_file():
