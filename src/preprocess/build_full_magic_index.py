@@ -250,7 +250,7 @@ class LocalModel:
             trace_path = self.root / "traces" / stage / safe_key(key) / f"attempt-{attempt:02d}.json"
             try:
                 if response_format is None:
-                    response = await self.client.chat.completions.create(model=self.model, messages=attempt_messages, extra_body={"chat_template_kwargs": {"reasoning_effort": "medium"}})
+                    response = await self.client.chat.completions.create(model=self.model, messages=attempt_messages, reasoning_effort="low", extra_body={"chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": True}})
                     content = response.choices[0].message.content
                     if not content or not content.strip():
                         correction = [{"role": "assistant", "content": content or ""}, {"role": "user", "content": "The previous response was empty. Produce the requested nonempty result."}]
@@ -260,7 +260,7 @@ class LocalModel:
                         continue
                     write_json(trace_path, {"request": attempt_trace_messages, "response": response.model_dump(mode="json")})
                     return content.strip()
-                response = await self.client.chat.completions.parse(model=self.model, messages=attempt_messages, response_format=response_format, extra_body={"chat_template_kwargs": {"reasoning_effort": "medium"}})
+                response = await self.client.chat.completions.parse(model=self.model, messages=attempt_messages, response_format=response_format, reasoning_effort="low", extra_body={"chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": True}})
                 parsed = response.choices[0].message.parsed
                 if parsed is None:
                     correction = [{"role": "assistant", "content": response.choices[0].message.content or ""}, {"role": "user", "content": "The previous response did not satisfy the required schema. Return a valid structured response."}]
