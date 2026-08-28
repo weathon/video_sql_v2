@@ -147,11 +147,94 @@ MERGE_SYSTEM = {
     "day": "Merge a visual description and a speech transcript into one coherent third-person gameplay caption. Refer to the controlled character as the player. Preserve exact character, location, enemy, item, spell, quest, action, outcome, and dialogue details. Keep the result concise at 2-4 sentences. Output only the merged caption.",
 }
 
-OPENIE_SYSTEM = "Your task is to extract named entities and construct an RDF graph from the given paragraph. Respond with a JSON object containing named_entities, a list of named entities, and triples, a list of 3-element [subject, predicate, object] lists. Each triple should contain at least one, preferably two, named entities. Resolve non-first-person pronouns to specific names when the paragraph supports it. Keep first-person pronouns as I."
-OPENIE_EXAMPLE = "Radio City is India's first private FM radio station and was started on 3 July 2001. It plays Hindi and English songs. Radio City launched PlanetRadiocity.com in May 2008."
-OPENIE_EXAMPLE_OUTPUT = '{"named_entities":["Radio City","India","3 July 2001","Hindi","English","PlanetRadiocity.com","May 2008"],"triples":[["Radio City","located in","India"],["Radio City","started on","3 July 2001"],["Radio City","plays songs in","Hindi"],["Radio City","plays songs in","English"],["Radio City","launched","PlanetRadiocity.com"],["PlanetRadiocity.com","launched in","May 2008"]]}'
+OPENIE_SYSTEM = """Your task is to extract named entities and construct an RDF (Resource Description Framework) graph from the given paragraph.
 
-SEMANTIC_SYSTEM = "Extract semantic knowledge from episodic triples. Infer only generalizable relationships, attributes, preferences, habits, and capabilities supported by the input. Do not copy one-off episode details unless they support a persistent fact. Return semantic_triples as 3-element [subject, predicate, object] lists and episodic_evidence as aligned lists of zero-based indices into the input episodic triples. If no semantic knowledge is inferable, return both lists empty."
+Respond with a JSON object containing two keys:
+1. "named_entities": A list of named entities found in the paragraph.
+2. "triples": A list of RDF triples, each as a 3-element list [subject, predicate, object].
+
+Pay attention to the following requirements:
+- Each triple should contain at least one, but preferably two, of the named entities.
+- When resolving pronouns, if the pronoun refers to the first-person (e.g., I, me, my), keep it as "I" instead of replacing with terms like "speaker" or "narrator". For other pronouns, clearly resolve them to their specific names to maintain clarity.
+"""
+OPENIE_EXAMPLE = """Radio City
+Radio City is India's first private FM radio station and was started on 3 July 2001.
+It plays Hindi, English and regional songs.
+Radio City recently forayed into New Media in May 2008 with the launch of a music portal - PlanetRadiocity.com that offers music related news, videos, songs, and other music-related features."""
+OPENIE_EXAMPLE_OUTPUT = """{
+    "named_entities": ["Radio City", "India", "3 July 2001", "Hindi", "English", "May 2008", "PlanetRadiocity.com"],
+    "triples": [
+        ["Radio City", "located in", "India"],
+        ["Radio City", "is", "private FM radio station"],
+        ["Radio City", "started on", "3 July 2001"],
+        ["Radio City", "plays songs in", "Hindi"],
+        ["Radio City", "plays songs in", "English"],
+        ["Radio City", "forayed into", "New Media"],
+        ["Radio City", "launched", "PlanetRadiocity.com"],
+        ["PlanetRadiocity.com", "launched in", "May 2008"],
+        ["PlanetRadiocity.com", "is", "music portal"],
+        ["PlanetRadiocity.com", "offers", "news"],
+        ["PlanetRadiocity.com", "offers", "videos"],
+        ["PlanetRadiocity.com", "offers", "songs"]
+    ]
+}"""
+
+SEMANTIC_SYSTEM = """You are tasked with extracting semantic knowledge from episodic triples. 
+Your goal is to infer generalizable information that extends beyond the specific episode. 
+Focus on capturing valid semantic triples that can guide reasoning about behavior, relationships, or preferences.
+
+# What to Extract:
+1. **Relationships**: social bonds or roles between entities  that persist over time
+   (e.g., "Alice is a friend with Bob", "Jason is a teacher of Alice").
+2. **Attributes & Preferences**: tendencies, likes/dislikes, personality-like traits, or behavioral habits
+   (e.g., "Alice prefers not having dessert", "Bob enjoys music").
+3. **Habits & Capabilities**: actions or patterns that suggest what an entity often does, can do, or tends to do
+   (e.g., "Alice often helps friends", "Jason can give advice").
+4. **Conceptual Knowledge**: directly useful facts that support reasoning, but avoid overly broad taxonomic statements
+   (e.g., "Alice's office is near Cafe X", "Bob's gym is closed on Sundays").
+
+# What to Avoid:
+- **One-off events or transient states** (e.g., “ate pizza yesterday”, “was late once”) unless explicitly declared as a preference/role
+- **Broad taxonomy or trivia unrelated to behavior** (e.g., “a laptop is electronics”, “Paris is in France”)
+- **Speculative or mind-reading inferences without textual support** (e.g., motives, beliefs not evidenced)
+
+# Important Notes:
+- Prefer to base semantic triples on multiple supporting episodes. 
+- BUT if a single episode clearly reflects a role, preference, habit, or capability, it is valid to include it.
+- Each semantic triple MUST have at least one supporting episodic triple.
+- Reduce duplication. If multiple episodic triples support the same or very similar semantic knowledge, merge them into one semantic triple rather than repeating.
+- The `episodic_evidence[i]` list must always point to the indices that support `semantic_triples[i]`.
+- Aim for broad coverage: extract as many valid semantic triples as reasonably supported by the input.
+
+# Output Format:
+Return ONLY a JSON object with the following two keys:
+- `semantic_triples` (List[List[str]]): Each item is a triple [subject, predicate, object].
+- `episodic_evidence` (List[List[int]]) : Each item is a list of **0-based** indices pointing to the input episodic triples 
+   that support the corresponding semantic triple at the same position.
+- The two lists MUST have the same length and aligned order.
+- If no semantic knowledge is inferable, return:
+  {"semantic_triples": [], "episodic_evidence": []}
+"""
+SEMANTIC_EXAMPLE_INPUT = """Episodic triples:
+0. ["Alice", "talks to", "Bob"],
+1. ["Alice", "laughs with", "Bob"],
+2. ["Alice", "doesn't eat cake", "at restaurant"],
+3. ["Alice", "shares personal stories with", "Bob"],
+4. ["Alice", "brings coffee to", "Bob"],
+5. ["Jason", "talks to", "Alice"],
+6. ["Alice", "declines dessert", "at friend's house"]
+"""
+SEMANTIC_EXAMPLE_OUTPUT = """{
+  "semantic_triples": [
+    ["Alice", "is a friend with", "Bob"],
+    ["Alice", "prefers", "not having dessert"]
+  ],
+  "episodic_evidence": [
+    [0, 1, 3],
+    [2, 6]
+  ]
+}
+"""
 
 ENTITY_FILTER = """Below is a list of entities extracted from video captions. Remove UI or layout elements, body parts, generic visual descriptions, generic actions or emotions, full sentences, vague words, generic person descriptions, and interface elements. Keep named people, places, countries, cities, specific objects, instruments, food, animals, games, sports, platforms, apps, and identifying clothing items. Return a JSON array containing only entity names from the input list.
 
