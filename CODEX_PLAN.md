@@ -140,7 +140,7 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 2. Pilot 视频 clip cache 已经完成：DuckDB 和磁盘各 9,167 个 clip，所有视频的最终边界与视频流时长一致。文本 embedding 已经生成 813 个 shard，共 416,029 行。
 3. Pilot 视频 embedding shard 生成已经结束：9,164 个成功，`14:video_clips:557`、`17:video_clips:557`、`21:video_clips:557` 因已确认的 TorchCodec 视频末尾错误按整 clip 跳过。
 4. 原 DuckDB 逐行 embedding 导入已停止，不作为最终存储；Pilot NumPy 索引包含 11 个 embedding 表的 row-ID 矩阵和向量矩阵。
-5. 正式本地模型已经改为 `Inferact/Qwen3.8-Flash-Next-NVFP4`。后续使用四张完全空闲的 GPU 做 tensor parallel 4；embedding server 放在显存已经占用约一半但 compute 空闲的 shared GPU。除 GPU 部署和 tensor parallel 外，使用 `notes/INFRA.txt` 最上方 Current best choice 的配置。
+5. 正式本地模型已经改为 `Inferact/Qwen3.8-Flash-Next-NVFP4`。本次正式索引使用物理 GPU 1、4、5、6 做 tensor parallel 4；embedding server 放在显存已经占用约一半但 compute 空闲的 shared GPU。除 GPU 部署和 tensor parallel 外，使用 `notes/INFRA.txt` 最上方 Current best choice 的配置。
 6. Pilot 前两次运行分别因 agent 可查询 gold answer 和 judge 将 incidental numeric ID 当作答案而失效，已归档为 `runs/pilot_luna_contaminated_answer_leak_20260827` 和 `runs/pilot_luna_invalid_numeric_judge_20260827`，不得恢复或计入结果。
 7. Pilot 已完成 gold 数据与 agent 数据库的物理隔离、DuckDB external access 禁用和连接配置统一；judge 现在只接收 candidate answer 与 reference answer，只判断最终答案的语义等价性，不读取问题、trace 或证据。
 8. Pilot 已完成工具输入拒绝与系统错误传播的分类、主 agent 与 nested clip agent 的失败 trace 保存、并发图片文件名隔离、流式 API 错误分类，以及由当前主 agent 生成 handoff 后重开对话的 compaction 实现；相关经验和断点见 `notes/PILOT_RUN_LESSONS.md`。
