@@ -55,7 +55,7 @@ MAGIC-video 生成index流程
 - month 与 week 的 caption、topic 和 event 提示使用 MAGIC-video commit `0f2273f7f07360cc58588399553b5a6ea758b084` 中对应原文；week 的 activity `location` 与 event `chain_type` 按原输出写入 NULL。
 - 多级 caption 聚合按完整逻辑时间线连续处理，不按来源视频文件重置；week topic/event 的 DAY 与本地时刻映射回 week 逻辑时间线秒数，event 使用完整七日 activities 并执行 EgoLife 原第二轮漏项提取。
 - 正式索引的每个本地模型请求最多重试 10 次；全部尝试失败后跳过整个样本并记录，完成当前批次后统一补跑缺失样本。正式并发量在运行前使用真实视频请求逐级测试后确定。
-- 每次本地模型重试保存该次实际发送的消息及此前校错消息；确定性 4xx 请求、凭据、模型或服务配置错误直接终止，不按样本跳过。
+- 每次本地模型重试保存该次实际发送的消息及此前校错消息，包括 VLM 请求中的实际 base64 video data URL；确定性 4xx 请求、凭据、模型或服务配置错误直接终止，不按样本跳过。补跑后仍缺失任何样本时终止当前索引运行，不装配不完整 artifact。
 - 正式 ASR 重新转录使用上述 MAGIC-video commit 的 faster-whisper `large-v3-turbo` 与 Silero VAD 方法处理官方 MM-Lifelong revision `248aa82039a574e63a2e524746a7cd8f32330443`；使用 GPU 1、4、5、6，每卡从 1,024 并发开始，真实运行失败后再降低。配置、产物路径和 transcript 使用方法见 `notes/ASR.txt`。caption merge、OpenIE、semantic、topic、event 等后续步骤继续按照 MAGIC-video 的对应预处理脚本执行，模型使用 `Inferact/Qwen3.8-Flash-Next-NVFP4` 和 `notes/INFRA.txt` 指定的配置。
 - 从与 Pilot 相同的初始 `SKILL.md` 和 `META-SKILL.md` 重新开始，不继承 Pilot 训练结果。
 - 使用 month train 的 266 个问题训练 1 个 epoch，每批 5 题，每题 10 个并发 rollout；seed 2026 固定顺序，最后一批正常处理。
