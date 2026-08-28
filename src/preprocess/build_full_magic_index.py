@@ -283,6 +283,8 @@ async def run_jobs(stage: str, jobs: list[dict], concurrency: int, root: Path, w
         if not pending:
             break
     print(f"stage_complete stage={stage} total={len(jobs)} missing={len(pending)}")
+    if pending:
+        raise RuntimeError(f"stage still has missing samples after fill round stage={stage} missing={len(pending)}")
     return len(pending)
 
 
@@ -396,8 +398,7 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
         try:
             data_url = await asyncio.to_thread(prepare_video_data_url, Path(clip["clip_path"]))
             messages = [{"role": "user", "content": [{"type": "text", "text": VIDEO_CAPTION}, {"type": "video_url", "video_url": {"url": data_url}}]}]
-            trace_messages = [{"role": "user", "content": [{"type": "text", "text": VIDEO_CAPTION}, {"type": "video_url", "video_url": {"path": clip["clip_path"]}}]}]
-            text = await model.generate("vlm", job["key"], messages, trace_messages)
+            text = await model.generate("vlm", job["key"], messages, messages)
         except SampleInputError as error:
             append_failure(root, "vlm", job["key"], str(error), fill_round)
             return
