@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from src.harness import VideoSQLHarness
 
@@ -33,6 +34,9 @@ def test_real_pilot_database_counts_joins_and_time_mapping(tmp_path):
     connection.close()
 
     harness = VideoSQLHarness(DATABASE, "http://embedding", "qwen", Path("data/embedding_index"), Path("data/video_clips"), tmp_path / "media", tmp_path / "notes.json")
+    assert harness.run_sql("SELECT current_setting('enable_external_access'), current_setting('lock_configuration')")["rows"] == [[False, True]]
+    with pytest.raises(duckdb.PermissionException, match="file system operations are disabled"):
+        harness.run_sql("SELECT * FROM read_text('pyproject.toml')")
     with ThreadPoolExecutor(max_workers=16) as executor:
         results = list(executor.map(lambda _: harness.run_sql("SELECT count(*) FROM videos"), range(32)))
     assert all(result["rows"] == [[14]] for result in results)

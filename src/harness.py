@@ -62,7 +62,7 @@ class VideoSQLHarness:
         self.notes = Notes(notes_path)
 
     def run_sql(self, sql: str) -> dict:
-        connection = duckdb.connect(str(self.database_path), read_only=True)
+        connection = duckdb.connect(str(self.database_path), read_only=True, config={"enable_external_access": "false", "lock_configuration": "true"})
         executor = ThreadPoolExecutor(max_workers=1)
 
         def execute_query():

@@ -5,6 +5,7 @@ from pathlib import Path
 import duckdb
 import numpy as np
 from PIL import Image
+import pytest
 import subprocess
 
 from src.harness import AgentRaised, VideoSQLHarness
@@ -57,6 +58,18 @@ def test_sql_search_notes_and_video(tmp_path, monkeypatch):
     json.dumps(interval_result)
     assert interval_result["rows"] == [["0:00:00"]]
     assert harness.run_sql("SELECT missing FROM nowhere")["status"] == "query_error"
+    assert harness.run_sql("SELECT current_setting('enable_external_access'), current_setting('lock_configuration')")["rows"] == [[False, True]]
+    assert harness.run_sql("SET enable_external_access=true")["status"] == "query_error"
+    secret_path = tmp_path / "secret.txt"
+    secret_path.write_text("gold", encoding="utf-8")
+    with pytest.raises(duckdb.PermissionException, match="file system operations are disabled"):
+        harness.run_sql(f"SELECT * FROM read_text('{secret_path}')")
+    attached_path = tmp_path / "attached.duckdb"
+    attached = duckdb.connect(str(attached_path))
+    attached.execute("CREATE TABLE hidden(value INTEGER)")
+    attached.close()
+    with pytest.raises(duckdb.PermissionException, match="file system operations are disabled"):
+        harness.run_sql(f"ATTACH '{attached_path}' AS attached (READ_ONLY)")
 
     monkeypatch.setattr("src.harness.httpx.post", lambda *args, **kwargs: EmbeddingResponse())
     search = harness.semantic_search("alpha", 1, "captions")
