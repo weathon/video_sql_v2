@@ -26,7 +26,7 @@ def validate_complete(video_key, json_path, srt_path):
     if not isinstance(existing, list):
         raise TypeError(f"expected list in {json_path}")
     with srt_path.open(encoding="utf-8") as handle:
-        srt_blocks = [block.splitlines() for block in handle.read().strip().split("\n\n") if block.strip()]
+        srt_blocks = [block.splitlines() for block in re.split(r"\n{2,}", handle.read().strip()) if block.strip()]
     if len(srt_blocks) != len(existing):
         raise ValueError(
             f"JSON/SRT segment count mismatch video={video_key} "
