@@ -346,7 +346,22 @@ def load_catalog(database_path: Path, dataset_video_root: Path, asr_root: Path, 
                     for segment in read_json(transcript_path):
                         raw_segments.append({"start_sec": clip["start_sec"] + float(segment["start_sec"]), "end_sec": clip["start_sec"] + float(segment["end_sec"]), "text": segment["text"], "source_video_id": source["video_id"]})
         raw_segments.sort(key=lambda item: (item["start_sec"], item["end_sec"]))
-        timeline = {"video_id": timeline_id, "sequence_index": len(catalog["videos"]), "source_split": timeline_id, "filename": timeline_id, "duration_sec": max(clip["end_sec"] for clip in timeline_clips), "clips": timeline_clips}
+        timeline = {
+            "video_id": timeline_id,
+            "sequence_index": len(catalog["videos"]),
+            "source_split": timeline_id,
+            "filename": timeline_id,
+            "duration_sec": max(clip["end_sec"] for clip in timeline_clips),
+            "source_offsets": {
+                source["video_id"]: source["global_start_sec"] - origins[timeline_id]
+                for source in timeline_sources
+            },
+            "source_durations": {
+                source["video_id"]: source["duration_sec"]
+                for source in timeline_sources
+            },
+            "clips": timeline_clips,
+        }
         catalog["videos"].append(timeline)
         catalog["clips"].extend(timeline_clips)
         write_json(root / "raw_asr" / f"{timeline_id}.json", raw_segments)
@@ -400,7 +415,15 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
         if not clip["asr_text"]:
             write_json(stage_path(root, "asr_rewrite", job["key"]), {"row_id": f"{clip['row_id']}:captions:asr", "video_id": clip["video_id"], "source_video_id": clip["source_video_id"], "source": "asr", "granularity_sec": 30, "start_sec": clip["start_sec"], "end_sec": clip["end_sec"], "text": "", "raw_text": ""})
             return
-        prompt = f"Raw transcript [{clip['start_sec']:.3f}s - {clip['end_sec']:.3f}s]:\n{clip['asr_text']}"
+        if clip["video_id"] == "week":
+            prompt = json.dumps([{
+                "start": clip["start_sec"],
+                "end": clip["end_sec"],
+                "text": clip["asr_text"],
+                "type": "transcript",
+            }], ensure_ascii=False, indent=2)
+        else:
+            prompt = f"Raw transcript [{clip['start_sec']:.3f}s - {clip['end_sec']:.3f}s]:\n{clip['asr_text']}"
         messages = [{"role": "system", "content": ASR_SYSTEM[clip["video_id"]]}, {"role": "user", "content": prompt}]
         text = await model.generate("asr_rewrite", job["key"], messages, messages)
         if text is None:
@@ -424,7 +447,23 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
         if not asr_text:
             text = visual_text
         else:
-            prompt = f"Visual: {visual_text}\nTranscript: {asr_text}"
+            if clip["video_id"] == "week":
+                prompt = json.dumps([
+                    {
+                        "start": clip["start_sec"],
+                        "end": clip["end_sec"],
+                        "text": visual_text,
+                        "type": "caption",
+                    },
+                    {
+                        "start": clip["start_sec"],
+                        "end": clip["end_sec"],
+                        "text": asr_text,
+                        "type": "transcript",
+                    },
+                ], ensure_ascii=False, indent=2)
+            else:
+                prompt = f"Visual: {visual_text}\nTranscript: {asr_text}"
             messages = [{"role": "system", "content": MERGE_SYSTEM[clip["video_id"]]}, {"role": "user", "content": prompt}]
             text = await model.generate("merge", job["key"], messages, messages)
             if text is None:
@@ -438,15 +477,25 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
     for source_stage, target_stage, granularity, group_size in (("merge", "aggregate_180", 180, 6), ("aggregate_180", "aggregate_600", 600, 3), ("aggregate_600", "aggregate_3600", 3600, 6)):
         jobs = []
         for timeline in catalog["videos"]:
-            source_ids = sorted({item["source_video_id"] for item in levels[source_stage] if item["video_id"] == timeline["video_id"]})
+            children = [
+                item
+                for item in levels[source_stage]
+                if item["video_id"] == timeline["video_id"]
+            ]
+            children.sort(key=lambda item: item["start_sec"])
             group_index = 0
-            for source_video_id in source_ids:
-                children = [item for item in levels[source_stage] if item["video_id"] == timeline["video_id"] and item["source_video_id"] == source_video_id]
-                children.sort(key=lambda item: item["start_sec"])
-                for start in range(0, len(children), group_size):
-                    group = children[start:start + group_size]
-                    jobs.append({"key": f"{timeline['video_id']}:{granularity}:{group_index}", "video_id": timeline["video_id"], "source_video_id": source_video_id, "start_sec": group[0]["start_sec"], "end_sec": group[-1]["end_sec"], "children": group, "source_stage": source_stage, "granularity_sec": granularity})
-                    group_index += 1
+            for start in range(0, len(children), group_size):
+                group = children[start:start + group_size]
+                jobs.append({
+                    "key": f"{timeline['video_id']}:{granularity}:{group_index}",
+                    "video_id": timeline["video_id"],
+                    "start_sec": group[0]["start_sec"],
+                    "end_sec": group[-1]["end_sec"],
+                    "children": group,
+                    "source_stage": source_stage,
+                    "granularity_sec": granularity,
+                })
+                group_index += 1
 
         async def aggregate(job, fill_round, stage=target_stage):
             child_rows = []
@@ -463,10 +512,10 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
             if text is None:
                 append_failure(root, stage, job["key"], "ten model attempts failed", fill_round)
                 return
-            write_json(stage_path(root, stage, job["key"]), {"row_id": f"{job['key']}:captions:merged", "video_id": job["video_id"], "source_video_id": job["source_video_id"], "source": "merged", "granularity_sec": job["granularity_sec"], "start_sec": job["start_sec"], "end_sec": job["end_sec"], "text": text})
+            write_json(stage_path(root, stage, job["key"]), {"row_id": f"{job['key']}:captions:merged", "video_id": job["video_id"], "source": "merged", "granularity_sec": job["granularity_sec"], "start_sec": job["start_sec"], "end_sec": job["end_sec"], "text": text})
 
         await run_jobs(target_stage, jobs, concurrency, root, aggregate)
-        levels[target_stage] = [{"key": job["key"], "video_id": job["video_id"], "source_video_id": job["source_video_id"], "start_sec": job["start_sec"], "end_sec": job["end_sec"]} for job in jobs]
+        levels[target_stage] = [{"key": job["key"], "video_id": job["video_id"], "start_sec": job["start_sec"], "end_sec": job["end_sec"]} for job in jobs]
     return levels
 
 
