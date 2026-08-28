@@ -41,7 +41,7 @@ def validate_complete(video_key, json_path, srt_path):
             raise ValueError(f"invalid timestamp range video={video_key} index={segment_index}")
         if not isinstance(entry["text"], str):
             raise TypeError(f"invalid text video={video_key} index={segment_index}")
-        if len(block) < 3 or block[0] != str(segment_index):
+        if len(block) < 2 or block[0] != str(segment_index):
             raise ValueError(f"invalid SRT block video={video_key} index={segment_index}")
         timestamp_match = re.fullmatch(
             r"(\d{2}):(\d{2}):(\d{2}),(\d{3}) --> (\d{2}):(\d{2}):(\d{2}),(\d{3})",
