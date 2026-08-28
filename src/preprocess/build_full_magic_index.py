@@ -349,6 +349,7 @@ def load_catalog(database_path: Path, dataset_video_root: Path, asr_root: Path, 
 
     catalog = {"videos": [], "clips": []}
     for timeline_id in ("month", "day", "week"):
+        clock_segments = {}
         timeline_clips = sorted(clips_by_timeline[timeline_id], key=lambda item: item["start_sec"])
         if not timeline_clips:
             raise RuntimeError(f"timeline has no clips: {timeline_id}")
@@ -369,7 +370,18 @@ def load_catalog(database_path: Path, dataset_video_root: Path, asr_root: Path, 
                 source_clips = sorted(clips_by_source[source["video_id"]], key=lambda item: item["start_sec"])
                 if len(source_paths) != len(source_clips):
                     raise RuntimeError(f"week source/clip count mismatch video={source['video_id']} sources={len(source_paths)} clips={len(source_clips)}")
+                clock_segments[source["video_id"]] = []
                 for source_path, clip in zip(source_paths, source_clips, strict=True):
+                    clock_start_sec = parse_egolife_filename_clock(source_path)
+                    clock_end_sec = clock_start_sec + clip["end_sec"] - clip["start_sec"]
+                    clip["week_day"] = source["video_id"]
+                    clip["local_clock_start_sec"] = clock_start_sec
+                    clock_segments[source["video_id"]].append({
+                        "clock_start_sec": clock_start_sec,
+                        "clock_end_sec": clock_end_sec,
+                        "timeline_start_sec": clip["start_sec"],
+                        "timeline_end_sec": clip["end_sec"],
+                    })
                     transcript_path = asr_root / "week" / source["video_id"] / source_path.stem / "whisper" / f"{source_path.stem}_whisper.json"
                     for segment in read_json(transcript_path):
                         raw_segments.append({"start_sec": clip["start_sec"] + float(segment["start_sec"]), "end_sec": clip["start_sec"] + float(segment["end_sec"]), "text": segment["text"], "source_video_id": source["video_id"]})
@@ -388,6 +400,7 @@ def load_catalog(database_path: Path, dataset_video_root: Path, asr_root: Path, 
                 source["video_id"]: source["duration_sec"]
                 for source in timeline_sources
             },
+            "clock_segments": clock_segments,
             "clips": timeline_clips,
         }
         catalog["videos"].append(timeline)
@@ -431,7 +444,11 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
         if text is None:
             append_failure(root, "vlm", job["key"], "ten model attempts failed", fill_round)
             return
-        write_json(stage_path(root, "vlm", job["key"]), {"row_id": f"{clip['row_id']}:captions:vlm", "video_id": clip["video_id"], "source_video_id": clip["source_video_id"], "source": "vlm", "granularity_sec": 30, "start_sec": clip["start_sec"], "end_sec": clip["end_sec"], "text": text})
+        output = {"row_id": f"{clip['row_id']}:captions:vlm", "video_id": clip["video_id"], "source_video_id": clip["source_video_id"], "source": "vlm", "granularity_sec": 30, "start_sec": clip["start_sec"], "end_sec": clip["end_sec"], "text": text}
+        if clip["video_id"] == "week":
+            output["week_day"] = clip["week_day"]
+            output["local_clock_start_sec"] = clip["local_clock_start_sec"]
+        write_json(stage_path(root, "vlm", job["key"]), output)
 
     await run_jobs("vlm", vlm_jobs, concurrency, root, caption_video)
 
@@ -440,7 +457,11 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
     async def rewrite_asr(job, fill_round):
         clip = job["clip"]
         if not clip["asr_text"]:
-            write_json(stage_path(root, "asr_rewrite", job["key"]), {"row_id": f"{clip['row_id']}:captions:asr", "video_id": clip["video_id"], "source_video_id": clip["source_video_id"], "source": "asr", "granularity_sec": 30, "start_sec": clip["start_sec"], "end_sec": clip["end_sec"], "text": "", "raw_text": ""})
+            output = {"row_id": f"{clip['row_id']}:captions:asr", "video_id": clip["video_id"], "source_video_id": clip["source_video_id"], "source": "asr", "granularity_sec": 30, "start_sec": clip["start_sec"], "end_sec": clip["end_sec"], "text": "", "raw_text": ""}
+            if clip["video_id"] == "week":
+                output["week_day"] = clip["week_day"]
+                output["local_clock_start_sec"] = clip["local_clock_start_sec"]
+            write_json(stage_path(root, "asr_rewrite", job["key"]), output)
             return
         if clip["video_id"] == "week":
             prompt = json.dumps([{
@@ -456,7 +477,11 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
         if text is None:
             append_failure(root, "asr_rewrite", job["key"], "ten model attempts failed", fill_round)
             return
-        write_json(stage_path(root, "asr_rewrite", job["key"]), {"row_id": f"{clip['row_id']}:captions:asr", "video_id": clip["video_id"], "source_video_id": clip["source_video_id"], "source": "asr", "granularity_sec": 30, "start_sec": clip["start_sec"], "end_sec": clip["end_sec"], "text": text, "raw_text": clip["asr_text"]})
+        output = {"row_id": f"{clip['row_id']}:captions:asr", "video_id": clip["video_id"], "source_video_id": clip["source_video_id"], "source": "asr", "granularity_sec": 30, "start_sec": clip["start_sec"], "end_sec": clip["end_sec"], "text": text, "raw_text": clip["asr_text"]}
+        if clip["video_id"] == "week":
+            output["week_day"] = clip["week_day"]
+            output["local_clock_start_sec"] = clip["local_clock_start_sec"]
+        write_json(stage_path(root, "asr_rewrite", job["key"]), output)
 
     await run_jobs("asr_rewrite", asr_jobs, concurrency, root, rewrite_asr)
 
@@ -496,7 +521,11 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
             if text is None:
                 append_failure(root, "merge", job["key"], "ten model attempts failed", fill_round)
                 return
-        write_json(stage_path(root, "merge", job["key"]), {"row_id": f"{clip['row_id']}:captions:merged:30", "video_id": clip["video_id"], "source_video_id": clip["source_video_id"], "source": "merged", "granularity_sec": 30, "start_sec": clip["start_sec"], "end_sec": clip["end_sec"], "text": text})
+        output = {"row_id": f"{clip['row_id']}:captions:merged:30", "video_id": clip["video_id"], "source_video_id": clip["source_video_id"], "source": "merged", "granularity_sec": 30, "start_sec": clip["start_sec"], "end_sec": clip["end_sec"], "text": text}
+        if clip["video_id"] == "week":
+            output["week_day"] = clip["week_day"]
+            output["local_clock_start_sec"] = clip["local_clock_start_sec"]
+        write_json(stage_path(root, "merge", job["key"]), output)
 
     await run_jobs("merge", merge_jobs, concurrency, root, merge_caption)
 
@@ -539,7 +568,11 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
             if text is None:
                 append_failure(root, stage, job["key"], "ten model attempts failed", fill_round)
                 return
-            write_json(stage_path(root, stage, job["key"]), {"row_id": f"{job['key']}:captions:merged", "video_id": job["video_id"], "source": "merged", "granularity_sec": job["granularity_sec"], "start_sec": job["start_sec"], "end_sec": job["end_sec"], "text": text})
+            output = {"row_id": f"{job['key']}:captions:merged", "video_id": job["video_id"], "source": "merged", "granularity_sec": job["granularity_sec"], "start_sec": job["start_sec"], "end_sec": job["end_sec"], "text": text}
+            if job["video_id"] == "week":
+                output["week_day"] = child_rows[0]["week_day"]
+                output["local_clock_start_sec"] = child_rows[0]["local_clock_start_sec"]
+            write_json(stage_path(root, stage, job["key"]), output)
 
         await run_jobs(target_stage, jobs, concurrency, root, aggregate)
         levels[target_stage] = [{"key": job["key"], "video_id": job["video_id"], "start_sec": job["start_sec"], "end_sec": job["end_sec"]} for job in jobs]
