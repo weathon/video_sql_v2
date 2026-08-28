@@ -11,6 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import duckdb
+import wandb
 from openai import APIConnectionError, APIError, AsyncOpenAI
 from pydantic import BaseModel, RootModel, field_validator, model_validator
 
@@ -296,6 +297,7 @@ async def run_jobs(stage: str, jobs: list[dict], concurrency: int, root: Path, w
     pending = [job for job in jobs if not stage_path(root, stage, job["key"]).is_file()]
     if not pending:
         print(f"stage_complete stage={stage} existing={len(jobs)} missing=0")
+        wandb.log({"index/stage": stage, "index/completed": len(jobs), "index/total": len(jobs), "index/missing": 0})
         return 0
     for fill_round in (False, True):
         current = [job for job in pending if not stage_path(root, stage, job["key"]).is_file()]
@@ -305,10 +307,12 @@ async def run_jobs(stage: str, jobs: list[dict], concurrency: int, root: Path, w
             completed = min(start + len(batch), len(current))
             if completed % 250 == 0 or completed == len(current):
                 print(f"stage_progress stage={stage} fill_round={fill_round} completed={completed} total={len(current)}")
+                wandb.log({"index/stage": stage, "index/fill_round": int(fill_round), "index/completed": completed, "index/total": len(current)})
         pending = [job for job in jobs if not stage_path(root, stage, job["key"]).is_file()]
         if not pending:
             break
     print(f"stage_complete stage={stage} total={len(jobs)} missing={len(pending)}")
+    wandb.log({"index/stage": stage, "index/completed": len(jobs) - len(pending), "index/total": len(jobs), "index/missing": len(pending)})
     if pending:
         raise RuntimeError(f"stage still has missing samples after fill round stage={stage} missing={len(pending)}")
     return len(pending)
@@ -1129,6 +1133,23 @@ async def run(args) -> None:
             timeline["clips"] = timeline["clips"][:args.limit_per_timeline]
             limited_clips.extend(timeline["clips"])
         catalog["clips"] = limited_clips
+    wandb_run = wandb.init(
+        project="video-sql-v2",
+        name="magic-index-mmlifelong-full",
+        config={
+            "source": "MAGIC-video@0f2273f7f07360cc58588399553b5a6ea758b084",
+            "dataset": "MM-Lifelong/MM-Lifelong@248aa82039a574e63a2e524746a7cd8f32330443",
+            "model": args.model,
+            "base_url": args.base_url,
+            "concurrency": args.concurrency,
+            "max_retries": args.max_retries,
+            "timeline_definition": "multiple source files sharing one continuous timeline are one logical video; independent timelines remain separate",
+            "captions_only": args.captions_only,
+            "limit_per_timeline": args.limit_per_timeline,
+            "logical_videos": len(catalog["videos"]),
+            "clips": len(catalog["clips"]),
+        },
+    )
     model = LocalModel(args.base_url, args.model, args.max_retries, args.artifact_root)
     try:
         levels = await run_caption_stages(catalog, model, args.concurrency, args.artifact_root)
@@ -1140,6 +1161,7 @@ async def run(args) -> None:
         assemble_artifacts(catalog, levels, memory, topics, events, args.artifact_root)
     finally:
         await model.client.close()
+        wandb_run.finish()
 
 
 if __name__ == "__main__":
