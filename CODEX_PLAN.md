@@ -18,6 +18,7 @@
 - 移除现有 `temperature=0`；客户端不覆盖 temperature、top-p、top-k，也不设置输入或输出 token 上限。
 - 后续所有本地 Qwen 运行只使用最终 `notes/INFRA.txt` 中确认的配置。
 - 正式本地模型固定为 `Inferact/Qwen3.8-Flash-Next-NVFP4`，使用四张完全空闲的 GPU 做 tensor parallel 4。除 GPU 部署和 tensor parallel 外，使用 `notes/INFRA.txt` 最上方 Current best choice 的全部参数。
+- 正式 Qwen 服务保留 `--reasoning-parser qwen3`，并设置 `--default-chat-template-kwargs '{"enable_thinking":true,"preserve_thinking":true}'`。启动后检查实际 server 参数，并用真实 `/v1/responses` 连续工具调用确认 reasoning item 在下一轮仍被保留；不能只依赖 Responses API 默认行为。
 - Qwen3-VL-Embedding-8B embedding server 放在显存已经占用约一半但 compute 空闲的 shared GPU；四张完全空闲的 GPU 只用于正式本地模型。
 
 ### 1. 仓库、索引和 harness
@@ -49,6 +50,7 @@ notes/VIDEO_EMBEDDING_PIPELINE.md embedding搭建
 MAGIC-video 生成index流程
 - 使用 datasets/Hugging Face 下载机制获取正式数据；重新生成全部正式数据，不复用 Pilot 产物。
 - 正式索引预处理必须以 MAGIC-video commit `0f2273f7f07360cc58588399553b5a6ea758b084` 的预处理脚本、阶段顺序和产物语义为基线。保留已经确认的离散 clip cache、TorchCodec 解码、下述 ASR 配置、sample-local skip 分类、`Inferact/Qwen3.8-Flash-Next-NVFP4`、Qwen3-VL-Embedding-8B server、DuckDB 元数据和每表独立 NumPy embedding 矩阵改动；除此之外不得用自行简化的预处理流程替代 MAGIC-video。全部正式数据重新生成，不复用 Pilot 产物。
+- 正式索引的 Qwen 请求使用顶层 `reasoning_effort=low`，并显式传入 `enable_thinking=true` 与 `preserve_thinking=true`；正式 agent loop 使用 `reasoning_effort=medium`，不得使用 `xhigh`。harness 使用 Responses API，并保持 `RunConfig(reasoning_item_id_policy="preserve")`；正式运行前同时核对 harness trace 与 server trace 中的 reasoning item 保留情况。
 - 索引中的 video 按实际视频时间线定义，不按单个视频文件定义；多个视频文件构成同一时间线时作为一个 video，彼此独立的时间线分别作为不同 video。
 - 正式索引使用 `month`、`day`、`week` 三条视频时间线；clip 保留现有稳定 row ID，并由 row ID 中的来源 video ID 定位离散 clip 文件。ASR、caption、topic 和 event 的秒数统一映射到所属时间线。
 - month 使用 MAGIC-video 的 MM-Lifelong 提示，week 使用 MAGIC-video 的 EgoLife 提示，day 使用保持相同阶段结构的游戏提示。
