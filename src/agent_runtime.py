@@ -177,9 +177,9 @@ class AgentRuntime:
             if answer.status == "unknown":
                 return answer.model_dump()
             if not answer.evidence_timestamps:
-                raise ValueError("answered clip_qa result requires at least one evidence timestamp")
+                return {"status": "rejected", "error": "answered clip_qa result requires at least one evidence timestamp"}
             if any(timestamp < start_sec or timestamp > end_sec for timestamp in answer.evidence_timestamps):
-                raise ValueError(f"evidence timestamps must stay inside clip_qa interval {start_sec}-{end_sec}")
+                return {"status": "rejected", "error": f"evidence timestamps must stay inside clip_qa interval {start_sec}-{end_sec}"}
             screenshots = self.harness.evidence_screenshots(video_id, answer.evidence_timestamps)
             answer_payload = answer.model_dump()
             answer_payload["evidence_screenshots"] = [Path(path).name for path in screenshots]

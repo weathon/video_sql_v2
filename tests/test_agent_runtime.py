@@ -207,6 +207,12 @@ async def test_clip_tools_expose_filenames_not_absolute_paths(tmp_path, monkeypa
     assert json.loads(sample_outputs[0].text)["contact_sheets"] == ["contact.jpg"]
     assert str(tmp_path) not in sample_outputs[0].text
     assert isinstance(sample_outputs[1], ToolOutputImage)
+    ClipStream.final_output = ClipAnswer(status="answered", answer="person in red", evidence_timestamps=[])
+    missing_evidence_output = await clip_qa.on_invoke_tool(context, '{"video_id":"1","start_sec":0,"end_sec":2,"question":"what?"}')
+    assert missing_evidence_output == {"status": "rejected", "error": "answered clip_qa result requires at least one evidence timestamp"}
+    ClipStream.final_output = ClipAnswer(status="answered", answer="person in red", evidence_timestamps=[3.0])
+    outside_evidence_output = await clip_qa.on_invoke_tool(context, '{"video_id":"1","start_sec":0,"end_sec":2,"question":"what?"}')
+    assert outside_evidence_output == {"status": "rejected", "error": "evidence timestamps must stay inside clip_qa interval 0.0-2.0"}
     rejected_context = ToolContext(None, tool_name="sample_video", tool_call_id="call-3", tool_arguments='{"sample_start_sec":-1,"sample_end_sec":2,"fps":1,"x1":0,"x2":1000,"y1":0,"y2":1000,"return_caption":true}')
     rejected_output = await sample_video.on_invoke_tool(rejected_context, '{"sample_start_sec":-1,"sample_end_sec":2,"fps":1,"x1":0,"x2":1000,"y1":0,"y2":1000,"return_caption":true}')
     assert rejected_output == {"status": "rejected", "error": "sample_start_sec, sample_end_sec, and fps define an invalid sampling interval"}
