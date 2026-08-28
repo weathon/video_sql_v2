@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
-from src.harness import VideoSQLHarness
+from src.harness import SEARCH_TABLES, VideoSQLHarness
 
 
 IMAGE_DATA_URL = re.compile(r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
@@ -94,6 +94,8 @@ class AgentRuntime:
         @function_tool(failure_error_function=None)
         def semantic_search(query: str, n: int, table: str) -> dict:
             """Search an embedding-enabled table. The table must be one listed in the database schema."""
+            if table not in SEARCH_TABLES:
+                return {"status": "rejected", "error": f"table must be one of {sorted(SEARCH_TABLES)}"}
             return self.harness.semantic_search(query, n, table)
 
         @function_tool(failure_error_function=None)

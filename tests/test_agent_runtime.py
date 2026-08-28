@@ -135,6 +135,9 @@ async def test_main_tool_error_propagates_without_sdk_error_text():
         def run_sql(self, sql):
             raise RuntimeError(f"database failure for {sql}")
 
+        def semantic_search(self, query, n, table):
+            raise RuntimeError(f"embedding failure for {table}")
+
     runtime = object.__new__(AgentRuntime)
     runtime.harness = RaisingHarness()
     run_sql = {tool.name: tool for tool in runtime.main_tools([])}["run_sql"]
@@ -143,6 +146,13 @@ async def test_main_tool_error_propagates_without_sdk_error_text():
         await run_sql.on_invoke_tool(context, '{"sql":"SELECT 1"}')
     assert run_sql._use_default_failure_error_function is False
     assert run_sql._failure_error_function is None
+    semantic_search = {tool.name: tool for tool in runtime.main_tools([])}["semantic_search"]
+    invalid_context = ToolContext(None, tool_name="semantic_search", tool_call_id="call-2", tool_arguments='{"query":"x","n":1,"table":"questions"}')
+    invalid_output = await semantic_search.on_invoke_tool(invalid_context, '{"query":"x","n":1,"table":"questions"}')
+    assert invalid_output == {"status": "rejected", "error": "table must be one of ['activities', 'asr_segments', 'captions', 'entities', 'episodic_triples', 'event_chains', 'event_steps', 'semantic_triples', 'topic_chains', 'topic_facts', 'video_clips']"}
+    valid_context = ToolContext(None, tool_name="semantic_search", tool_call_id="call-3", tool_arguments='{"query":"x","n":1,"table":"captions"}')
+    with pytest.raises(RuntimeError, match="embedding failure for captions"):
+        await semantic_search.on_invoke_tool(valid_context, '{"query":"x","n":1,"table":"captions"}')
 
 
 async def test_clip_tools_expose_filenames_not_absolute_paths(tmp_path, monkeypatch):
