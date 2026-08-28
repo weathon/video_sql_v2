@@ -154,7 +154,7 @@ def parse_hms(value: str) -> float:
     parts = value.split(":")
     if len(parts) != 3:
         raise ValueError(f"invalid HH:MM:SS value: {value}")
-    hours, minutes, seconds = (float(part) for part in parts)
+    hours, minutes, seconds = int(parts[0]), int(parts[1]), float(parts[2])
     return hours * 3600 + minutes * 60 + seconds
 
 
