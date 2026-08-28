@@ -464,9 +464,10 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
             write_json(stage_path(root, "asr_rewrite", job["key"]), output)
             return
         if clip["video_id"] == "week":
+            local_end_sec = clip["local_clock_start_sec"] + clip["end_sec"] - clip["start_sec"]
             prompt = json.dumps([{
-                "start": clip["start_sec"],
-                "end": clip["end_sec"],
+                "start": clip["local_clock_start_sec"],
+                "end": local_end_sec,
                 "text": clip["asr_text"],
                 "type": "transcript",
             }], ensure_ascii=False, indent=2)
@@ -500,16 +501,17 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
             text = visual_text
         else:
             if clip["video_id"] == "week":
+                local_end_sec = clip["local_clock_start_sec"] + clip["end_sec"] - clip["start_sec"]
                 prompt = json.dumps([
                     {
-                        "start": clip["start_sec"],
-                        "end": clip["end_sec"],
+                        "start": clip["local_clock_start_sec"],
+                        "end": local_end_sec,
                         "text": visual_text,
                         "type": "caption",
                     },
                     {
-                        "start": clip["start_sec"],
-                        "end": clip["end_sec"],
+                        "start": clip["local_clock_start_sec"],
+                        "end": local_end_sec,
                         "text": asr_text,
                         "type": "transcript",
                     },
@@ -561,7 +563,10 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
                     append_failure(root, stage, job["key"], f"required child is missing: {child['key']}", fill_round)
                     return
                 child_rows.append(read_json(child_path))
-            segments_text = "\n".join(f"[{row['start_sec']:.3f}s - {row['end_sec']:.3f}s]: {row['text']}" for row in child_rows)
+            if job["video_id"] == "week":
+                segments_text = "\n".join(f"[{row['week_day'].upper()} {format_hms(row['local_clock_start_sec'])}]: {row['text']}" for row in child_rows)
+            else:
+                segments_text = "\n".join(f"[{row['start_sec']:.3f}s - {row['end_sec']:.3f}s]: {row['text']}" for row in child_rows)
             prompt = f"Summarize the following video segment descriptions into a coherent 3-5 sentence summary. Preserve key events, people, and locations:\n\n{segments_text}\n\nSummary:"
             messages = [{"role": "user", "content": prompt}]
             text = await model.generate(stage, job["key"], messages, messages)
@@ -737,9 +742,7 @@ async def run_topic_stages(catalog: dict, levels: dict[str, list[dict]], memory:
                 if not pattern.search(caption["text"]):
                     continue
                 if video_id == "week":
-                    source_video_id = caption["source_video_id"]
-                    local_sec = caption["start_sec"] - timeline_by_id[video_id]["source_offsets"][source_video_id]
-                    timestamp = f"{source_video_id.upper()} {format_hms(local_sec)[:5]}"
+                    timestamp = f"{caption['week_day'].upper()} {format_hms(caption['local_clock_start_sec'])[:5]}"
                 else:
                     timestamp = format_hms(caption["start_sec"])
                 lines.append(f"[{timestamp}] {caption['text']}")
@@ -753,7 +756,15 @@ async def run_topic_stages(catalog: dict, levels: dict[str, list[dict]], memory:
         prompt = TOPIC[job["video_id"]].format(entity=job["entity"], episodes_text="\n\n".join(job["lines"]))
         messages = [{"role": "system", "content": TOPIC_SYSTEM}, {"role": "user", "content": prompt}]
         response_format = WeekTopicFacts if job["video_id"] == "week" else TopicFacts
-        result = await model.generate("topic", job["key"], messages, messages, response_format)
+        if job["video_id"] == "week":
+            def validate_topic_times(parsed):
+                for fact in parsed.root:
+                    day, clock_sec = parse_week_timestamp(fact.time)
+                    week_clock_to_timeline(timeline_by_id["week"], day, clock_sec)
+            result_validator = validate_topic_times
+        else:
+            result_validator = None
+        result = await model.generate("topic", job["key"], messages, messages, response_format, result_validator)
         if result is None:
             append_failure(root, "topic", job["key"], "ten model attempts failed", fill_round)
             return
@@ -761,8 +772,9 @@ async def run_topic_stages(catalog: dict, levels: dict[str, list[dict]], memory:
         for fact in result.root:
             dumped = fact.model_dump(mode="json")
             if job["video_id"] == "week":
-                day, local_sec = parse_week_timestamp(dumped["time"])
-                dumped["time"] = format_hms(timeline_by_id["week"]["source_offsets"][day] + local_sec)
+                day, clock_sec = parse_week_timestamp(dumped["time"])
+                dumped["local_time"] = dumped["time"]
+                dumped["time"] = format_hms(week_clock_to_timeline(timeline_by_id["week"], day, clock_sec))
                 dumped["day"] = day.upper()
             facts.append(dumped)
         write_json(stage_path(root, "topic", job["key"]), {"video_id": job["video_id"], "entity": job["entity"], "facts": facts})
