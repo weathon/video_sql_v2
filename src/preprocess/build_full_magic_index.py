@@ -652,11 +652,22 @@ async def run_topic_stages(catalog: dict, levels: dict[str, list[dict]], memory:
         path = stage_path(root, "merge", item["key"])
         if path.is_file():
             captions[item["video_id"]].append(read_json(path))
+    timeline_by_id = {timeline["video_id"]: timeline for timeline in catalog["videos"]}
     topic_jobs = []
     for video_id, entities in kept_by_video.items():
         for entity in entities:
             pattern = re.compile(r"\b" + re.escape(entity) + r"s?\b", re.IGNORECASE)
-            lines = [f"[{format_hms(caption['start_sec'])}] {caption['text']}" for caption in captions[video_id] if pattern.search(caption["text"])]
+            lines = []
+            for caption in captions[video_id]:
+                if not pattern.search(caption["text"]):
+                    continue
+                if video_id == "week":
+                    source_video_id = caption["source_video_id"]
+                    local_sec = caption["start_sec"] - timeline_by_id[video_id]["source_offsets"][source_video_id]
+                    timestamp = f"{source_video_id.upper()} {format_hms(local_sec)[:5]}"
+                else:
+                    timestamp = format_hms(caption["start_sec"])
+                lines.append(f"[{timestamp}] {caption['text']}")
             if not lines:
                 continue
             entity_key = hashlib.md5(entity.encode()).hexdigest()
@@ -665,39 +676,94 @@ async def run_topic_stages(catalog: dict, levels: dict[str, list[dict]], memory:
 
     async def extract_topic(job, fill_round):
         prompt = TOPIC[job["video_id"]].format(entity=job["entity"], episodes_text="\n\n".join(job["lines"]))
-        messages = [{"role": "user", "content": prompt}]
-        result = await model.generate("topic", job["key"], messages, messages, TopicFacts)
+        messages = [{"role": "system", "content": TOPIC_SYSTEM}, {"role": "user", "content": prompt}]
+        response_format = WeekTopicFacts if job["video_id"] == "week" else TopicFacts
+        result = await model.generate("topic", job["key"], messages, messages, response_format)
         if result is None:
             append_failure(root, "topic", job["key"], "ten model attempts failed", fill_round)
             return
-        write_json(stage_path(root, "topic", job["key"]), {"video_id": job["video_id"], "entity": job["entity"], "facts": [fact.model_dump(mode="json") for fact in result.root]})
+        facts = []
+        for fact in result.root:
+            dumped = fact.model_dump(mode="json")
+            if job["video_id"] == "week":
+                day, local_sec = parse_week_timestamp(dumped["time"])
+                dumped["time"] = format_hms(timeline_by_id["week"]["source_offsets"][day] + local_sec)
+                dumped["day"] = day.upper()
+            facts.append(dumped)
+        write_json(stage_path(root, "topic", job["key"]), {"video_id": job["video_id"], "entity": job["entity"], "facts": facts})
 
     await run_jobs("topic", topic_jobs, concurrency, root, extract_topic)
     return {"candidates": candidates, "filter_jobs": filter_jobs, "topic_jobs": topic_jobs, "kept_by_video": dict(kept_by_video)}
 
 
 async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: LocalModel, concurrency: int, root: Path) -> dict:
+    timeline_by_id = {timeline["video_id"]: timeline for timeline in catalog["videos"]}
     activity_jobs = []
     for timeline in catalog["videos"]:
-        source_ids = sorted({item["source_video_id"] for item in levels["aggregate_600"] if item["video_id"] == timeline["video_id"]})
-        chunk_index = 0
-        for source_video_id in source_ids:
-            summaries = [item for item in levels["aggregate_600"] if item["video_id"] == timeline["video_id"] and item["source_video_id"] == source_video_id and stage_path(root, "aggregate_600", item["key"]).is_file()]
-            summaries.sort(key=lambda item: item["start_sec"])
+        summaries = [
+            item
+            for item in levels["aggregate_600"]
+            if item["video_id"] == timeline["video_id"]
+            and stage_path(root, "aggregate_600", item["key"]).is_file()
+        ]
+        summaries.sort(key=lambda item: item["start_sec"])
+        if timeline["video_id"] == "week":
+            assigned = 0
+            source_ids = sorted(timeline["source_offsets"], key=lambda source_video_id: timeline["source_offsets"][source_video_id])
+            for source_video_id in source_ids:
+                source_start = timeline["source_offsets"][source_video_id]
+                source_end = source_start + timeline["source_durations"][source_video_id]
+                source_summaries = [
+                    item
+                    for item in summaries
+                    if source_start <= item["start_sec"] < source_end
+                ]
+                if source_summaries:
+                    activity_jobs.append({
+                        "key": f"week:{source_video_id}",
+                        "video_id": "week",
+                        "source_video_id": source_video_id,
+                        "summaries": source_summaries,
+                    })
+                    assigned += len(source_summaries)
+            if assigned != len(summaries):
+                raise RuntimeError(f"week 10min summaries outside source ranges assigned={assigned} total={len(summaries)}")
+        else:
             for start in range(0, len(summaries), 5):
-                activity_jobs.append({"key": f"{timeline['video_id']}:{chunk_index}", "video_id": timeline["video_id"], "source_video_id": source_video_id, "summaries": summaries[start:start + 5]})
-                chunk_index += 1
+                activity_jobs.append({
+                    "key": f"{timeline['video_id']}:{start // 5}",
+                    "video_id": timeline["video_id"],
+                    "summaries": summaries[start:start + 5],
+                })
 
     async def extract_activities(job, fill_round):
         rows = [read_json(stage_path(root, "aggregate_600", item["key"])) for item in job["summaries"]]
-        segments = "\n\n".join(f"[{format_hms(row['start_sec'])}] {row['text']}" for row in rows)
-        prompt = ACTIVITY[job["video_id"]].format(segments=segments)
-        messages = [{"role": "system", "content": "You are a precise video analyzer. Return only the requested structured result."}, {"role": "user", "content": prompt}]
-        result = await model.generate("event_activities", job["key"], messages, messages, Activities)
+        if job["video_id"] == "week":
+            source_offset = timeline_by_id["week"]["source_offsets"][job["source_video_id"]]
+            segments = "\n\n".join(f"[{format_hms(row['start_sec'] - source_offset)}] {row['text']}" for row in rows)
+            prompt = ACTIVITY["week"].format(date=job["source_video_id"].upper(), segments=segments)
+            messages = [{"role": "user", "content": prompt}]
+            response_format = WeekActivities
+        else:
+            segments = "\n\n".join(f"[{format_hms(row['start_sec'])}] {row['text']}" for row in rows)
+            prompt = ACTIVITY[job["video_id"]].format(segments=segments)
+            messages = [{"role": "system", "content": "You are a precise video analyzer. Return only the requested structured result."}, {"role": "user", "content": prompt}]
+            response_format = Activities
+        result = await model.generate("event_activities", job["key"], messages, messages, response_format)
         if result is None:
             append_failure(root, "event_activities", job["key"], "ten model attempts failed", fill_round)
             return
-        write_json(stage_path(root, "event_activities", job["key"]), {"video_id": job["video_id"], "source_video_id": job["source_video_id"], "activities": [activity.model_dump(mode="json") for activity in result.root]})
+        activities = []
+        for activity in result.root:
+            dumped = activity.model_dump(mode="json")
+            if job["video_id"] == "week":
+                local_start, local_end = parse_time_range(dumped["time_range"])
+                source_offset = timeline_by_id["week"]["source_offsets"][job["source_video_id"]]
+                dumped["time_range"] = f"{format_hms(source_offset + local_start)}-{format_hms(source_offset + local_end)}"
+                dumped["day"] = job["source_video_id"].upper()
+                dumped["location"] = None
+            activities.append(dumped)
+        write_json(stage_path(root, "event_activities", job["key"]), {"video_id": job["video_id"], "activities": activities})
 
     await run_jobs("event_activities", activity_jobs, concurrency, root, extract_activities)
     chain_jobs = []
@@ -708,29 +774,98 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
             if job["video_id"] == timeline["video_id"] and path.is_file():
                 activities.extend(read_json(path)["activities"])
         activities.sort(key=lambda item: parse_time_range(item["time_range"])[0])
-        for chunk_index, start in enumerate(range(0, len(activities), 50)):
-            chain_jobs.append({"key": f"{timeline['video_id']}:{chunk_index}", "video_id": timeline["video_id"], "activities": activities[start:start + 50]})
+        if timeline["video_id"] == "week":
+            chain_jobs.append({"key": "week:0", "video_id": "week", "activities": activities, "stage": "event_chains"})
+        else:
+            for chunk_index, start in enumerate(range(0, len(activities), 50)):
+                chain_jobs.append({"key": f"{timeline['video_id']}:{chunk_index}", "video_id": timeline["video_id"], "activities": activities[start:start + 50], "stage": "event_chains"})
 
     async def extract_chains(job, fill_round):
         activities_text = ""
+        current_day = None
         for activity in job["activities"]:
-            activities_text += f"- [{activity['time_range']}] {activity['name']}: {activity['summary']}\n"
+            if job["video_id"] == "week":
+                day = activity["day"]
+                if day != current_day:
+                    activities_text += f"\n=== {day} ===\n"
+                    current_day = day
+                global_start, global_end = parse_time_range(activity["time_range"])
+                source_offset = timeline_by_id["week"]["source_offsets"][day.lower()]
+                time_range = f"{format_hms(global_start - source_offset)}-{format_hms(global_end - source_offset)}"
+            else:
+                time_range = activity["time_range"]
+            activities_text += f"- [{time_range}] {activity['name']}: {activity['summary']}\n"
             if activity["key_entities"]:
                 activities_text += f"  Entities: {', '.join(activity['key_entities'])}\n"
         prompt = EVENT_CHAIN[job["video_id"]].format(activities=activities_text)
-        messages = [{"role": "system", "content": "You are a precise video analyzer. Return only the requested structured result."}, {"role": "user", "content": prompt}]
-        result = await model.generate("event_chains", job["key"], messages, messages, EventChains)
+        if job["video_id"] == "week":
+            messages = [{"role": "user", "content": prompt}]
+            response_format = WeekEventChains
+        else:
+            messages = [{"role": "system", "content": "You are a precise video analyzer. Return only the requested structured result."}, {"role": "user", "content": prompt}]
+            response_format = EventChains
+        result = await model.generate("event_chains", job["key"], messages, messages, response_format)
         if result is None:
             append_failure(root, "event_chains", job["key"], "ten model attempts failed", fill_round)
             return
-        write_json(stage_path(root, "event_chains", job["key"]), {"video_id": job["video_id"], "chains": [chain.model_dump(mode="json") for chain in result.root]})
+        chains = []
+        for chain in result.root:
+            dumped = chain.model_dump(mode="json")
+            if job["video_id"] == "week":
+                dumped["type"] = None
+                for step in dumped["steps"]:
+                    source_offset = timeline_by_id["week"]["source_offsets"][step["day"].lower()]
+                    step["start_time"] = format_hms(source_offset + parse_hms(step["start_time"]))
+                    step["end_time"] = format_hms(source_offset + parse_hms(step["end_time"]))
+            chains.append(dumped)
+        write_json(stage_path(root, "event_chains", job["key"]), {"video_id": job["video_id"], "chains": chains})
 
     await run_jobs("event_chains", chain_jobs, concurrency, root, extract_chains)
+    round2_jobs = []
+    week_job = next(job for job in chain_jobs if job["video_id"] == "week")
+    week_path = stage_path(root, "event_chains", week_job["key"])
+    if week_path.is_file() and read_json(week_path)["chains"]:
+        round2_jobs.append({"key": "week:0", "video_id": "week", "activities": week_job["activities"], "stage": "event_chains_round2"})
+
+    async def extract_round2(job, fill_round):
+        first_round = read_json(stage_path(root, "event_chains", job["key"]))["chains"]
+        found_names = "\n".join(f"- {chain['name']}" for chain in first_round)
+        daily_text = ""
+        current_day = None
+        for activity in job["activities"]:
+            day = activity["day"]
+            if day != current_day:
+                daily_text += f"\n=== {day} ===\n"
+                current_day = day
+            global_start, global_end = parse_time_range(activity["time_range"])
+            source_offset = timeline_by_id["week"]["source_offsets"][day.lower()]
+            time_range = f"{format_hms(global_start - source_offset)}-{format_hms(global_end - source_offset)}"
+            daily_text += f"- [{time_range}] {activity['name']}: {activity['summary']}\n"
+            if activity["key_entities"]:
+                daily_text += f"  Entities: {', '.join(activity['key_entities'])}\n"
+        prompt = WEEK_EVENT_CHAIN_ROUND2.format(found_names=found_names, daily_text=daily_text)
+        messages = [{"role": "user", "content": prompt}]
+        result = await model.generate("event_chains_round2", job["key"], messages, messages, WeekEventChains)
+        if result is None:
+            append_failure(root, "event_chains_round2", job["key"], "ten model attempts failed", fill_round)
+            return
+        chains = []
+        for chain in result.root:
+            dumped = chain.model_dump(mode="json")
+            dumped["type"] = None
+            for step in dumped["steps"]:
+                source_offset = timeline_by_id["week"]["source_offsets"][step["day"].lower()]
+                step["start_time"] = format_hms(source_offset + parse_hms(step["start_time"]))
+                step["end_time"] = format_hms(source_offset + parse_hms(step["end_time"]))
+            chains.append(dumped)
+        write_json(stage_path(root, "event_chains_round2", job["key"]), {"video_id": "week", "chains": chains})
+
+    await run_jobs("event_chains_round2", round2_jobs, concurrency, root, extract_round2)
     merged_chains = defaultdict(list)
     for timeline in catalog["videos"]:
         seen = set()
-        for job in chain_jobs:
-            path = stage_path(root, "event_chains", job["key"])
+        for job in chain_jobs + round2_jobs:
+            path = stage_path(root, job["stage"], job["key"])
             if job["video_id"] != timeline["video_id"] or not path.is_file():
                 continue
             for chain in read_json(path)["chains"]:
@@ -756,8 +891,18 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
         if not job["captions"]:
             write_json(stage_path(root, "event_enrich", job["key"]), {"video_id": job["video_id"], "chain_index": job["chain_index"], "step_index": job["step_index"], "description": job["step"]["description"], "caption_count": 0})
             return
-        captions_text = "\n\n".join(f"[{format_hms(caption['start_sec'])}] {caption['text']}" for caption in job["captions"])
-        prompt = ENRICH[job["video_id"]].format(name=job["name"], start_time=job["step"]["start_time"], end_time=job["step"]["end_time"], captions=captions_text)
+        if job["video_id"] == "week":
+            day = job["step"]["day"]
+            source_offset = timeline_by_id["week"]["source_offsets"][day.lower()]
+            captions_text = "\n\n".join(f"[{format_hms(caption['start_sec'] - source_offset)}] {caption['text']}" for caption in job["captions"])
+            start_time = format_hms(parse_hms(job["step"]["start_time"]) - source_offset)
+            end_time = format_hms(parse_hms(job["step"]["end_time"]) - source_offset)
+        else:
+            day = ""
+            captions_text = "\n\n".join(f"[{format_hms(caption['start_sec'])}] {caption['text']}" for caption in job["captions"])
+            start_time = job["step"]["start_time"]
+            end_time = job["step"]["end_time"]
+        prompt = ENRICH[job["video_id"]].format(name=job["name"], day=day, start_time=start_time, end_time=end_time, captions=captions_text)
         messages = [{"role": "user", "content": prompt}]
         result = await model.generate("event_enrich", job["key"], messages, messages, EnrichedDescription)
         if result is None:
@@ -766,7 +911,7 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
         write_json(stage_path(root, "event_enrich", job["key"]), {"video_id": job["video_id"], "chain_index": job["chain_index"], "step_index": job["step_index"], "description": result.description, "caption_count": len(job["captions"])})
 
     await run_jobs("event_enrich", enrich_jobs, concurrency, root, enrich_step)
-    return {"activity_jobs": activity_jobs, "chain_jobs": chain_jobs, "merged_chains": dict(merged_chains), "enrich_jobs": enrich_jobs}
+    return {"activity_jobs": activity_jobs, "chain_jobs": chain_jobs + round2_jobs, "merged_chains": dict(merged_chains), "enrich_jobs": enrich_jobs}
 
 
 def assemble_artifacts(catalog: dict, levels: dict[str, list[dict]], memory: dict, topics: dict, events: dict, root: Path) -> None:
