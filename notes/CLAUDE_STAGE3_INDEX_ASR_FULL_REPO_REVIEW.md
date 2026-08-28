@@ -1,0 +1,7 @@
+审查完成。以下是具体的阻塞/正确性问题：
+
+1. notes/ASR.txt:214（以及 pilot 命令 notes/ASR.txt:168）的启动命令带 `CUDA_VISIBLE_DEVICES=1`，与运行脚本 src/preprocess/transcribe_mmlifelong_magic.py:16 硬编码的 `gpu_ids = (1, 4, 5, 6)` 及 :157 的 `device_index=gpu_id` 冲突。只暴露物理 GPU 1 时，CUDA 只有序号 0 一个设备，`device_index=1/4/5/6` 全部越界，:199-200 每个 spawn 子进程都会在 `WhisperModel` 构造处崩溃，:201 的 `future.result()` 重新抛出，整轮转录在开始前终止。若照这份 runbook 命令逐字启动，运行会立即失败。
+
+2. src/preprocess/build_full_magic_index.py:45-52 的 `TopicFact.time` 是无校验的 `str`（对照 :54-63 的 `WeekTopicFact` 有 `field_validator`），且 :773-781 只给 week 设了 `response_format=WeekTopicFacts` 与 `validate_topic_times`，month/day 的 `result_validator=None`。因此 month/day topic 的 `time` 不是 `HH:MM:SS` 也能通过 `.parse()` 并把 shard 写盘（:787-795），错误被推迟到 src/build_full_index_database.py:118 的 `parse_hms(fact["time"])`（normalize.py:30-35）才抛 `ValueError`。由于 topic shard 已持久化，重跑 DB 构建会在同一处确定性再次崩溃，直到手工修改该 shard。month/day 的 activity `time_range`（:76-80）和 event step 时间（:100-104）在生成时始终校验，只有 topic 时间存在这个不对称。
+
+其余项已核对且符合计划：逻辑时间线 month/day/week 三视频与 clip 原始 row_id、EgoLife 文件名时钟到时间线映射与空档 `ValueError`→重试→补跑→缺失即终止（:172-183、:302-317）、每请求最多 10 次重试与整样本跳过、确定性 4xx（除 408/409/429）直接终止、每次尝试保存实际发送消息的完整 trace（:244-290）、week 的 activity `location` 与 event `type` 写 NULL（:878、:936、:979；DB :90、:101）、month=MM-Lifelong / week=EgoLife / day=游戏 提示路由、week topic 跳过 MM-Lifelong entity filter 且排除参与者姓名（:685-689、:716）、artifact 装配与 W&B run 名 `magic-index-mmlifelong-full`、ASR run `magic-whisper-mmlifelong-full`（GPU 1/4/5/6、1024 workers）。run_jobs 在补跑后仍缺样本时抛错（:316-317）与计划“补跑后仍缺失任何样本时终止”的要求一致，不算问题。
