@@ -148,5 +148,5 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 10. 当前已启动但未完成的 rollout 是 `train/question-527/rollout-1`：三个允许的尝试已经分别因 streamed `openai.APIError`、`MaxTurnsExceeded(50)` 和 streamed `openai.APIError` 结束。继续前必须明确决定保留该失败还是重新授权 retry budget，不能删除或改名 attempt 产物来绕过上限；其余 Pilot 训练问题和完整 24 题双组验证仍未运行完成。
 11. 正式 MM-Lifelong video-only DuckDB 和 clip cache 已完成：31 个视频、21,781 个 clip；`videos` 使用相对 `filename` schema。
 12. 正式视频 embedding 和 NumPy 索引已完成：21,775 个 4,096 维单位向量；`14:video_clips:557`、`17:video_clips:557`、`21:video_clips:557`、`0:video_clips:589`、`0:video_clips:1138`、`0:video_clips:2209` 因 TorchCodec 视频末尾错误跳过，用户确认不再处理。
-13. 正式 MM-Lifelong 全量 ASR 正在 GPU 1、4、5、6 重新转录；每卡 1,024 并发在完成并验证 4,052 个样本后发生 CUDA OOM，恢复运行降为每卡 512。
+13. 正式 MM-Lifelong 全量 ASR 已在 GPU 1、4、5、6 完成；每卡 1,024 并发在完成并验证 4,052 个样本后发生 CUDA OOM，恢复运行降为每卡 512，最终完成并验证 6,290 对 JSON/SRT、171,281 个 segments；W&B run 为 `https://wandb.ai/3dsmile/video-sql-v2/runs/wszu766s`。
 14. 正式数据目前只完成 video-only DuckDB、离散 clip cache、视频 embedding/NumPy 索引和 ASR；MAGIC-video 的 caption merge、OpenIE、semantic、topic、event 等后续预处理及相应文本 embedding 尚未完成，完成后才能开始正式训练。
