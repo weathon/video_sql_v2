@@ -46,6 +46,12 @@ class TopicFact(BaseModel):
     time: str
     fact: str
 
+    @field_validator("time")
+    @classmethod
+    def validate_time(cls, value):
+        parse_hms(value)
+        return value
+
 
 class TopicFacts(RootModel[list[TopicFact]]):
     pass
