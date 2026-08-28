@@ -169,7 +169,8 @@ class VideoSQLHarness:
             if not selected:
                 continue
             clip_index = int(row_id.rsplit(":", 1)[1])
-            clip_path = self.clip_dir / video_id / f"{clip_index:06d}.mp4"
+            source_video_id = row_id.split(":", 1)[0]
+            clip_path = self.clip_dir / source_video_id / f"{clip_index:06d}.mp4"
             if not clip_path.is_file():
                 raise FileNotFoundError(clip_path)
             decoder = VideoDecoder(clip_path, dimension_order="NHWC", num_ffmpeg_threads=4, seek_mode="approximate")
@@ -209,7 +210,8 @@ class VideoSQLHarness:
             if not selected:
                 continue
             clip_index = int(row_id.rsplit(":", 1)[1])
-            clip_path = self.clip_dir / video_id / f"{clip_index:06d}.mp4"
+            source_video_id = row_id.split(":", 1)[0]
+            clip_path = self.clip_dir / source_video_id / f"{clip_index:06d}.mp4"
             if not clip_path.is_file():
                 raise FileNotFoundError(clip_path)
             decoder = VideoDecoder(clip_path, dimension_order="NHWC", num_ffmpeg_threads=4, seek_mode="approximate")

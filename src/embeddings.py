@@ -102,7 +102,8 @@ async def embed_video(database_path: Path, endpoint: str, model: str, max_in_fli
                 raise RuntimeError(f"video shard row mismatch path={shard_path} expected={row_id} actual={shard['row_ids'].tolist()}")
             continue
         clip_index = int(row_id.rsplit(":", 1)[1])
-        clip_path = clip_dir / video_id / f"{clip_index:06d}.mp4"
+        source_video_id = row_id.split(":", 1)[0]
+        clip_path = clip_dir / source_video_id / f"{clip_index:06d}.mp4"
         if not clip_path.is_file():
             raise FileNotFoundError(clip_path)
         pending.append((row_id, clip_path, shard_path))
@@ -205,7 +206,9 @@ if __name__ == "__main__":
     parser.add_argument("--shard-dir", type=Path, required=True)
     parser.add_argument("--index-dir", type=Path, required=True)
     parser.add_argument("--clip-dir", type=Path, required=True)
+    parser.add_argument("--text-only", action="store_true")
     arguments = parser.parse_args()
     asyncio.run(embed_text(arguments.database, arguments.endpoint, arguments.model, arguments.text_batch_size, arguments.shard_dir))
-    asyncio.run(embed_video(arguments.database, arguments.endpoint, arguments.model, arguments.video_max_in_flight, arguments.shard_dir, arguments.clip_dir))
+    if not arguments.text_only:
+        asyncio.run(embed_video(arguments.database, arguments.endpoint, arguments.model, arguments.video_max_in_flight, arguments.shard_dir, arguments.clip_dir))
     build_numpy_index(arguments.shard_dir, arguments.index_dir)
