@@ -168,6 +168,20 @@ def parse_week_timestamp(value: str) -> tuple[str, float]:
     return day.lower(), parse_hms(time_value)
 
 
+def parse_egolife_filename_clock(path: Path) -> float:
+    value = path.stem.rsplit("_", 1)[1]
+    if re.fullmatch(r"\d{8}", value) is None:
+        raise ValueError(f"invalid EgoLife filename clock: {path}")
+    return int(value[:2]) * 3600 + int(value[2:4]) * 60 + int(value[4:6]) + int(value[6:]) / 100
+
+
+def week_clock_to_timeline(timeline: dict, day: str, clock_sec: float) -> float:
+    for segment in timeline["clock_segments"][day.lower()]:
+        if segment["clock_start_sec"] <= clock_sec <= segment["clock_end_sec"]:
+            return segment["timeline_start_sec"] + clock_sec - segment["clock_start_sec"]
+    raise ValueError(f"EgoLife time is outside real video footage: {day.upper()} {format_hms(clock_sec)}")
+
+
 def format_hms(seconds: float) -> str:
     total = int(seconds)
     return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
@@ -221,7 +235,7 @@ class LocalModel:
         self.max_retries = max_retries
         self.root = root
 
-    async def generate(self, stage: str, key: str, messages: list[dict], trace_messages: list[dict], response_format=None):
+    async def generate(self, stage: str, key: str, messages: list[dict], trace_messages: list[dict], response_format=None, result_validator=None):
         attempt_messages = list(messages)
         attempt_trace_messages = list(trace_messages)
         connection_errors = 0
@@ -247,6 +261,18 @@ class LocalModel:
                     attempt_messages = attempt_messages + correction
                     attempt_trace_messages = attempt_trace_messages + correction
                     continue
+                if result_validator is not None:
+                    try:
+                        result_validator(parsed)
+                    except ValueError as error:
+                        correction = [
+                            {"role": "assistant", "content": response.choices[0].message.content or ""},
+                            {"role": "user", "content": f"The previous response failed validation: {error}. Return a response that satisfies the required schema."},
+                        ]
+                        write_json(trace_path, {"request": attempt_trace_messages, "response": response.model_dump(mode="json"), "error_type": type(error).__name__, "error": str(error)})
+                        attempt_messages = attempt_messages + correction
+                        attempt_trace_messages = attempt_trace_messages + correction
+                        continue
                 write_json(trace_path, {"request": attempt_trace_messages, "response": response.model_dump(mode="json")})
                 return parsed
             except APIConnectionError as error:
