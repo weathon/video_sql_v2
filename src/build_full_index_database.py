@@ -86,15 +86,25 @@ def build_database(artifact_root: Path, database_path: Path) -> None:
         for index, activity in enumerate(read_json(video_root / "merge" / "storyline_step1_activities.json")):
             start, end = parse_time_range(activity["time_range"])
             name = normalize_text(activity["name"])
-            location = normalize_text(activity["location"])
             summary = normalize_text(activity["summary"])
-            connection.execute("INSERT INTO activities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [f"{video_id}:activities:{index}", video_id, start, end, interval_at(start), interval_at(end), name, location, summary, normalize_text(f"{name} {location} {summary}")])
+            if activity["location"] is None:
+                location = None
+                text = normalize_text(f"{name} {summary}")
+            else:
+                location = normalize_text(activity["location"])
+                text = normalize_text(f"{name} {location} {summary}")
+            connection.execute("INSERT INTO activities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [f"{video_id}:activities:{index}", video_id, start, end, interval_at(start), interval_at(end), name, location, summary, text])
 
         for chain_index, chain in enumerate(read_json(video_root / "merge" / "storyline_step3_enriched.json")):
             chain_id = f"{video_id}:event_chains:{chain_index}"
             name = normalize_text(chain["name"])
-            chain_type = normalize_text(chain["type"])
-            connection.execute("INSERT INTO event_chains VALUES (?, ?, ?, ?, ?)", [chain_id, video_id, name, chain_type, normalize_text(f"{name} {chain_type}")])
+            if chain["type"] is None:
+                chain_type = None
+                text = name
+            else:
+                chain_type = normalize_text(chain["type"])
+                text = normalize_text(f"{name} {chain_type}")
+            connection.execute("INSERT INTO event_chains VALUES (?, ?, ?, ?, ?)", [chain_id, video_id, name, chain_type, text])
             for step_index, step in enumerate(chain["steps"]):
                 start, end = parse_hms(step["start_time"]), parse_hms(step["end_time"])
                 description = normalize_text(step["description"])

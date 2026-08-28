@@ -69,7 +69,7 @@ CREATE TABLE activities (
     global_start INTERVAL NOT NULL,
     global_end INTERVAL NOT NULL,
     name VARCHAR NOT NULL,
-    location VARCHAR NOT NULL,
+    location VARCHAR,
     summary VARCHAR NOT NULL,
     text VARCHAR NOT NULL
 );
@@ -78,7 +78,7 @@ CREATE TABLE event_chains (
     row_id VARCHAR PRIMARY KEY,
     video_id VARCHAR NOT NULL,
     name VARCHAR NOT NULL,
-    chain_type VARCHAR NOT NULL,
+    chain_type VARCHAR,
     text VARCHAR NOT NULL
 );
 
