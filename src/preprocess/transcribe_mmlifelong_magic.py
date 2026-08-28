@@ -128,18 +128,19 @@ def transcribe_video(model, gpu_id, video_path_string):
         handle.write("\n".join(srt_lines))
     with json_path.open("w", encoding="utf-8") as handle:
         json.dump(results, handle, indent=2, ensure_ascii=False)
+    segment_count = validate_complete(video_key, json_path, srt_path)
 
     video_elapsed = time.monotonic() - video_started
     realtime_speed = info.duration / video_elapsed
     print(
-        f"transcribe_complete gpu={gpu_id} video={video_key} segments={len(results)} "
+        f"transcribe_complete gpu={gpu_id} video={video_key} segments={segment_count} "
         f"elapsed={video_elapsed:.3f} realtime_speed={realtime_speed:.3f} "
         f"json={json_path} srt={srt_path}",
         flush=True,
     )
     return {
         "video": video_key,
-        "segments": len(results),
+        "segments": segment_count,
         "skipped": False,
         "audio_hours": info.duration / 3600,
         "speech_hours": info.duration_after_vad / 3600,
