@@ -17,7 +17,7 @@ from faster_whisper import WhisperModel
 logging.basicConfig(level=logging.INFO)
 video_root = Path("/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443/videos")
 output_root = Path("/raid/wg25r/video_sql_v2/runs/magic_whisper_full")
-workers_per_gpu = 1024
+workers_per_gpu = 512
 
 
 def validate_complete(video_key, json_path, srt_path):
