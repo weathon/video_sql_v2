@@ -58,7 +58,7 @@ MAGIC-video 生成index流程
 - 多级 caption 聚合保持 `month`、`day`、`week` 三个逻辑 video；week 聚合不跨 DAY，同一 DAY 内按实际视频时间线连续处理。week topic 输入保留秒级本地时刻，topic/event 的 DAY 与本地时刻映射回 week 逻辑时间线秒数，event 使用完整七日 activities 并执行 EgoLife 原第二轮漏项提取。
 - week 的本地时刻使用每个实际视频文件名中的 DAY 和时钟分段映射到逻辑时间线；模型时刻落入没有实际视频的空档时，该响应校验失败并在相同设置内计入最多 10 次重试，不映射到相邻边界。
 - OpenIE 与 semantic 使用 MAGIC-video 原完整提示和 one-shot；week topic 不执行 MM-Lifelong entity filter，并排除 EgoLife 参与者姓名；topic/activity/event 的 `HH:MM:SS` 校验与数据库入库一致，小时和分钟解析为整数、秒解析为浮点数。
-- 正式索引的每个本地模型请求最多重试 10 次；全部尝试失败后跳过整个样本并记录，完成当前批次后统一补跑缺失样本。正式并发量在运行前使用真实视频请求逐级测试后确定。
+- 正式索引的每个本地模型请求最多重试 10 次；全部尝试失败后跳过整个样本并记录，完成当前批次后统一补跑缺失样本。正式并发量使用真实视频请求测试后固定为 32。
 - 每次本地模型重试保存该次实际发送的消息及此前校错消息，包括 VLM 请求中的实际 base64 video data URL；确定性 4xx 请求、凭据、模型或服务配置错误直接终止，不按样本跳过。补跑后仍缺失任何样本时终止当前索引运行，不装配不完整 artifact。
 - 正式索引运行记录到 W&B project `video-sql-v2`，run name 为 `magic-index-mmlifelong-full`，保存配置和各阶段完成、总数、补跑轮次及缺失数。
 - 正式索引不提供截断每条时间线 clip 数量的运行开关。
@@ -153,3 +153,4 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 15. 正式索引 Qwen 服务已在物理 GPU 1、4、5、6 以 tensor parallel 4 启动验证：实际 server 参数包含 `reasoning_parser=qwen3`、`enable_thinking=true` 与 `preserve_thinking=true`，render 结果确认 `reasoning_effort=low` 已进入模型 prompt。简单文本问题 `Greenland能不能翻译成青岛` 以 `finish_reason=stop`、2 个 completion tokens 结束，但 `content=NULL`、`reasoning="user"`；正式单视频 caption 路径共执行四次尝试，其中第二次以重复的 `The assistant is no the no...` reasoning 达到 `finish_reason=length` 和 253,811 个 completion tokens，最终第四次返回 `<|im_start|>` 并被当前非空校验接受。正式索引尚未启动，多轮 `preserve_thinking` trace 尚未验证通过，服务已停止；事故报告见 `notes/INCIDENT_MISCLASSIFIED_LONG_OUTPUT_AS_ERROR.md`。
 16. `Inferact/Qwen3.8-27B-NVFP4` 已在物理 GPU 1、4、5、6 以 tensor parallel 4、`reasoning_effort=low`、`enable_thinking=true` 与 `preserve_thinking=true` 测试同一简单问题；请求以 `finish_reason=stop` 正常返回 reasoning 和正文，共 685 个 completion tokens，正文回答 Greenland 不能翻译成青岛。该服务已停止，本项仅记录测试结果，未改变正式索引模型选择。
 17. `Inferact/Qwen3.8-Flash-Next-NVFP4` 已按 `notes/INFRA.txt` 原始物理 GPU 5、6 和 tensor parallel 2 配置，以 `reasoning_effort=low`、`enable_thinking=true` 与 `preserve_thinking=true` 测试同一简单问题；请求在 4.51 秒内以 `finish_reason=stop` 正常返回 reasoning 和正文，共 570 个 completion tokens，其中 356 个 reasoning tokens。正式索引采用该模型与 GPU/TP 配置。
+18. 正式索引 TP2 服务已使用真实 30 秒视频和正式 harness 验证：单请求 6.93 秒完成，trace 保存 198 个 reasoning tokens 与完整 caption；16 路真实视频并发在 14.75 秒内全部一次完成，32 路真实视频并发在 20.01 秒内全部一次完成，实际 caption 内容正常，因此正式索引并发固定为 32。
