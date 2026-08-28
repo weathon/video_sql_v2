@@ -14,7 +14,7 @@ import duckdb
 from openai import APIConnectionError, APIError, AsyncOpenAI
 from pydantic import BaseModel, RootModel, field_validator, model_validator
 
-from src.preprocess.magic_index_prompts import ACTIVITY, ASR_SYSTEM, ENRICH, ENTITY_FILTER, EVENT_CHAIN, MERGE_SYSTEM, OPENIE_EXAMPLE, OPENIE_EXAMPLE_OUTPUT, OPENIE_SYSTEM, SEMANTIC_SYSTEM, TOPIC, VIDEO_CAPTION
+from src.preprocess.magic_index_prompts import ACTIVITY, ASR_SYSTEM, ENRICH, ENTITY_FILTER, EVENT_CHAIN, MERGE_SYSTEM, OPENIE_EXAMPLE, OPENIE_EXAMPLE_OUTPUT, OPENIE_SYSTEM, SEMANTIC_SYSTEM, TOPIC, TOPIC_SYSTEM, VIDEO_CAPTION, WEEK_EVENT_CHAIN_ROUND2
 
 
 class CombinedOpenIE(BaseModel):
@@ -50,10 +50,25 @@ class TopicFacts(RootModel[list[TopicFact]]):
     pass
 
 
+class WeekTopicFact(BaseModel):
+    time: str
+    fact: str
+
+    @field_validator("time")
+    @classmethod
+    def validate_time(cls, value):
+        if re.fullmatch(r"DAY\d+ \d{2}:\d{2}(?::\d{2})?", value, re.IGNORECASE) is None:
+            raise ValueError(f"invalid EgoLife time: {value}")
+        return value
+
+
+class WeekTopicFacts(RootModel[list[WeekTopicFact]]):
+    pass
+
+
 class ActivityItem(BaseModel):
     name: str
     time_range: str
-    location: str = ""
     summary: str
     key_entities: list[str]
 
@@ -64,7 +79,15 @@ class ActivityItem(BaseModel):
         return value
 
 
-class Activities(RootModel[list[ActivityItem]]):
+class LocatedActivityItem(ActivityItem):
+    location: str
+
+
+class Activities(RootModel[list[LocatedActivityItem]]):
+    pass
+
+
+class WeekActivities(RootModel[list[ActivityItem]]):
     pass
 
 
@@ -88,6 +111,27 @@ class EventChainItem(BaseModel):
 
 
 class EventChains(RootModel[list[EventChainItem]]):
+    pass
+
+
+class WeekEventStep(EventStep):
+    day: str
+
+    @field_validator("day")
+    @classmethod
+    def validate_day(cls, value):
+        if re.fullmatch(r"DAY\d+", value, re.IGNORECASE) is None:
+            raise ValueError(f"invalid EgoLife day: {value}")
+        return value
+
+
+class WeekEventChainItem(BaseModel):
+    name: str
+    steps: list[WeekEventStep]
+    key_entities: list[str]
+
+
+class WeekEventChains(RootModel[list[WeekEventChainItem]]):
     pass
 
 
@@ -115,6 +159,13 @@ def parse_time_range(value: str) -> tuple[float, float]:
     if end < start:
         raise ValueError(f"time range ends before it starts: {value}")
     return start, end
+
+
+def parse_week_timestamp(value: str) -> tuple[str, float]:
+    day, time_value = value.split(" ", 1)
+    if time_value.count(":") == 1:
+        time_value += ":00"
+    return day.lower(), parse_hms(time_value)
 
 
 def format_hms(seconds: float) -> str:
@@ -172,6 +223,7 @@ class LocalModel:
 
     async def generate(self, stage: str, key: str, messages: list[dict], trace_messages: list[dict], response_format=None):
         attempt_messages = list(messages)
+        attempt_trace_messages = list(trace_messages)
         connection_errors = 0
         for attempt in range(1, self.max_retries + 1):
             trace_path = self.root / "traces" / stage / safe_key(key) / f"attempt-{attempt:02d}.json"
@@ -180,27 +232,35 @@ class LocalModel:
                     response = await self.client.chat.completions.create(model=self.model, messages=attempt_messages, extra_body={"chat_template_kwargs": {"reasoning_effort": "medium"}})
                     content = response.choices[0].message.content
                     if not content or not content.strip():
-                        write_json(trace_path, {"request": trace_messages, "response": response.model_dump(mode="json"), "error": "empty response"})
-                        attempt_messages = attempt_messages + [{"role": "assistant", "content": content or ""}, {"role": "user", "content": "The previous response was empty. Produce the requested nonempty result."}]
+                        correction = [{"role": "assistant", "content": content or ""}, {"role": "user", "content": "The previous response was empty. Produce the requested nonempty result."}]
+                        write_json(trace_path, {"request": attempt_trace_messages, "response": response.model_dump(mode="json"), "error": "empty response"})
+                        attempt_messages = attempt_messages + correction
+                        attempt_trace_messages = attempt_trace_messages + correction
                         continue
-                    write_json(trace_path, {"request": trace_messages, "response": response.model_dump(mode="json")})
+                    write_json(trace_path, {"request": attempt_trace_messages, "response": response.model_dump(mode="json")})
                     return content.strip()
                 response = await self.client.chat.completions.parse(model=self.model, messages=attempt_messages, response_format=response_format, extra_body={"chat_template_kwargs": {"reasoning_effort": "medium"}})
                 parsed = response.choices[0].message.parsed
                 if parsed is None:
-                    write_json(trace_path, {"request": trace_messages, "response": response.model_dump(mode="json"), "error": "parsed response is empty"})
-                    attempt_messages = attempt_messages + [{"role": "assistant", "content": response.choices[0].message.content or ""}, {"role": "user", "content": "The previous response did not satisfy the required schema. Return a valid structured response."}]
+                    correction = [{"role": "assistant", "content": response.choices[0].message.content or ""}, {"role": "user", "content": "The previous response did not satisfy the required schema. Return a valid structured response."}]
+                    write_json(trace_path, {"request": attempt_trace_messages, "response": response.model_dump(mode="json"), "error": "parsed response is empty"})
+                    attempt_messages = attempt_messages + correction
+                    attempt_trace_messages = attempt_trace_messages + correction
                     continue
-                write_json(trace_path, {"request": trace_messages, "response": response.model_dump(mode="json")})
+                write_json(trace_path, {"request": attempt_trace_messages, "response": response.model_dump(mode="json")})
                 return parsed
             except APIConnectionError as error:
                 connection_errors += 1
-                write_json(trace_path, {"request": trace_messages, "error_type": type(error).__name__, "error": str(error)})
+                write_json(trace_path, {"request": attempt_trace_messages, "error_type": type(error).__name__, "error": str(error)})
             except APIError as error:
-                write_json(trace_path, {"request": trace_messages, "error_type": type(error).__name__, "error": str(error)})
+                write_json(trace_path, {"request": attempt_trace_messages, "error_type": type(error).__name__, "status_code": error.status_code, "error": str(error)})
+                if error.status_code is not None and 400 <= error.status_code < 500 and error.status_code not in (408, 409, 429):
+                    raise
             except ValueError as error:
-                write_json(trace_path, {"request": trace_messages, "error_type": type(error).__name__, "error": str(error)})
-                attempt_messages = attempt_messages + [{"role": "user", "content": f"The previous response failed validation: {error}. Return a response that satisfies the required schema."}]
+                correction = [{"role": "user", "content": f"The previous response failed validation: {error}. Return a response that satisfies the required schema."}]
+                write_json(trace_path, {"request": attempt_trace_messages, "error_type": type(error).__name__, "error": str(error)})
+                attempt_messages = attempt_messages + correction
+                attempt_trace_messages = attempt_trace_messages + correction
         if connection_errors == self.max_retries:
             raise RuntimeError(f"model service unavailable for all {self.max_retries} attempts stage={stage} key={key}")
         return None
