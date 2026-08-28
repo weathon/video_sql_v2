@@ -2,9 +2,13 @@ import concurrent.futures
 import json
 import logging
 import multiprocessing
+import os
 import re
 import time
 from pathlib import Path
+
+gpu_ids = (1, 4, 5, 6)
+os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(gpu_id) for gpu_id in gpu_ids)
 
 import wandb
 from faster_whisper import WhisperModel
@@ -13,7 +17,6 @@ from faster_whisper import WhisperModel
 logging.basicConfig(level=logging.INFO)
 video_root = Path("/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443/videos")
 output_root = Path("/raid/wg25r/video_sql_v2/runs/magic_whisper_full")
-gpu_ids = (1, 4, 5, 6)
 workers_per_gpu = 1024
 
 
@@ -149,12 +152,12 @@ def transcribe_video(model, gpu_id, video_path_string):
     }
 
 
-def run_gpu(gpu_id, video_path_strings):
+def run_gpu(gpu_id, device_index, video_path_strings):
     print(f"gpu_worker_start gpu={gpu_id} files={len(video_path_strings)} concurrency={workers_per_gpu}", flush=True)
     model = WhisperModel(
         "large-v3-turbo",
         device="cuda",
-        device_index=gpu_id,
+        device_index=device_index,
         compute_type="float16",
         num_workers=workers_per_gpu,
     )
@@ -197,7 +200,7 @@ def main():
     shards = [[str(path) for path in video_paths[index::len(gpu_ids)]] for index in range(len(gpu_ids))]
     context = multiprocessing.get_context("spawn")
     with concurrent.futures.ProcessPoolExecutor(max_workers=len(gpu_ids), mp_context=context) as executor:
-        futures = [executor.submit(run_gpu, gpu_id, shard) for gpu_id, shard in zip(gpu_ids, shards)]
+        futures = [executor.submit(run_gpu, gpu_id, device_index, shard) for device_index, (gpu_id, shard) in enumerate(zip(gpu_ids, shards))]
         nested_results = [future.result() for future in concurrent.futures.as_completed(futures)]
 
     results = [result for gpu_results in nested_results for result in gpu_results]
