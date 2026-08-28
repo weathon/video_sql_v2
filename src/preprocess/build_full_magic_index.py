@@ -796,14 +796,16 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
         summaries.sort(key=lambda item: item["start_sec"])
         if timeline["video_id"] == "week":
             assigned = 0
+            summary_days = {
+                item["key"]: read_json(stage_path(root, "aggregate_600", item["key"]))["week_day"]
+                for item in summaries
+            }
             source_ids = sorted(timeline["source_offsets"], key=lambda source_video_id: timeline["source_offsets"][source_video_id])
             for source_video_id in source_ids:
-                source_start = timeline["source_offsets"][source_video_id]
-                source_end = source_start + timeline["source_durations"][source_video_id]
                 source_summaries = [
                     item
                     for item in summaries
-                    if source_start <= item["start_sec"] < source_end
+                    if summary_days[item["key"]] == source_video_id
                 ]
                 if source_summaries:
                     activity_jobs.append({
@@ -826,8 +828,7 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
     async def extract_activities(job, fill_round):
         rows = [read_json(stage_path(root, "aggregate_600", item["key"])) for item in job["summaries"]]
         if job["video_id"] == "week":
-            source_offset = timeline_by_id["week"]["source_offsets"][job["source_video_id"]]
-            segments = "\n\n".join(f"[{format_hms(row['start_sec'] - source_offset)}] {row['text']}" for row in rows)
+            segments = "\n\n".join(f"[{format_hms(row['local_clock_start_sec'])}] {row['text']}" for row in rows)
             prompt = ACTIVITY["week"].format(date=job["source_video_id"].upper(), segments=segments)
             messages = [{"role": "user", "content": prompt}]
             response_format = WeekActivities
@@ -836,7 +837,16 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
             prompt = ACTIVITY[job["video_id"]].format(segments=segments)
             messages = [{"role": "system", "content": "You are a precise video analyzer. Return only the requested structured result."}, {"role": "user", "content": prompt}]
             response_format = Activities
-        result = await model.generate("event_activities", job["key"], messages, messages, response_format)
+        if job["video_id"] == "week":
+            def validate_activity_times(parsed):
+                for activity in parsed.root:
+                    clock_start, clock_end = parse_time_range(activity.time_range)
+                    week_clock_to_timeline(timeline_by_id["week"], job["source_video_id"], clock_start)
+                    week_clock_to_timeline(timeline_by_id["week"], job["source_video_id"], clock_end)
+            result_validator = validate_activity_times
+        else:
+            result_validator = None
+        result = await model.generate("event_activities", job["key"], messages, messages, response_format, result_validator)
         if result is None:
             append_failure(root, "event_activities", job["key"], "ten model attempts failed", fill_round)
             return
@@ -844,9 +854,11 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
         for activity in result.root:
             dumped = activity.model_dump(mode="json")
             if job["video_id"] == "week":
-                local_start, local_end = parse_time_range(dumped["time_range"])
-                source_offset = timeline_by_id["week"]["source_offsets"][job["source_video_id"]]
-                dumped["time_range"] = f"{format_hms(source_offset + local_start)}-{format_hms(source_offset + local_end)}"
+                clock_start, clock_end = parse_time_range(dumped["time_range"])
+                dumped["local_time_range"] = dumped["time_range"]
+                timeline_start = week_clock_to_timeline(timeline_by_id["week"], job["source_video_id"], clock_start)
+                timeline_end = week_clock_to_timeline(timeline_by_id["week"], job["source_video_id"], clock_end)
+                dumped["time_range"] = f"{format_hms(timeline_start)}-{format_hms(timeline_end)}"
                 dumped["day"] = job["source_video_id"].upper()
                 dumped["location"] = None
             activities.append(dumped)
@@ -876,9 +888,7 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
                 if day != current_day:
                     activities_text += f"\n=== {day} ===\n"
                     current_day = day
-                global_start, global_end = parse_time_range(activity["time_range"])
-                source_offset = timeline_by_id["week"]["source_offsets"][day.lower()]
-                time_range = f"{format_hms(global_start - source_offset)}-{format_hms(global_end - source_offset)}"
+                time_range = activity["local_time_range"]
             else:
                 time_range = activity["time_range"]
             activities_text += f"- [{time_range}] {activity['name']}: {activity['summary']}\n"
@@ -891,7 +901,16 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
         else:
             messages = [{"role": "system", "content": "You are a precise video analyzer. Return only the requested structured result."}, {"role": "user", "content": prompt}]
             response_format = EventChains
-        result = await model.generate("event_chains", job["key"], messages, messages, response_format)
+        if job["video_id"] == "week":
+            def validate_chain_times(parsed):
+                for chain in parsed.root:
+                    for step in chain.steps:
+                        week_clock_to_timeline(timeline_by_id["week"], step.day, parse_hms(step.start_time))
+                        week_clock_to_timeline(timeline_by_id["week"], step.day, parse_hms(step.end_time))
+            result_validator = validate_chain_times
+        else:
+            result_validator = None
+        result = await model.generate("event_chains", job["key"], messages, messages, response_format, result_validator)
         if result is None:
             append_failure(root, "event_chains", job["key"], "ten model attempts failed", fill_round)
             return
@@ -901,9 +920,10 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
             if job["video_id"] == "week":
                 dumped["type"] = None
                 for step in dumped["steps"]:
-                    source_offset = timeline_by_id["week"]["source_offsets"][step["day"].lower()]
-                    step["start_time"] = format_hms(source_offset + parse_hms(step["start_time"]))
-                    step["end_time"] = format_hms(source_offset + parse_hms(step["end_time"]))
+                    step["local_start_time"] = step["start_time"]
+                    step["local_end_time"] = step["end_time"]
+                    step["start_time"] = format_hms(week_clock_to_timeline(timeline_by_id["week"], step["day"], parse_hms(step["start_time"])))
+                    step["end_time"] = format_hms(week_clock_to_timeline(timeline_by_id["week"], step["day"], parse_hms(step["end_time"])))
             chains.append(dumped)
         write_json(stage_path(root, "event_chains", job["key"]), {"video_id": job["video_id"], "chains": chains})
 
@@ -924,15 +944,17 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
             if day != current_day:
                 daily_text += f"\n=== {day} ===\n"
                 current_day = day
-            global_start, global_end = parse_time_range(activity["time_range"])
-            source_offset = timeline_by_id["week"]["source_offsets"][day.lower()]
-            time_range = f"{format_hms(global_start - source_offset)}-{format_hms(global_end - source_offset)}"
-            daily_text += f"- [{time_range}] {activity['name']}: {activity['summary']}\n"
+            daily_text += f"- [{activity['local_time_range']}] {activity['name']}: {activity['summary']}\n"
             if activity["key_entities"]:
                 daily_text += f"  Entities: {', '.join(activity['key_entities'])}\n"
         prompt = WEEK_EVENT_CHAIN_ROUND2.format(found_names=found_names, daily_text=daily_text)
         messages = [{"role": "user", "content": prompt}]
-        result = await model.generate("event_chains_round2", job["key"], messages, messages, WeekEventChains)
+        def validate_round2_times(parsed):
+            for chain in parsed.root:
+                for step in chain.steps:
+                    week_clock_to_timeline(timeline_by_id["week"], step.day, parse_hms(step.start_time))
+                    week_clock_to_timeline(timeline_by_id["week"], step.day, parse_hms(step.end_time))
+        result = await model.generate("event_chains_round2", job["key"], messages, messages, WeekEventChains, validate_round2_times)
         if result is None:
             append_failure(root, "event_chains_round2", job["key"], "ten model attempts failed", fill_round)
             return
@@ -941,9 +963,10 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
             dumped = chain.model_dump(mode="json")
             dumped["type"] = None
             for step in dumped["steps"]:
-                source_offset = timeline_by_id["week"]["source_offsets"][step["day"].lower()]
-                step["start_time"] = format_hms(source_offset + parse_hms(step["start_time"]))
-                step["end_time"] = format_hms(source_offset + parse_hms(step["end_time"]))
+                step["local_start_time"] = step["start_time"]
+                step["local_end_time"] = step["end_time"]
+                step["start_time"] = format_hms(week_clock_to_timeline(timeline_by_id["week"], step["day"], parse_hms(step["start_time"])))
+                step["end_time"] = format_hms(week_clock_to_timeline(timeline_by_id["week"], step["day"], parse_hms(step["end_time"])))
             chains.append(dumped)
         write_json(stage_path(root, "event_chains_round2", job["key"]), {"video_id": "week", "chains": chains})
 
@@ -980,10 +1003,9 @@ async def run_event_stages(catalog: dict, levels: dict[str, list[dict]], model: 
             return
         if job["video_id"] == "week":
             day = job["step"]["day"]
-            source_offset = timeline_by_id["week"]["source_offsets"][day.lower()]
-            captions_text = "\n\n".join(f"[{format_hms(caption['start_sec'] - source_offset)}] {caption['text']}" for caption in job["captions"])
-            start_time = format_hms(parse_hms(job["step"]["start_time"]) - source_offset)
-            end_time = format_hms(parse_hms(job["step"]["end_time"]) - source_offset)
+            captions_text = "\n\n".join(f"[{format_hms(caption['local_clock_start_sec'])}] {caption['text']}" for caption in job["captions"])
+            start_time = job["step"]["local_start_time"]
+            end_time = job["step"]["local_end_time"]
         else:
             day = ""
             captions_text = "\n\n".join(f"[{format_hms(caption['start_sec'])}] {caption['text']}" for caption in job["captions"])
