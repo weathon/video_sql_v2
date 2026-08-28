@@ -545,9 +545,20 @@ async def run_caption_stages(catalog: dict, model: LocalModel, concurrency: int,
                 if item["video_id"] == timeline["video_id"]
             ]
             children.sort(key=lambda item: item["start_sec"])
+            if timeline["video_id"] == "week":
+                children_by_day = defaultdict(list)
+                for child in children:
+                    child_row = read_json(stage_path(root, source_stage, child["key"]))
+                    children_by_day[child_row["week_day"]].append(child)
+                groups = []
+                source_ids = sorted(timeline["source_offsets"], key=lambda source_video_id: timeline["source_offsets"][source_video_id])
+                for source_video_id in source_ids:
+                    day_children = children_by_day[source_video_id]
+                    groups.extend(day_children[start:start + group_size] for start in range(0, len(day_children), group_size))
+            else:
+                groups = [children[start:start + group_size] for start in range(0, len(children), group_size)]
             group_index = 0
-            for start in range(0, len(children), group_size):
-                group = children[start:start + group_size]
+            for group in groups:
                 jobs.append({
                     "key": f"{timeline['video_id']}:{granularity}:{group_index}",
                     "video_id": timeline["video_id"],
@@ -746,7 +757,7 @@ async def run_topic_stages(catalog: dict, levels: dict[str, list[dict]], memory:
                 if not pattern.search(caption["text"]):
                     continue
                 if video_id == "week":
-                    timestamp = f"{caption['week_day'].upper()} {format_hms(caption['local_clock_start_sec'])[:5]}"
+                    timestamp = f"{caption['week_day'].upper()} {format_hms(caption['local_clock_start_sec'])}"
                 else:
                     timestamp = format_hms(caption["start_sec"])
                 lines.append(f"[{timestamp}] {caption['text']}")
@@ -1127,12 +1138,6 @@ async def run(args) -> None:
     logging.basicConfig(filename=args.artifact_root / "full.log", level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     catalog = load_catalog(args.database, args.dataset_video_root, args.asr_root, args.clip_dir, args.artifact_root)
     add_aligned_transcripts(catalog, args.artifact_root)
-    if args.limit_per_timeline is not None:
-        limited_clips = []
-        for timeline in catalog["videos"]:
-            timeline["clips"] = timeline["clips"][:args.limit_per_timeline]
-            limited_clips.extend(timeline["clips"])
-        catalog["clips"] = limited_clips
     wandb_run = wandb.init(
         project="video-sql-v2",
         name="magic-index-mmlifelong-full",
@@ -1145,7 +1150,6 @@ async def run(args) -> None:
             "max_retries": args.max_retries,
             "timeline_definition": "multiple source files sharing one continuous timeline are one logical video; independent timelines remain separate",
             "captions_only": args.captions_only,
-            "limit_per_timeline": args.limit_per_timeline,
             "logical_videos": len(catalog["videos"]),
             "clips": len(catalog["clips"]),
         },
@@ -1175,7 +1179,6 @@ if __name__ == "__main__":
     parser.add_argument("--model", required=True)
     parser.add_argument("--concurrency", type=int, required=True)
     parser.add_argument("--max-retries", type=int, required=True)
-    parser.add_argument("--limit-per-timeline", type=int)
     parser.add_argument("--captions-only", action="store_true")
     arguments = parser.parse_args()
     if arguments.max_retries != 10:
