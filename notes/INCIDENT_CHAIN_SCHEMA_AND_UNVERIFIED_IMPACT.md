@@ -1,31 +1,25 @@
-# Incident: invented chain schema and unverified impact claim
+# Incident: conflating logical video IDs with video files and making an unverified impact claim
 
 Date: 2026-08-28
 
 ## What happened
 
-The implementation introduced the terms and tables `event_chains`, `event_steps`, `topic_chains`, and `topic_facts`, then required every parent chain row to contain one non-null `video_id`. These names, abstractions, and parent-level constraints were not first verified against the MAGIC-video source and artifacts.
-
-When asked whether this affected Pilot correctness, I immediately claimed that it did because a chain might cross videos. I had not inspected the actual Pilot videos or database relationships before making that claim.
+I saw `video_id` on topic and event chain records and incorrectly interpreted it as a constraint tying every chain to one physical video file. I then claimed that the chain terminology had been invented locally and that the constraint affected Pilot correctness. I had not inspected the fixed MAGIC-video commit, the actual Pilot files, or the database relationships before making those claims.
 
 ## Verified evidence
 
-- `data/pilot.duckdb` contains 14 rows in `videos`, with filenames `month/4.mp4` and `month/11.mp4` through `month/23.mp4`.
-- All 14 referenced files exist under the known Pilot dataset root, and `ffprobe` reports exactly one video stream in every file.
-- The Pilot database contains 173 `event_chains` rows across those 14 video IDs and 1,680 `topic_chains` rows across those 14 video IDs.
-- Zero parent chain rows reference a missing `videos.video_id`.
-- Zero `event_steps` rows have a `video_id` different from their parent `event_chains` row.
-- Zero `topic_facts` rows have a `video_id` different from their parent `topic_chains` row.
+- MAGIC-video commit `0f2273f7f07360cc58588399553b5a6ea758b084` contains `preprocess/mmlifelong/extract_topic_chains.py` and `preprocess/mmlifelong/extract_event_chains.py`.
+- Both upstream extractors process and store chains by logical `video_id`; the chain terminology was not invented by this project.
+- In the formal index, `video_id` denotes a complete logical video timeline. Month, day, and week are separate timelines, and multiple source files may contribute to one timeline.
+- Physical clip lookup is separate from the logical timeline: `source_video_id` and the relative `filename` identify the source file, while chain, caption, ASR, topic, and event times are mapped into the logical `video_id` timeline.
+- `data/pilot.duckdb` contains 14 logical video rows. All 14 referenced Pilot files exist, and `ffprobe` reports exactly one video stream in every file.
+- The Pilot database contains 173 event-chain rows and 1,680 topic-chain rows. Zero parent rows reference a missing logical `video_id`, zero event-step rows disagree with their parent event row, and zero topic-fact rows disagree with their parent topic row.
 
-The inspected data therefore shows that the parent `video_id` assignment did not create an incorrect video association in the Pilot database. My earlier statement that this specific constraint affected Pilot correctness was unsupported and wrong.
-
-## Separate schema error
-
-The absence of an observed Pilot video-association error does not justify the custom schema. The `chain` terminology, tables, fields, and constraints were introduced without a verified mapping to MAGIC-video. Formal preprocessing must not carry them forward.
+The inspected upstream source and Pilot data show that retaining `video_id` on a chain is correct. The error was treating `video_id` as a physical-file identifier and claiming an effect on correctness without verification.
 
 ## Required prevention
 
-- Before adding any table, field, relation, or constraint, inspect the complete relevant MAGIC-video source and a real generated artifact, then record the exact upstream mapping.
-- Do not introduce `chain` terminology or the custom `event_chains`, `event_steps`, `topic_chains`, or `topic_facts` tables into the new formal schema.
-- Do not require a parent or grouped record to belong to one `video_id` unless the upstream record itself is explicitly scoped to one video.
+- Before changing any table, field, relation, or constraint, inspect the complete relevant MAGIC-video source and a real generated artifact, then record the exact upstream mapping.
+- Keep logical `video_id`, physical `source_video_id`, and relative `filename` distinct in schema, preprocessing, retrieval, and explanations.
+- Preserve upstream topic and event chains, with their timestamps mapped to the logical video timeline.
 - Verify every result-impact claim against the underlying data before stating it. If the evidence has not been inspected, state that the impact is unknown rather than inferring it from plausibility.

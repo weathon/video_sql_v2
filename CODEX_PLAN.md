@@ -25,7 +25,7 @@
 - 初始化 Git，身份设为 `codex <codex@localhost>`；使用 `uv` 和仓库内 `/raid` 缓存，提交锁定后的 `uv.lock`。
 - 从 [MAGIC-video](https://github.com/lijiazheng0917/MAGIC-video) 只移植当前项目需要的预处理逻辑，并记录上游 commit；不引入其截断、替代数据或静默恢复路径。
 - 使用 [MM-Lifelong](https://huggingface.co/datasets/MM-Lifelong/MM-Lifelong) 的官方顺序、时长和区间信息。所有时间统一保存为视频内秒数和全局相对 `INTERVAL`；只有来源提供绝对时间时才保存 `TIMESTAMP`。
-- 正式 DuckDB schema 只包含逐项核对 MAGIC-video 完整相关源码和真实生成 artifact 后确认存在的表、字段、关系与约束，并保持其原始名称和语义；不得发明 `chain` 术语，不得加入自定义 `event_chains`、`event_steps`、`topic_chains` 或 `topic_facts` 表，也不得要求父级或聚合记录绑定单个 `video_id`，除非对应的上游记录本身明确属于一个视频。视频仅保存文件名，不保存宿主机绝对路径。问题、答案、question type、temporal certificate 和 clue intervals 全部保存在数据集 JSON 中，不写入 DuckDB；judge 从 JSON 单独接收 reference answer，主检索 agent 无法访问这些字段。embedding 不写入 DuckDB。
+- 正式 DuckDB schema 只包含逐项核对 MAGIC-video 完整相关源码和真实生成 artifact 后确认存在的表、字段、关系与约束，并保持其原始名称和语义。保留 MAGIC-video 的 topic chain 和 event chain；chain 的 `video_id` 表示完整逻辑视频时间线，不表示单个视频文件。多个视频文件构成同一时间线时共享一个 `video_id`，单个文件通过 `source_video_id` 和相对 `filename` 定位。问题、答案、question type、temporal certificate 和 clue intervals 全部保存在数据集 JSON 中，不写入 DuckDB；judge 从 JSON 单独接收 reference answer，主检索 agent 无法访问这些字段。embedding 不写入 DuckDB。
 - 文本入库前统一执行：拉丁字符转 ASCII 并小写、保留非拉丁字符、去除首尾空白、折叠连续空白。数据库只保留规范化文本。
 - 每条可检索文本记录和每个 30 秒视频片段均生成稳定 row ID 和向量。文本及视频使用 [Qwen3-VL-Embedding-8B](https://huggingface.co/Qwen/Qwen3-VL-Embedding-8B)；每个可检索表分别保存连续 NumPy 向量矩阵和同顺序 row ID 数组，采用 NumPy 精确 cosine scan，不通过 SQL 查询 embedding。先用真实并发查询测试该方案；只有并发性能不足时才改用功能和精度相同的轻量向量数据库。
 - 构建期间使用可恢复的磁盘分片，再合并为各表独立 NumPy 矩阵；正式 harness 的 DuckDB 连接只读取 top row ID 对应的元数据，使用 `read_only`、禁用 external access 并锁定配置，且每个并发调用使用完全相同的配置创建独立连接，符合 [DuckDB 并发约束](https://duckdb.org/docs/current/connect/concurrency)。
@@ -50,6 +50,9 @@ MAGIC-video 生成index流程
 - 使用 datasets/Hugging Face 下载机制获取正式数据；重新生成全部正式数据，不复用 Pilot 产物。
 - 正式索引预处理必须以 MAGIC-video commit `0f2273f7f07360cc58588399553b5a6ea758b084` 的预处理脚本、阶段顺序和产物语义为基线。保留已经确认的离散 clip cache、TorchCodec 解码、下述 ASR 配置、sample-local skip 分类、`Inferact/Qwen3.8-Flash-Next-NVFP4`、Qwen3-VL-Embedding-8B server、DuckDB 元数据和每表独立 NumPy embedding 矩阵改动；除此之外不得用自行简化的预处理流程替代 MAGIC-video。全部正式数据重新生成，不复用 Pilot 产物。
 - 索引中的 video 按实际视频时间线定义，不按单个视频文件定义；多个视频文件构成同一时间线时作为一个 video，彼此独立的时间线分别作为不同 video。
+- 正式索引使用 `month`、`day`、`week` 三条视频时间线；clip 保留现有稳定 row ID，并由 row ID 中的来源 video ID 定位离散 clip 文件。ASR、caption、topic 和 event 的秒数统一映射到所属时间线。
+- month 使用 MAGIC-video 的 MM-Lifelong 提示，week 使用 MAGIC-video 的 EgoLife 提示，day 使用保持相同阶段结构的游戏提示。
+- 正式索引的每个本地模型请求最多重试 10 次；全部尝试失败后跳过整个样本并记录，完成当前批次后统一补跑缺失样本。正式并发量在运行前使用真实视频请求逐级测试后确定。
 - 正式 ASR 已完成：使用上述 MAGIC-video commit 的 faster-whisper `large-v3-turbo` 与 Silero VAD 方法处理官方 MM-Lifelong revision `248aa82039a574e63a2e524746a7cd8f32330443`；配置、产物路径和 transcript 使用方法见 `notes/ASR.txt`。caption merge、OpenIE、semantic、topic、event 等后续步骤继续按照 MAGIC-video 的对应预处理脚本执行，模型使用 `Inferact/Qwen3.8-Flash-Next-NVFP4` 和 `notes/INFRA.txt` 指定的配置。
 - 从与 Pilot 相同的初始 `SKILL.md` 和 `META-SKILL.md` 重新开始，不继承 Pilot 训练结果。
 - 使用 month train 的 266 个问题训练 1 个 epoch，每批 5 题，每题 10 个并发 rollout；seed 2026 固定顺序，最后一批正常处理。
@@ -116,7 +119,7 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 - 恢复运行时依据实际已有产物继续，不增加完成标记、哈希清单或替代结果。
 - 预处理失败按照 `notes/SKIP_OR_CRASH.md` 分类：只影响单个独立样本的已确认错误跳过整个样本并记录稳定 row ID、来源和原始错误，不生成替代结果；可能影响多个样本或运行配置的错误立即终止。
 - W&B project 固定为 `video-sql-v2`，记录每个 rollout 分数、每题均值、batch 均值、模型 usage、compaction 次数及最终状态。
-- 测试覆盖规范化、时间映射、正式 schema 的每项定义均有 MAGIC-video 源码与真实 artifact 映射、正式 schema 不含自定义 chain 术语或表且不含未经上游支持的父级 `video_id` 约束、数据库不含问题、答案和 clue 信息、视频只暴露文件名、DuckDB external access 禁用与锁定配置、只读并发、SQL 超时和返回限制、semantic ranking、notes、`agent_raise`、clip 时长与裁剪、contact-sheet 分页、caption 覆盖、证据截图、judge 只接收两份答案及 numeric-ID 反例、updater 完整输出保留未要求改动的原文、646/24 划分、第三次 compaction 终止、reflection 强制结束、prompt 不可修改、固定顺序、尾批和恢复。
+- 测试覆盖规范化、时间映射、正式 schema 的每项定义均有 MAGIC-video 源码与真实 artifact 映射、topic/event chain 使用逻辑时间线 `video_id`、多个文件共享同一 `video_id` 时仍由 `source_video_id` 和相对 `filename` 定位正确文件、数据库不含问题、答案和 clue 信息、视频只暴露文件名、DuckDB external access 禁用与锁定配置、只读并发、SQL 超时和返回限制、semantic ranking、notes、`agent_raise`、clip 时长与裁剪、contact-sheet 分页、caption 覆盖、证据截图、judge 只接收两份答案及 numeric-ID 反例、updater 完整输出保留未要求改动的原文、646/24 划分、第三次 compaction 终止、reflection 强制结束、prompt 不可修改、固定顺序、尾批和恢复。
 - 集成测试必须读取真实 Pilot 数据库行、查看实际 contact sheet 和截图，并人工检查完整 agent trace、每次工具的真实输入输出和 usage。
 - 阶段 1 完成并提交后暂停，交由用户审查代码；获得确认后才进入 Pilot。
 - 小修改无需 review。中等修改先提交，再由 Codex subagent 按 `REVIEW.md` 审查相对上一提交的 diff，修复所有明确问题并复查。每次 Pilot 或正式大型运行前使用 Claude CLI 对完整仓库进行跨模型审查，不限于 diff，修复所有明确问题并复查。
@@ -127,7 +130,7 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 1. Phase 1 代码、Pilot DuckDB、离散视频 clip cache、TorchCodec harness、embedding 调度和每表独立 NumPy semantic-search 索引已经实现，并已用于有效 Pilot 运行。
 2. Pilot 视频 clip cache 已经完成：DuckDB 和磁盘各 9,167 个 clip，所有视频的最终边界与视频流时长一致。文本 embedding 已经生成 813 个 shard，共 416,029 行。
 3. Pilot 视频 embedding shard 生成已经结束：9,164 个成功，`14:video_clips:557`、`17:video_clips:557`、`21:video_clips:557` 因已确认的 TorchCodec 视频末尾错误按整 clip 跳过。
-4. 原 DuckDB 逐行 embedding 导入已停止，不作为最终存储；Pilot NumPy 索引包含 11 个 embedding 表的 row-ID 矩阵和向量矩阵。该数量包含未经 MAGIC-video 验证的自定义 chain 表，只作为历史 Pilot 产物记录，不进入新的正式 schema。
+4. 原 DuckDB 逐行 embedding 导入已停止，不作为最终存储；Pilot NumPy 索引包含 11 个 embedding 表的 row-ID 矩阵和向量矩阵。
 5. 正式本地模型已经改为 `Inferact/Qwen3.8-Flash-Next-NVFP4`。后续使用四张完全空闲的 GPU 做 tensor parallel 4；embedding server 放在显存已经占用约一半但 compute 空闲的 shared GPU。除 GPU 部署和 tensor parallel 外，使用 `notes/INFRA.txt` 最上方 Current best choice 的配置。
 6. Pilot 前两次运行分别因 agent 可查询 gold answer 和 judge 将 incidental numeric ID 当作答案而失效，已归档为 `runs/pilot_luna_contaminated_answer_leak_20260827` 和 `runs/pilot_luna_invalid_numeric_judge_20260827`，不得恢复或计入结果。
 7. Pilot 已完成 gold 数据与 agent 数据库的物理隔离、DuckDB external access 禁用和连接配置统一；judge 现在只接收 candidate answer 与 reference answer，只判断最终答案的语义等价性，不读取问题、trace 或证据。
