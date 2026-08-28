@@ -53,7 +53,7 @@ MAGIC-video 生成index流程
 - 正式索引使用 `month`、`day`、`week` 三条视频时间线；clip 保留现有稳定 row ID，并由 row ID 中的来源 video ID 定位离散 clip 文件。ASR、caption、topic 和 event 的秒数统一映射到所属时间线。
 - month 使用 MAGIC-video 的 MM-Lifelong 提示，week 使用 MAGIC-video 的 EgoLife 提示，day 使用保持相同阶段结构的游戏提示。
 - 正式索引的每个本地模型请求最多重试 10 次；全部尝试失败后跳过整个样本并记录，完成当前批次后统一补跑缺失样本。正式并发量在运行前使用真实视频请求逐级测试后确定。
-- 正式 ASR 已完成：使用上述 MAGIC-video commit 的 faster-whisper `large-v3-turbo` 与 Silero VAD 方法处理官方 MM-Lifelong revision `248aa82039a574e63a2e524746a7cd8f32330443`；配置、产物路径和 transcript 使用方法见 `notes/ASR.txt`。caption merge、OpenIE、semantic、topic、event 等后续步骤继续按照 MAGIC-video 的对应预处理脚本执行，模型使用 `Inferact/Qwen3.8-Flash-Next-NVFP4` 和 `notes/INFRA.txt` 指定的配置。
+- 正式 ASR 重新转录使用上述 MAGIC-video commit 的 faster-whisper `large-v3-turbo` 与 Silero VAD 方法处理官方 MM-Lifelong revision `248aa82039a574e63a2e524746a7cd8f32330443`；使用 GPU 1、4、5、6，每卡从 1,024 并发开始，真实运行失败后再降低。配置、产物路径和 transcript 使用方法见 `notes/ASR.txt`。caption merge、OpenIE、semantic、topic、event 等后续步骤继续按照 MAGIC-video 的对应预处理脚本执行，模型使用 `Inferact/Qwen3.8-Flash-Next-NVFP4` 和 `notes/INFRA.txt` 指定的配置。
 - 从与 Pilot 相同的初始 `SKILL.md` 和 `META-SKILL.md` 重新开始，不继承 Pilot 训练结果。
 - 使用 month train 的 266 个问题训练 1 个 epoch，每批 5 题，每题 10 个并发 rollout；seed 2026 固定顺序，最后一批正常处理。
 - 每个 rollout 由 `Inferact/Qwen3.8-Flash-Next-NVFP4` judge 独立评分；judge 与 Pilot 一样只比较最终 candidate answer 和 reference answer，不读取 trace。reflection 单独读取完整 trace 和 judge 结果进行复盘；summarizer 和 skill updater 也使用该模型。
@@ -139,5 +139,5 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 10. 当前已启动但未完成的 rollout 是 `train/question-527/rollout-1`：三个允许的尝试已经分别因 streamed `openai.APIError`、`MaxTurnsExceeded(50)` 和 streamed `openai.APIError` 结束。继续前必须明确决定保留该失败还是重新授权 retry budget，不能删除或改名 attempt 产物来绕过上限；其余 Pilot 训练问题和完整 24 题双组验证仍未运行完成。
 11. 正式 MM-Lifelong video-only DuckDB 和 clip cache 已完成：31 个视频、21,781 个 clip；`videos` 使用相对 `filename` schema。
 12. 正式视频 embedding 和 NumPy 索引已完成：21,775 个 4,096 维单位向量；`14:video_clips:557`、`17:video_clips:557`、`21:video_clips:557`、`0:video_clips:589`、`0:video_clips:1138`、`0:video_clips:2209` 因 TorchCodec 视频末尾错误跳过，用户确认不再处理。
-13. 正式 MM-Lifelong 全量 ASR 已完成：6,290 个视频共 181.195519 小时，生成 175,191 个语音分段以及 6,290 对 JSON/SRT transcript，产物位于 `runs/magic_whisper_full`。
+13. 原正式 MM-Lifelong 全量 ASR 产物目录不存在，正在使用 GPU 1、4、5、6 重新转录，每卡从 1,024 并发开始，真实运行失败后再降低。
 14. 正式数据目前只完成 video-only DuckDB、离散 clip cache、视频 embedding/NumPy 索引和 ASR；MAGIC-video 的 caption merge、OpenIE、semantic、topic、event 等后续预处理及相应文本 embedding 尚未完成，完成后才能开始正式训练。
