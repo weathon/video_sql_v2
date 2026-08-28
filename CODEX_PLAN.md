@@ -60,7 +60,7 @@ MAGIC-video 生成index流程
 - 每次本地模型重试保存该次实际发送的消息及此前校错消息，包括 VLM 请求中的实际 base64 video data URL；确定性 4xx 请求、凭据、模型或服务配置错误直接终止，不按样本跳过。补跑后仍缺失任何样本时终止当前索引运行，不装配不完整 artifact。
 - 正式索引运行记录到 W&B project `video-sql-v2`，run name 为 `magic-index-mmlifelong-full`，保存配置和各阶段完成、总数、补跑轮次及缺失数。
 - 正式索引不提供截断每条时间线 clip 数量的运行开关。
-- 正式 ASR 重新转录使用上述 MAGIC-video commit 的 faster-whisper `large-v3-turbo` 与 Silero VAD 方法处理官方 MM-Lifelong revision `248aa82039a574e63a2e524746a7cd8f32330443`；脚本在导入 CUDA 前固定暴露物理 GPU 1、4、5、6，并将四个 worker 映射到逻辑设备 0、1、2、3；每卡从 1,024 并发开始，真实运行失败后再降低；保留模型返回的空文本段，连续空行按一个 SRT block 分隔符解析，并让两行 SRT block 与 JSON 空字符串严格对应；每个新 JSON/SRT 写盘后立即重读并核对段数、时间戳和文本，再记录该视频完成。配置、产物路径和 transcript 使用方法见 `notes/ASR.txt`。caption merge、OpenIE、semantic、topic、event 等后续步骤继续按照 MAGIC-video 的对应预处理脚本执行，模型使用 `Inferact/Qwen3.8-Flash-Next-NVFP4` 和 `notes/INFRA.txt` 指定的配置。
+- 正式 ASR 重新转录使用上述 MAGIC-video commit 的 faster-whisper `large-v3-turbo` 与 Silero VAD 方法处理官方 MM-Lifelong revision `248aa82039a574e63a2e524746a7cd8f32330443`；脚本在导入 CUDA 前固定暴露物理 GPU 1、4、5、6，并将四个 worker 映射到逻辑设备 0、1、2、3；每卡 1,024 并发的首次运行在完成并验证 4,052 个样本后发生 CUDA OOM，恢复运行降为每卡 512；保留模型返回的空文本段，连续空行按一个 SRT block 分隔符解析，并让两行 SRT block 与 JSON 空字符串严格对应；每个新 JSON/SRT 写盘后立即重读并核对段数、时间戳和文本，再记录该视频完成。配置、产物路径和 transcript 使用方法见 `notes/ASR.txt`。caption merge、OpenIE、semantic、topic、event 等后续步骤继续按照 MAGIC-video 的对应预处理脚本执行，模型使用 `Inferact/Qwen3.8-Flash-Next-NVFP4` 和 `notes/INFRA.txt` 指定的配置。
 - 从与 Pilot 相同的初始 `SKILL.md` 和 `META-SKILL.md` 重新开始，不继承 Pilot 训练结果。
 - 使用 month train 的 266 个问题训练 1 个 epoch，每批 5 题，每题 10 个并发 rollout；seed 2026 固定顺序，最后一批正常处理。
 - 每个 rollout 由 `Inferact/Qwen3.8-Flash-Next-NVFP4` judge 独立评分；judge 与 Pilot 一样只比较最终 candidate answer 和 reference answer，不读取 trace。reflection 单独读取完整 trace 和 judge 结果进行复盘；summarizer 和 skill updater 也使用该模型。
@@ -146,5 +146,5 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 10. 当前已启动但未完成的 rollout 是 `train/question-527/rollout-1`：三个允许的尝试已经分别因 streamed `openai.APIError`、`MaxTurnsExceeded(50)` 和 streamed `openai.APIError` 结束。继续前必须明确决定保留该失败还是重新授权 retry budget，不能删除或改名 attempt 产物来绕过上限；其余 Pilot 训练问题和完整 24 题双组验证仍未运行完成。
 11. 正式 MM-Lifelong video-only DuckDB 和 clip cache 已完成：31 个视频、21,781 个 clip；`videos` 使用相对 `filename` schema。
 12. 正式视频 embedding 和 NumPy 索引已完成：21,775 个 4,096 维单位向量；`14:video_clips:557`、`17:video_clips:557`、`21:video_clips:557`、`0:video_clips:589`、`0:video_clips:1138`、`0:video_clips:2209` 因 TorchCodec 视频末尾错误跳过，用户确认不再处理。
-13. 原正式 MM-Lifelong 全量 ASR 产物目录不存在，将使用 GPU 1、4、5、6 重新转录，每卡从 1,024 并发开始，真实运行失败后再降低。
+13. 正式 MM-Lifelong 全量 ASR 正在 GPU 1、4、5、6 重新转录；每卡 1,024 并发在完成并验证 4,052 个样本后发生 CUDA OOM，恢复运行降为每卡 512。
 14. 正式数据目前只完成 video-only DuckDB、离散 clip cache、视频 embedding/NumPy 索引和 ASR；MAGIC-video 的 caption merge、OpenIE、semantic、topic、event 等后续预处理及相应文本 embedding 尚未完成，完成后才能开始正式训练。
