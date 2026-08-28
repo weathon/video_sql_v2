@@ -6,7 +6,7 @@ import random
 import shutil
 
 from agents import Agent, ModelSettings, OpenAIResponsesModel, RunConfig, Runner
-from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
+from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError, UserError
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError, RateLimitError
 from openai.types.shared import Reasoning
 from pydantic import BaseModel, Field
@@ -108,6 +108,10 @@ def trace_for_reflection(trace: dict) -> dict:
 
 def serialize_judge_input(reference_answer: str, candidate_answer: str) -> str:
     return json.dumps({"reference_answer": reference_answer, "candidate_answer": candidate_answer}, ensure_ascii=False)
+
+
+def is_retryable_rollout_error(error: Exception) -> bool:
+    return isinstance(error, RETRYABLE_ERRORS) or isinstance(error, UserError) and isinstance(error.__cause__, RETRYABLE_ERRORS)
 
 
 async def run_structured_agent(agent: Agent, agent_input: str, workflow_name: str, group_id: str, responses: list[dict]):
@@ -214,7 +218,9 @@ class PilotTrainer:
                 try:
                     rollout = await runtime.run_rollout(question["question"], skill, attempt_dir / "trace.json", True)
                     break
-                except RETRYABLE_ERRORS as error:
+                except RETRYABLE_ERRORS + (UserError,) as error:
+                    if not is_retryable_rollout_error(error):
+                        raise
                     attempt_dir.mkdir(parents=True, exist_ok=True)
                     (attempt_dir / "error.json").write_text(json.dumps({"type": type(error).__name__, "message": str(error)}, ensure_ascii=False, indent=2), encoding="utf-8")
                     print(f"rollout_retry question_id={question_id} rollout={rollout_index} attempt={attempt} error={type(error).__name__}: {error}")

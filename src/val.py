@@ -4,14 +4,14 @@ import os
 from pathlib import Path
 
 from agents import Agent, ModelSettings, OpenAIResponsesModel
-from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
+from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError, UserError
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError, RateLimitError
 from openai.types.shared import Reasoning
 import wandb
 
 from src.agent_runtime import AgentRuntime, ModelEndpoint, RolloutResult
 from src.harness import VideoSQLHarness
-from src.training import JUDGE_INSTRUCTIONS, Judgment, MODEL, MODEL_CONTEXT_LIMIT, PILOT_COST_LIMIT_USD, ROOT, RUN_ROOT, run_structured_agent, serialize_judge_input, usage_and_cost
+from src.training import JUDGE_INSTRUCTIONS, Judgment, MODEL, MODEL_CONTEXT_LIMIT, PILOT_COST_LIMIT_USD, ROOT, RUN_ROOT, is_retryable_rollout_error, run_structured_agent, serialize_judge_input, usage_and_cost
 
 
 RETRYABLE_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError, ModelBehaviorError, MaxTurnsExceeded)
@@ -78,7 +78,9 @@ class PilotEvaluator:
                 try:
                     rollout = await runtime.run_rollout(question["question"], skill, attempt_dir / "trace.json", True)
                     break
-                except RETRYABLE_ERRORS as error:
+                except RETRYABLE_ERRORS + (UserError,) as error:
+                    if not is_retryable_rollout_error(error):
+                        raise
                     attempt_dir.mkdir(parents=True, exist_ok=True)
                     (attempt_dir / "error.json").write_text(json.dumps({"type": type(error).__name__, "message": str(error)}, ensure_ascii=False, indent=2), encoding="utf-8")
                     print(f"validation_rollout_retry condition={condition} question_id={question_id} attempt={attempt} error={type(error).__name__}: {error}")
