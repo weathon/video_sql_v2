@@ -34,6 +34,7 @@ def test_real_pilot_database_counts_joins_and_time_mapping(tmp_path):
     connection.close()
 
     harness = VideoSQLHarness(DATABASE, "http://embedding", "qwen", Path("data/embedding_index"), Path("data/video_clips"), tmp_path / "media", tmp_path / "notes.json")
+    secured_connection = duckdb.connect(str(DATABASE), read_only=True, config={"enable_external_access": "false", "lock_configuration": "true"})
     assert harness.run_sql("SELECT current_setting('enable_external_access'), current_setting('lock_configuration')")["rows"] == [[False, True]]
     with pytest.raises(duckdb.PermissionException, match="file system operations are disabled"):
         harness.run_sql("SELECT * FROM read_text('pyproject.toml')")
@@ -41,3 +42,4 @@ def test_real_pilot_database_counts_joins_and_time_mapping(tmp_path):
         results = list(executor.map(lambda _: harness.run_sql("SELECT count(*) FROM videos"), range(32)))
     assert all(result["rows"] == [[14]] for result in results)
     assert harness.run_sql("CREATE TABLE forbidden(value INTEGER)")["status"] == "query_error"
+    secured_connection.close()

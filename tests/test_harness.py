@@ -50,6 +50,7 @@ def test_sql_search_notes_and_video(tmp_path, monkeypatch):
     connection = duckdb.connect(str(database_path))
     connection.execute("CREATE TABLE many AS SELECT range AS value, repeat('x', 600) AS text FROM range(101)")
     connection.close()
+    secured_connection = duckdb.connect(str(database_path), read_only=True, config={"enable_external_access": "false", "lock_configuration": "true"})
     result = harness.run_sql("SELECT * FROM many ORDER BY value")
     assert len(result["rows"]) == 100
     assert result["hidden_more"] is True
@@ -104,3 +105,4 @@ def test_sql_search_notes_and_video(tmp_path, monkeypatch):
     screenshots = harness.evidence_screenshots("1", [0.5, 2.5])
     assert len(screenshots) == 2
     assert all(Path(path).is_file() for path in screenshots)
+    secured_connection.close()

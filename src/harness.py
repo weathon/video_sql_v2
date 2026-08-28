@@ -25,6 +25,7 @@ SEARCH_TABLES = {
     "topic_facts": ("text", "video_id", "start_sec", "start_sec"),
     "video_clips": ("''", "video_id", "start_sec", "end_sec"),
 }
+READ_ONLY_DUCKDB_CONFIG = {"enable_external_access": "false", "lock_configuration": "true"}
 
 
 class AgentRaised(RuntimeError):
@@ -62,7 +63,7 @@ class VideoSQLHarness:
         self.notes = Notes(notes_path)
 
     def run_sql(self, sql: str) -> dict:
-        connection = duckdb.connect(str(self.database_path), read_only=True, config={"enable_external_access": "false", "lock_configuration": "true"})
+        connection = duckdb.connect(str(self.database_path), read_only=True, config=READ_ONLY_DUCKDB_CONFIG)
         executor = ThreadPoolExecutor(max_workers=1)
 
         def execute_query():
@@ -129,7 +130,7 @@ class VideoSQLHarness:
         selected = selected[np.argsort(scores[selected])[::-1]]
         selected_row_ids = [str(row_ids[index]) for index in selected]
         text_column, video_column, start_column, end_column = SEARCH_TABLES[table]
-        connection = duckdb.connect(str(self.database_path), read_only=True)
+        connection = duckdb.connect(str(self.database_path), read_only=True, config=READ_ONLY_DUCKDB_CONFIG)
         placeholders = ",".join("?" for _ in selected_row_ids)
         rows = connection.execute(f"SELECT row_id, {video_column}, {start_column}, {end_column}, {text_column} FROM {table} WHERE row_id IN ({placeholders})", selected_row_ids).fetchall()
         connection.close()
@@ -150,7 +151,7 @@ class VideoSQLHarness:
             raise ValueError("crop coordinates must satisfy 0 <= x1 < x2 <= 1000 and 0 <= y1 < y2 <= 1000")
         if start_sec < 0 or end_sec <= start_sec or fps <= 0:
             raise ValueError("start_sec, end_sec, and fps define an invalid sampling interval")
-        connection = duckdb.connect(str(self.database_path), read_only=True)
+        connection = duckdb.connect(str(self.database_path), read_only=True, config=READ_ONLY_DUCKDB_CONFIG)
         duration = connection.execute("SELECT duration_sec FROM videos WHERE video_id = ?", [video_id]).fetchone()[0]
         if end_sec > duration:
             connection.close()
@@ -199,7 +200,7 @@ class VideoSQLHarness:
         return {"contact_sheets": pages, "frame_timestamps": timestamps, "captions": [{"start_sec": start, "end_sec": end, "text": text} for start, end, text in captions]}
 
     def evidence_screenshots(self, video_id: str, timestamps: list[float]) -> list[str]:
-        connection = duckdb.connect(str(self.database_path), read_only=True)
+        connection = duckdb.connect(str(self.database_path), read_only=True, config=READ_ONLY_DUCKDB_CONFIG)
         clips = connection.execute("SELECT row_id, start_sec, end_sec FROM video_clips WHERE video_id = ? ORDER BY start_sec", [video_id]).fetchall()
         connection.close()
         frames = [None] * len(timestamps)
