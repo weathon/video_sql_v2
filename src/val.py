@@ -5,7 +5,7 @@ from pathlib import Path
 
 from agents import Agent, ModelSettings, OpenAIResponsesModel
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError, UserError
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError, RateLimitError
+from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, InternalServerError, RateLimitError
 from openai.types.shared import Reasoning
 import wandb
 
@@ -78,7 +78,7 @@ class PilotEvaluator:
                 try:
                     rollout = await runtime.run_rollout(question["question"], skill, attempt_dir / "trace.json", True)
                     break
-                except RETRYABLE_ERRORS + (UserError,) as error:
+                except RETRYABLE_ERRORS + (APIError, UserError) as error:
                     if not is_retryable_rollout_error(error):
                         raise
                     attempt_dir.mkdir(parents=True, exist_ok=True)

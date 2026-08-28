@@ -7,7 +7,7 @@ import shutil
 
 from agents import Agent, ModelSettings, OpenAIResponsesModel, RunConfig, Runner
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError, UserError
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError, RateLimitError
+from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, InternalServerError, RateLimitError
 from openai.types.shared import Reasoning
 from pydantic import BaseModel, Field
 import wandb
@@ -111,7 +111,7 @@ def serialize_judge_input(reference_answer: str, candidate_answer: str) -> str:
 
 
 def is_retryable_rollout_error(error: Exception) -> bool:
-    return isinstance(error, RETRYABLE_ERRORS) or isinstance(error, UserError) and isinstance(error.__cause__, RETRYABLE_ERRORS)
+    return isinstance(error, RETRYABLE_ERRORS) or type(error) is APIError or isinstance(error, UserError) and (isinstance(error.__cause__, RETRYABLE_ERRORS) or type(error.__cause__) is APIError)
 
 
 async def run_structured_agent(agent: Agent, agent_input: str, workflow_name: str, group_id: str, responses: list[dict]):
@@ -218,7 +218,7 @@ class PilotTrainer:
                 try:
                     rollout = await runtime.run_rollout(question["question"], skill, attempt_dir / "trace.json", True)
                     break
-                except RETRYABLE_ERRORS + (UserError,) as error:
+                except RETRYABLE_ERRORS + (APIError, UserError) as error:
                     if not is_retryable_rollout_error(error):
                         raise
                     attempt_dir.mkdir(parents=True, exist_ok=True)
