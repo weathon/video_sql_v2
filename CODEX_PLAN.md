@@ -59,7 +59,7 @@ MAGIC-video 生成index流程
 - 多级 caption 聚合保持 `month`、`day`、`week` 三个逻辑 video；week 聚合不跨 DAY，同一 DAY 内按实际视频时间线连续处理。week topic 输入保留秒级本地时刻，topic/event 的 DAY 与本地时刻映射回 week 逻辑时间线秒数，event 使用完整七日 activities 并执行 EgoLife 原第二轮漏项提取。
 - week 的本地时刻使用每个实际视频文件名中的 DAY 和时钟分段映射到逻辑时间线；模型时刻落入没有实际视频的空档时，该响应校验失败并在相同设置内计入最多 10 次重试，不映射到相邻边界。
 - OpenIE 与 semantic 使用 MAGIC-video 原完整提示和 one-shot；week topic 不执行 MM-Lifelong entity filter，并排除 EgoLife 参与者姓名；topic/activity/event 的 `HH:MM:SS` 校验与数据库入库一致，小时和分钟解析为整数、秒解析为浮点数。
-- 正式索引的每个本地模型请求最多重试 10 次；全部尝试失败后跳过整个样本并记录，完成当前批次后统一补跑缺失样本。正式运行初始并发为 32，从 semantic 的 12,264 / 21,781 起使用已落盘 shard 恢复并将并发改为 128。
+- 正式索引的每个本地模型请求最多重试 10 次；全部尝试失败后跳过整个样本并记录，完成当前批次后统一补跑缺失样本。正式运行初始并发为 32，semantic 的 12,264 至 12,928 使用并发 128，之后恢复为 32。
 - 每次本地模型重试保存该次实际发送的消息及此前校错消息，包括 VLM 请求中的实际 base64 video data URL；确定性 4xx 请求、凭据、模型或服务配置错误直接终止，不按样本跳过。补跑后仍缺失任何样本时终止当前索引运行，不装配不完整 artifact。
 - 正式索引运行记录到 W&B project `video-sql-v2`，run name 为 `magic-index-mmlifelong-full`，保存配置和各阶段完成、总数、补跑轮次及缺失数。
 - 正式索引不提供截断每条时间线 clip 数量的运行开关。
@@ -160,6 +160,7 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 18. 正式索引 TP2 服务已使用真实 30 秒视频和正式 harness 验证：单请求 6.93 秒完成，trace 保存 198 个 reasoning tokens 与完整 caption；16 路真实视频并发在 14.75 秒内全部一次完成，32 路真实视频并发在 20.01 秒内全部一次完成，实际 caption 内容正常，因此正式索引初始并发为 32。
 19. 正式索引命令的 `--dataset-video-root` 使用 revision 快照下的 `videos` 目录；直接使用快照根目录会在模型请求前因 week 源视频匹配数为 0 终止。使用 `videos` 目录后，day1 至 day7 的实际源视频数量分别为 828、854、910、953、946、1068、707，与对应 clip 数量逐日一致。
 20. 正式索引在 semantic 完成 12,264 / 21,781 后停止前台进程，保留全部已落盘 shard；从同一 artifact root 恢复时将本地模型并发从 32 改为 128，模型、TP、GPU、reasoning、thinking 和重试设置不变。
+21. 并发 128 期间 vLLM 日志显示 Waiting 达 124、GPU KV cache usage 达 96.8%；为与共享同一服务的长 agent 请求共同运行，semantic 完成 12,928 / 21,781 后再次停止前台进程并从同一 artifact root 以并发 32 恢复，其余设置不变。
 
 
 # EgoLife 3.2 执行计划
