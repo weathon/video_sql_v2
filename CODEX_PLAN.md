@@ -161,6 +161,7 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 19. 正式索引命令的 `--dataset-video-root` 使用 revision 快照下的 `videos` 目录；直接使用快照根目录会在模型请求前因 week 源视频匹配数为 0 终止。使用 `videos` 目录后，day1 至 day7 的实际源视频数量分别为 828、854、910、953、946、1068、707，与对应 clip 数量逐日一致。
 20. 正式索引在 semantic 完成 12,264 / 21,781 后停止前台进程，保留全部已落盘 shard；从同一 artifact root 恢复时将本地模型并发从 32 改为 128，模型、TP、GPU、reasoning、thinking 和重试设置不变。
 21. 并发 128 期间 vLLM 日志显示 Waiting 达 124、GPU KV cache usage 达 96.8%；为与共享同一服务的长 agent 请求共同运行，semantic 完成 12,928 / 21,781 后再次停止前台进程并从同一 artifact root 以并发 32 恢复，其余设置不变。
+22. semantic 已完成 21,781 / 21,781；semantic_consolidation 在 month 的规范化 subject `ishowspeed` 处因确定性 HTTP 400 停止。该 subject 实际包含 31,730 条 semantic triples，单个 prompt 为 1,599,410 字符并至少为 262,145 input tokens，超过模型 262,144 context；停止时 semantic_consolidation 已落盘 11 个 shard，未自动截断、跳过或改用其他方法。
 
 
 # EgoLife 3.2 执行计划
