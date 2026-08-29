@@ -43,7 +43,8 @@
 - 启用 Luna prompt cache，记录 cache write、cached input、普通 input 和 output token。Pilot API 累计费用超过 100 美元时，仅在当前顶层 rollout 完成后保存恢复状态并暂停。
 - 完成 Pilot 后报告每题费用及正式规模外推。
 
-### 3. 正式本地模型训练与完整评测
+### 3 正式本地模型训练与完整评测 (3.1和3.2由两个Agent同时运行)
+#### 3.1 On MM-Lifelong Dataset
 参考文件:
 notes/INFRA.txt 主llm搭建
 notes/VIDEO_EMBEDDING_PIPELINE.md embedding搭建
@@ -58,7 +59,7 @@ MAGIC-video 生成index流程
 - 多级 caption 聚合保持 `month`、`day`、`week` 三个逻辑 video；week 聚合不跨 DAY，同一 DAY 内按实际视频时间线连续处理。week topic 输入保留秒级本地时刻，topic/event 的 DAY 与本地时刻映射回 week 逻辑时间线秒数，event 使用完整七日 activities 并执行 EgoLife 原第二轮漏项提取。
 - week 的本地时刻使用每个实际视频文件名中的 DAY 和时钟分段映射到逻辑时间线；模型时刻落入没有实际视频的空档时，该响应校验失败并在相同设置内计入最多 10 次重试，不映射到相邻边界。
 - OpenIE 与 semantic 使用 MAGIC-video 原完整提示和 one-shot；week topic 不执行 MM-Lifelong entity filter，并排除 EgoLife 参与者姓名；topic/activity/event 的 `HH:MM:SS` 校验与数据库入库一致，小时和分钟解析为整数、秒解析为浮点数。
-- 正式索引的每个本地模型请求最多重试 10 次；全部尝试失败后跳过整个样本并记录，完成当前批次后统一补跑缺失样本。正式并发量使用真实视频请求测试后固定为 32。
+- 正式索引的每个本地模型请求最多重试 10 次；全部尝试失败后跳过整个样本并记录，完成当前批次后统一补跑缺失样本。正式运行初始并发为 32，从 semantic 的 12,264 / 21,781 起使用已落盘 shard 恢复并将并发改为 128。
 - 每次本地模型重试保存该次实际发送的消息及此前校错消息，包括 VLM 请求中的实际 base64 video data URL；确定性 4xx 请求、凭据、模型或服务配置错误直接终止，不按样本跳过。补跑后仍缺失任何样本时终止当前索引运行，不装配不完整 artifact。
 - 正式索引运行记录到 W&B project `video-sql-v2`，run name 为 `magic-index-mmlifelong-full`，保存配置和各阶段完成、总数、补跑轮次及缺失数。
 - 正式索引不提供截断每条时间线 clip 数量的运行开关。
@@ -68,6 +69,9 @@ MAGIC-video 生成index流程
 - 每个 rollout 由 `Inferact/Qwen3.8-Flash-Next-NVFP4` judge 独立评分；judge 与 Pilot 一样只比较最终 candidate answer 和 reference answer，不读取 trace。reflection 单独读取完整 trace 和 judge 结果进行复盘；summarizer 和 skill updater 也使用该模型。
 - 对 month val 623、day test 200、week test 200 共 1023 题进行完整评测；trained-skill 和 initial-skill 各跑一次，每题每组 1 个 rollout。
 - 报告 overall、day/week/month、question_type 以及每题 trained-vs-baseline 配对差值，并保留全部逐题原始结果。不存在额外 Phase 4。
+
+#### 3.2 On EgoLife
+See the 3.2 section at the end
 
 ## Agent 接口与 compaction
 
@@ -153,5 +157,67 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 15. 正式索引 Qwen 服务已在物理 GPU 1、4、5、6 以 tensor parallel 4 启动验证：实际 server 参数包含 `reasoning_parser=qwen3`、`enable_thinking=true` 与 `preserve_thinking=true`，render 结果确认 `reasoning_effort=low` 已进入模型 prompt。简单文本问题 `Greenland能不能翻译成青岛` 以 `finish_reason=stop`、2 个 completion tokens 结束，但 `content=NULL`、`reasoning="user"`；正式单视频 caption 路径共执行四次尝试，其中第二次以重复的 `The assistant is no the no...` reasoning 达到 `finish_reason=length` 和 253,811 个 completion tokens，最终第四次返回 `<|im_start|>` 并被当前非空校验接受。正式索引尚未启动，多轮 `preserve_thinking` trace 尚未验证通过，服务已停止；事故报告见 `notes/INCIDENT_MISCLASSIFIED_LONG_OUTPUT_AS_ERROR.md`。
 16. `Inferact/Qwen3.8-27B-NVFP4` 已在物理 GPU 1、4、5、6 以 tensor parallel 4、`reasoning_effort=low`、`enable_thinking=true` 与 `preserve_thinking=true` 测试同一简单问题；请求以 `finish_reason=stop` 正常返回 reasoning 和正文，共 685 个 completion tokens，正文回答 Greenland 不能翻译成青岛。该服务已停止，本项仅记录测试结果，未改变正式索引模型选择。
 17. `Inferact/Qwen3.8-Flash-Next-NVFP4` 已按 `notes/INFRA.txt` 原始物理 GPU 5、6 和 tensor parallel 2 配置，以 `reasoning_effort=low`、`enable_thinking=true` 与 `preserve_thinking=true` 测试同一简单问题；请求在 4.51 秒内以 `finish_reason=stop` 正常返回 reasoning 和正文，共 570 个 completion tokens，其中 356 个 reasoning tokens。正式索引采用该模型与 GPU/TP 配置。
-18. 正式索引 TP2 服务已使用真实 30 秒视频和正式 harness 验证：单请求 6.93 秒完成，trace 保存 198 个 reasoning tokens 与完整 caption；16 路真实视频并发在 14.75 秒内全部一次完成，32 路真实视频并发在 20.01 秒内全部一次完成，实际 caption 内容正常，因此正式索引并发固定为 32。
+18. 正式索引 TP2 服务已使用真实 30 秒视频和正式 harness 验证：单请求 6.93 秒完成，trace 保存 198 个 reasoning tokens 与完整 caption；16 路真实视频并发在 14.75 秒内全部一次完成，32 路真实视频并发在 20.01 秒内全部一次完成，实际 caption 内容正常，因此正式索引初始并发为 32。
 19. 正式索引命令的 `--dataset-video-root` 使用 revision 快照下的 `videos` 目录；直接使用快照根目录会在模型请求前因 week 源视频匹配数为 0 终止。使用 `videos` 目录后，day1 至 day7 的实际源视频数量分别为 828、854、910、953、946、1068、707，与对应 clip 数量逐日一致。
+20. 正式索引在 semantic 完成 12,264 / 21,781 后停止前台进程，保留全部已落盘 shard；从同一 artifact root 恢复时将本地模型并发从 32 改为 128，模型、TP、GPU、reasoning、thinking 和重试设置不变。
+
+
+# EgoLife 3.2 执行计划
+和3.1一样, 只不过在EgoLife上面跑
+## 数据与隔离
+
+- 在独立 `egolife` 分支和临时 Git worktree 中实现，不修改 3.1 正在使用的工作树。
+- 直接读取 `/raid/wg25r/egolife/mem_v2/A1_JAKE.db`、对应 NPZ 和 `timeline_A1_JAKE.json`，不重建索引。
+- 独立使用 `runs/egolife_qwen38/`、独立 W&B run、独立 skill snapshots。
+- 复用 GPU 5/6 上端口 8000 的 Flash Next TP2 服务；所有 3.2 请求使用 `reasoning_effort=medium`。
+- GPU 4 加载与现有 2560 维向量匹配的 `Qwen/Qwen3-Embedding-4B`。
+
+## 题目转换与划分
+
+- 将正确选项文字作为 `reference_answer`，不向主 agent 传递选项或答案字母。
+- 输入包含原始开放式问题、query time 和命中 query time 的单个 fine caption。
+- DAY1–3 为训练集，DAY4–7 为测试候选集。
+- 剔除 88 道 target time 跨越 DAY3/4 边界的测试题，包括同时引用 DAY1 和 DAY4 的 ID 279。
+- 剔除没有 query-time 视频和 caption 的 ID 34、289、341；ID 346 已包含在跨边界集合中。
+- 最终训练集 245 题，测试集 164 题。
+- 6 个编码重叠点选择 query time 之前起点最晚的源片段。
+- 使用 seed 2026 固定训练题顺序并保存完整 ID 顺序。
+
+## EgoLife harness
+
+- 新增隔离的 EgoLife harness 和 runtime，不改动 3.1 的 DuckDB harness。
+- SQLite 以只读模式打开，并按每题 `query_ts` 暴露 `ts <= query_ts` 的因果视图；原始主表、embedding blob 和未来记录不可直接查询。
+- `run_sql` 保持 30 秒超时、100 行上限和每单元格 500 字符上限。
+- `semantic_search` 只开放具有有效非零向量的 `captions` 和 `official_evidence`；其他 NPZ 向量为空，不生成替代索引。
+- 查询 embedding 使用原 MAGIC `Qwen3-Embedding-4B` pooling、Normalize 和原始 query 文本。
+- `timeline_A1_JAKE.json` 负责 DAY/时钟、连续时间轴和原始 30 秒 MP4 之间的双向映射。
+- `clip_qa`、`sample_video` 和 evidence screenshot 直接读取原始 EgoLife 片段，不创建新的索引或 clip cache。
+- SQL、semantic search、clip 结果同时返回连续秒数和 DAY/本地时刻。
+
+## 逐题训练
+
+- 从 `skills/initial/SKILL.md` 和 `META-SKILL.md` 开始，不继承 Pilot 或 3.1 skill。
+- 每道训练题使用同一个当前 skill 并发执行 10 个 rollout。
+- 10 个 rollout 全部完成后分别完成 judge 和 reflection，再生成一次该题 summary。
+- updater 每题执行一次，读取当前完整 skill、meta-skill 和该题 10 条 trace 的 summary，输出新的完整 `SKILL.md` 与 `META-SKILL.md`。
+- 下一题立即使用刚更新的 skill；不再组成 5 题 batch。
+- 每题保存 10 个独立 rollout、attempt trace、judge、reflection、summary、updater、skill snapshot 和 meta-skill snapshot。
+- 恢复时根据实际已有产物继续；缺少任一必要产物时不把该题视为完成。
+- 主 agent 保持 50 turns、最多 3 次 rollout attempt、固定 compaction 状态机和第三次 compaction 记 0 分的规则。
+
+## 完整评测
+
+- 训练完成后，对 164 道测试题分别执行 trained-skill 和 initial-skill，每题每组 1 个 rollout。
+- judge 只接收 candidate answer 和正确选项文字，不接收问题、选项、trace 或证据。
+- 输出 overall、DAY4–7、question type、逐题配对差值和全部原始结果。
+- W&B 独立记录 rollout score、每题 10 个 rollout 的均分、compaction、usage、状态、skill 更新次数和评测配对差值。
+
+## 正式运行门槛
+
+- 验证 409 道保留题全部具有唯一 query timeline 映射和唯一 fine caption。
+- 用真实 caption 复现 mem_v2 中已存的 2560 维向量；无法在 float32 精度内匹配时停止。
+- 检查 SQLite 因果视图无法读取 query time 之后的数据，且 agent 输入中不存在任何选项或答案字母。
+- 用真实片段检查 contact sheet、evidence screenshot、DAY/时钟映射及完整工具输入输出。
+- 使用真实多轮 Responses API trace 检查 `reasoning_effort=medium`、reasoning item 保留和工具结果。
+- 提交所有编辑；按 `REVIEW.md` 完成 subagent diff review，再执行 Claude CLI 全仓审查。
+- 正式训练通过统一前台 exec session 运行，完整日志写入 EgoLife 独立目录，并按 2 分钟、4 分钟、30 分钟节奏监控直到退出。
