@@ -38,7 +38,11 @@ class SemanticOutput(BaseModel):
 
 
 class TripleList(RootModel[list[tuple[str, str, str]]]):
-    pass
+    @model_validator(mode="after")
+    def validate_nonempty(self):
+        if not self.root:
+            raise ValueError("triple list must not be empty")
+        return self
 
 
 class EntityList(RootModel[list[str]]):
@@ -681,7 +685,7 @@ async def run_memory_stages(catalog: dict, levels: dict[str, list[dict]], model:
                         prompt = f"Below are semantic triples about the same subject. Merge duplicates and remove redundant ones. Keep distinct facts.\n\n{formatted}\n\nReturn only a JSON array of merged triples, each as [subject, predicate, object]."
                         messages = [{"role": "user", "content": prompt}]
                         result = await model.generate("semantic_consolidation", batch_key, messages, messages, TripleList)
-                        if result is None or not result.root:
+                        if result is None:
                             append_failure(root, "semantic_consolidation", batch_key, "ten model attempts failed or returned no triples", fill_round)
                             return
                         batch_triples = [list(triple) for triple in result.root]
