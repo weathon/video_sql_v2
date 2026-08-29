@@ -162,6 +162,7 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 20. 正式索引在 semantic 完成 12,264 / 21,781 后停止前台进程，保留全部已落盘 shard；从同一 artifact root 恢复时将本地模型并发从 32 改为 128，模型、TP、GPU、reasoning、thinking 和重试设置不变。
 21. 并发 128 期间 vLLM 日志显示 Waiting 达 124、GPU KV cache usage 达 96.8%；为与共享同一服务的长 agent 请求共同运行，semantic 完成 12,928 / 21,781 后再次停止前台进程并从同一 artifact root 以并发 32 恢复，其余设置不变。
 22. semantic 已完成 21,781 / 21,781；semantic_consolidation 在 month 的规范化 subject `ishowspeed` 处因确定性 HTTP 400 停止。该 subject 实际包含 31,730 条 semantic triples，单个 prompt 为 1,599,410 字符并至少为 262,145 input tokens，超过模型 262,144 context；停止时 semantic_consolidation 已落盘 11 个 shard，未自动截断、跳过或改用其他方法。
+23. semantic_consolidation 对超过 4,000 条 triples 的 subject 使用固定每批 4,000 条的层级分批；每批继续使用同一模型和同一 consolidation prompt，每个 batch 结果立即写入 `semantic_consolidation_batches` shard，合并每轮结果后继续下一轮，直到单批完成最终 consolidation，不截断或跳过 triples。真实数据中每批 4,000 条的最大首轮 prompt 为 199,129 字符；若一轮分批后 triples 数量没有减少则终止。
 
 
 # EgoLife 3.2 执行计划

@@ -18,6 +18,9 @@ from pydantic import BaseModel, RootModel, field_validator, model_validator
 from src.preprocess.magic_index_prompts import ACTIVITY, ASR_SYSTEM, ENRICH, ENTITY_FILTER, EVENT_CHAIN, MERGE_SYSTEM, OPENIE_EXAMPLE, OPENIE_EXAMPLE_OUTPUT, OPENIE_SYSTEM, SEMANTIC_EXAMPLE_INPUT, SEMANTIC_EXAMPLE_OUTPUT, SEMANTIC_SYSTEM, TOPIC, TOPIC_SYSTEM, VIDEO_CAPTION, WEEK_EVENT_CHAIN_ROUND2
 
 
+SEMANTIC_CONSOLIDATION_BATCH_SIZE = 4000
+
+
 class CombinedOpenIE(BaseModel):
     named_entities: list[str]
     triples: list[tuple[str, str, str]]
@@ -663,14 +666,34 @@ async def run_memory_stages(catalog: dict, levels: dict[str, list[dict]], model:
         if len(job["triples"]) == 1:
             triples = job["triples"]
         else:
-            formatted = "\n".join(f"{index}. [{triple[0]}, {triple[1]}, {triple[2]}]" for index, triple in enumerate(job["triples"]))
-            prompt = f"Below are semantic triples about the same subject. Merge duplicates and remove redundant ones. Keep distinct facts.\n\n{formatted}\n\nReturn only a JSON array of merged triples, each as [subject, predicate, object]."
-            messages = [{"role": "user", "content": prompt}]
-            result = await model.generate("semantic_consolidation", job["key"], messages, messages, TripleList)
-            if result is None or not result.root:
-                append_failure(root, "semantic_consolidation", job["key"], "ten model attempts failed or returned no triples", fill_round)
-                return
-            triples = [list(triple) for triple in result.root]
+            current_triples = job["triples"]
+            round_index = 0
+            while True:
+                batches = [current_triples[start:start + SEMANTIC_CONSOLIDATION_BATCH_SIZE] for start in range(0, len(current_triples), SEMANTIC_CONSOLIDATION_BATCH_SIZE)]
+                next_triples = []
+                for batch_index, batch in enumerate(batches):
+                    batch_key = f"{job['key']}:round:{round_index}:batch:{batch_index}"
+                    batch_path = stage_path(root, "semantic_consolidation_batches", batch_key)
+                    if batch_path.is_file():
+                        batch_triples = read_json(batch_path)["consolidated_semantic_triples"]
+                    else:
+                        formatted = "\n".join(f"{index}. [{triple[0]}, {triple[1]}, {triple[2]}]" for index, triple in enumerate(batch))
+                        prompt = f"Below are semantic triples about the same subject. Merge duplicates and remove redundant ones. Keep distinct facts.\n\n{formatted}\n\nReturn only a JSON array of merged triples, each as [subject, predicate, object]."
+                        messages = [{"role": "user", "content": prompt}]
+                        result = await model.generate("semantic_consolidation", batch_key, messages, messages, TripleList)
+                        if result is None or not result.root:
+                            append_failure(root, "semantic_consolidation", batch_key, "ten model attempts failed or returned no triples", fill_round)
+                            return
+                        batch_triples = [list(triple) for triple in result.root]
+                        write_json(batch_path, {"video_id": job["video_id"], "subject": job["subject"], "round_index": round_index, "batch_index": batch_index, "input_count": len(batch), "consolidated_semantic_triples": batch_triples})
+                    next_triples.extend(batch_triples)
+                if len(batches) == 1:
+                    triples = next_triples
+                    break
+                if len(next_triples) >= len(current_triples):
+                    raise RuntimeError(f"semantic consolidation did not reduce triples key={job['key']} round={round_index} input={len(current_triples)} output={len(next_triples)}")
+                current_triples = next_triples
+                round_index += 1
         write_json(stage_path(root, "semantic_consolidation", job["key"]), {"video_id": job["video_id"], "subject": job["subject"], "consolidated_semantic_triples": triples})
 
     await run_jobs("semantic_consolidation", consolidation_jobs, concurrency, root, consolidate)
