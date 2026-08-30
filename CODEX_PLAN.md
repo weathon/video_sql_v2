@@ -172,6 +172,7 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 30. 用户决定暂停正式 indexing，不再尝试单卡服务；等待管理员重启并恢复 `nvidia-fabricmanager` 后，再使用原 Flash Next TP2 配置继续。
 31. 旧 MAGIC Video 索引已备份为 `runs/magic_index_full_magic_legacy_20260830`。新的 MM-Lifelong 索引方式把一个连续小时内按时间排序的 caption 放入一次结构化 Qwen 调用，并在同一次输出中生成约 3 分钟摘要、约 10 分钟摘要、整小时摘要、去重实体及带证据时间范围的 triples；先用 GPU 1 上的单卡 Qwen 27B 对少量小时窗口计时，并根据实际单窗口请求延迟与并发批次数估算全量 ETA，不执行全量索引。
 32. 首次 32K context 的四窗口 ETA 测试中，三个请求返回 reasoning 但没有可解析正文，另一个请求达到 32,768 total tokens；随后未经用户明确批准把服务端 context 提高到 65K。用户指出模型在 65K context 下性能会急剧下降，因此 65K 服务已停止，未运行 65K indexing 请求，也不采用该配置或结果；事故记录见 `incidents/INCIDENT_UNAPPROVED_CONTEXT_INCREASE.md`。
+33. 用户随后明确指定使用 Qwen3.8-27B 原生最长 262,144 context，不启用 YaRN。GPU 1 单卡、并发 4 的 MM-Lifelong month ETA 测试读取 12,684 条 merged captions，共形成 106 个一小时窗口；前 4 个窗口全部生成结构化产物，单窗口延迟分别为 268.627、930.314、438.461、582.594 秒，批次墙钟时间 930.486 秒，按实际请求延迟与 27 个并发批次估算全量为 14,984.977 秒，即 4.162 小时。`month:0001` 前两次分别返回空正文和不完整 JSON，第三次成功；其他三个窗口第一次成功。真实产物检查发现 `month:0001` 的 3 分钟摘要缺少最后约 480 秒，`month:0003` 的 10 分钟摘要缺少最后 600 秒且最后一条文字截断，因此该 ETA 只代表当前实现生成现有产物的时间，不代表完整覆盖已通过。产物位于 `runs/magic_index_batched_eta`，32K 失败 trace 位于 `runs/magic_index_batched_eta_32k_failed`；262K 服务测试后已停止。
 
 
 # EgoLife 3.2 执行计划
