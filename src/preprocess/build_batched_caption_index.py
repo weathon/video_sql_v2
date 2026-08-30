@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from src.preprocess.build_full_magic_index import LocalModel, read_json, safe_key, write_json
+from src.preprocess.build_full_magic_index import ContextWindowExhausted, LocalModel, read_json, safe_key, write_json
 
 
 class TimeRange(BaseModel):
@@ -63,13 +63,10 @@ async def run(args) -> None:
     model = LocalModel(args.base_url, args.model, args.max_retries, args.artifact_root)
     semaphore = asyncio.Semaphore(args.concurrency)
 
-    async def process(job):
-        output_path = args.artifact_root / "shards" / "hour_index" / f"{safe_key(job['key'])}.json"
-        if output_path.is_file():
-            return read_json(output_path)["latency_sec"]
+    async def generate_interval(stage, key, rows, start_sec, end_sec):
         caption_text = "\n".join(
             f"[{caption['start_sec']:.3f}-{caption['end_sec']:.3f}] {caption['text']}"
-            for caption in job["captions"]
+            for caption in rows
         )
         prompt = f"""Build one compact factual index from the following time-ordered captions covering at most one continuous hour.
 
@@ -80,15 +77,78 @@ In this single response:
 4. Extract each explicitly named entity once, with every evidence time range where it appears. Do not infer an unstated real name from a visual description.
 5. Extract factual triples directly from the captions once. Give each triple the smallest evidence time range supported by the captions. Do not run a separate semantic-memory pass and do not repeat equivalent triples.
 
-All start_sec and end_sec values must use the absolute seconds shown below and remain inside {job['start_sec']:.3f}-{job['end_sec']:.3f}.
+All start_sec and end_sec values must use the absolute seconds shown below and remain inside {start_sec:.3f}-{end_sec:.3f}.
 
 Captions:
 {caption_text}"""
         messages = [{"role": "user", "content": prompt}]
+
+        def validate_coverage(result):
+            if not result.three_minute_summaries or result.three_minute_summaries[0].start_sec > start_sec + 1 or result.three_minute_summaries[-1].end_sec < end_sec - 1:
+                raise ValueError(f"three-minute summaries do not cover {start_sec:.3f}-{end_sec:.3f}")
+            if not result.ten_minute_summaries or result.ten_minute_summaries[0].start_sec > start_sec + 1 or result.ten_minute_summaries[-1].end_sec < end_sec - 1:
+                raise ValueError(f"ten-minute summaries do not cover {start_sec:.3f}-{end_sec:.3f}")
+
         async with semaphore:
             started = time.monotonic()
-            result = await model.generate("hour_index", job["key"], messages, messages, HourIndex)
+            result = await model.generate(stage, key, messages, messages, HourIndex, validate_coverage)
             latency = time.monotonic() - started
+        return result, latency
+
+    async def process(job):
+        output_path = args.artifact_root / "shards" / "hour_index" / f"{safe_key(job['key'])}.json"
+        if output_path.is_file():
+            return read_json(output_path)["latency_sec"]
+        half_boundary = job["hour_index"] * 3600 + 1800
+        half_rows = [
+            [caption for caption in job["captions"] if caption["start_sec"] < half_boundary],
+            [caption for caption in job["captions"] if caption["start_sec"] >= half_boundary],
+        ]
+        half_paths = [args.artifact_root / "shards" / "half_hour_index" / f"{safe_key(job['key'])}_half_{half_index}.json" for half_index in range(2)]
+        window_mode = "hour"
+        hour_latency = 0.0
+        if any(path.is_file() for path in half_paths):
+            result = None
+        else:
+            try:
+                result, hour_latency = await generate_interval("hour_index", job["key"], job["captions"], job["start_sec"], job["end_sec"])
+            except ContextWindowExhausted:
+                result = None
+                window_mode = "two_half_hours"
+        if result is None and window_mode == "two_half_hours" or any(path.is_file() for path in half_paths):
+            window_mode = "two_half_hours"
+
+            async def generate_half(half_index):
+                half_path = half_paths[half_index]
+                if half_path.is_file():
+                    saved = read_json(half_path)
+                    return HourIndex.model_validate(saved["index"]), saved["latency_sec"]
+                rows = half_rows[half_index]
+                half_result, half_latency = await generate_interval("half_hour_index", f"{job['key']}:half:{half_index}", rows, rows[0]["start_sec"], rows[-1]["end_sec"])
+                if half_result is not None:
+                    write_json(half_path, {"video_id": args.video_id, "hour_index": job["hour_index"], "half_index": half_index, "start_sec": rows[0]["start_sec"], "end_sec": rows[-1]["end_sec"], "caption_count": len(rows), "latency_sec": half_latency, "index": half_result.model_dump(mode="json")})
+                return half_result, half_latency
+
+            half_started = time.monotonic()
+            halves = await asyncio.gather(generate_half(0), generate_half(1))
+            if halves[0][0] is None or halves[1][0] is None:
+                print(f"window_failed key={job['key']} attempts={args.max_retries}")
+                return None
+            first, second = halves[0][0], halves[1][0]
+            entities = {}
+            for half in (first, second):
+                for entity in half.entities:
+                    entities.setdefault(entity.name, []).extend(entity.mentions)
+            result = HourIndex(
+                three_minute_summaries=first.three_minute_summaries + second.three_minute_summaries,
+                ten_minute_summaries=first.ten_minute_summaries + second.ten_minute_summaries,
+                hour_summary=first.hour_summary + "\n\n" + second.hour_summary,
+                entities=[IndexedEntity(name=name, mentions=mentions) for name, mentions in entities.items()],
+                triples=first.triples + second.triples,
+            )
+            latency = hour_latency + time.monotonic() - half_started
+        else:
+            latency = hour_latency
         if result is None:
             print(f"window_failed key={job['key']} attempts={args.max_retries}")
             return None
@@ -99,9 +159,10 @@ Captions:
             "end_sec": job["end_sec"],
             "caption_count": len(job["captions"]),
             "latency_sec": latency,
+            "window_mode": window_mode,
             "index": result.model_dump(mode="json"),
         })
-        print(f"window_complete key={job['key']} captions={len(job['captions'])} latency_sec={latency:.3f}")
+        print(f"window_complete key={job['key']} mode={window_mode} captions={len(job['captions'])} latency_sec={latency:.3f}")
         return latency
 
     started = time.monotonic()

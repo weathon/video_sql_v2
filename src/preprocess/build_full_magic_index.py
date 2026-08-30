@@ -12,7 +12,7 @@ from pathlib import Path
 
 import duckdb
 import wandb
-from openai import APIConnectionError, APIError, AsyncOpenAI
+from openai import APIConnectionError, APIError, AsyncOpenAI, LengthFinishReasonError
 from pydantic import BaseModel, RootModel, field_validator, model_validator
 
 from src.preprocess.magic_index_prompts import ACTIVITY, ASR_SYSTEM, ENRICH, ENTITY_FILTER, EVENT_CHAIN, MERGE_SYSTEM, OPENIE_EXAMPLE, OPENIE_EXAMPLE_OUTPUT, OPENIE_SYSTEM, SEMANTIC_EXAMPLE_INPUT, SEMANTIC_EXAMPLE_OUTPUT, SEMANTIC_SYSTEM, TOPIC, TOPIC_SYSTEM, VIDEO_CAPTION, WEEK_EVENT_CHAIN_ROUND2
@@ -157,6 +157,10 @@ class SampleInputError(RuntimeError):
     pass
 
 
+class ContextWindowExhausted(RuntimeError):
+    pass
+
+
 def parse_hms(value: str) -> float:
     parts = value.split(":")
     if len(parts) != 3:
@@ -253,6 +257,7 @@ class LocalModel:
         attempt_messages = list(messages)
         attempt_trace_messages = list(trace_messages)
         connection_errors = 0
+        context_length_errors = 0
         for attempt in range(1, self.max_retries + 1):
             trace_path = self.root / "traces" / stage / safe_key(key) / f"attempt-{attempt:02d}.json"
             try:
@@ -289,6 +294,9 @@ class LocalModel:
                         continue
                 write_json(trace_path, {"request": attempt_trace_messages, "response": response.model_dump(mode="json")})
                 return parsed
+            except LengthFinishReasonError as error:
+                context_length_errors += 1
+                write_json(trace_path, {"request": attempt_trace_messages, "response": error.completion.model_dump(mode="json"), "error_type": type(error).__name__, "error": str(error)})
             except APIConnectionError as error:
                 connection_errors += 1
                 write_json(trace_path, {"request": attempt_trace_messages, "error_type": type(error).__name__, "error": str(error)})
@@ -303,6 +311,8 @@ class LocalModel:
                 attempt_trace_messages = attempt_trace_messages + correction
         if connection_errors == self.max_retries:
             raise RuntimeError(f"model service unavailable for all {self.max_retries} attempts stage={stage} key={key}")
+        if context_length_errors:
+            raise ContextWindowExhausted(f"context window exhausted after {self.max_retries} attempts stage={stage} key={key}")
         return None
 
 
