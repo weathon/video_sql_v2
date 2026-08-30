@@ -164,6 +164,8 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 22. semantic 已完成 21,781 / 21,781；semantic_consolidation 在 month 的规范化 subject `ishowspeed` 处因确定性 HTTP 400 停止。该 subject 实际包含 31,730 条 semantic triples，单个 prompt 为 1,599,410 字符并至少为 262,145 input tokens，超过模型 262,144 context；停止时 semantic_consolidation 已落盘 11 个 shard，未自动截断、跳过或改用其他方法。
 23. semantic_consolidation 对超过 4,000 条 triples 的 subject 使用固定每批 4,000 条的层级分批；每批继续使用同一模型和同一 consolidation prompt，每个 batch 结果立即写入 `semantic_consolidation_batches` shard，合并每轮结果后继续下一轮，直到单批完成最终 consolidation，不截断或跳过 triples。真实数据中每批 4,000 条的最大首轮 prompt 为 199,129 字符；若一轮分批后 triples 数量没有减少则终止。
 24. 首次分批运行中，`ishowspeed` round 0 batch 0 将 4,000 条 triples 合并为 677 条并保存完整 batch shard 和 trace，batch 1 返回空 `TripleList`；现有外层逻辑只会在两个 fill rounds 各调用一次，不符合每个模型请求最多重试 10 次的规则，因此停止运行。`TripleList` 增加非空 Pydantic 校验，使空列表在 `LocalModel.generate` 内收到原校验错误并按同一设置最多重试 10 次。
+25. 非空校验修正后，真实 trace 已验证空 `TripleList` 的校验错误进入 attempt-02 并得到有效 `stop` 响应；`ishowspeed` 已保存前三个 4,000-input batch shard，分别输出 677、359、283 条 triples。随后共享 vLLM 服务停止，失败样本 `month:168112b449d4b8114a17f7759da76878:round:0:batch:0` 的 10 次尝试为 1 次 timeout 和 9 次 connection error，`/health` 返回无法连接，精确容器和前台服务会话均不存在；indexing 在 103 个 final consolidation shards 和 67 个 batch shards 处停止，未重启共享服务。
+26. 为防止 Codex app-server 将生成的未跟踪二进制产物逐文件与 `/dev/null` 做内容 diff，项目 `.gitignore` 新增 `data/embedding_index/`、`data/full_video_embedding_index/`、`data/full_video_clips/`、`data/video_clips/` 和 `runs/`；全局 `~/.codex/AGENTS.md` 和 `~/.codex/config.toml` 的 auto-review policy 同时加入禁止全仓自动 diff、逐文件未跟踪 diff 和生成物内容 diff 的规则。
 
 
 # EgoLife 3.2 执行计划

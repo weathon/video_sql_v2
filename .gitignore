@@ -13,6 +13,10 @@ __pycache__/
 wandb/
 data/*.duckdb
 data/embedding_shards/
+data/embedding_index/
+data/full_video_embedding_index/
+data/full_video_clips/
+data/video_clips/
 runs/
 media/
 logs/
