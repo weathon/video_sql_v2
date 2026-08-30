@@ -84,16 +84,29 @@ Captions:
         messages = [{"role": "user", "content": prompt}]
 
         def validate_coverage(result):
-            if not result.three_minute_summaries or result.three_minute_summaries[0].start_sec > start_sec + 1 or result.three_minute_summaries[-1].end_sec < end_sec - 1:
-                raise ValueError(f"three-minute summaries do not cover {start_sec:.3f}-{end_sec:.3f}")
-            if not result.ten_minute_summaries or result.ten_minute_summaries[0].start_sec > start_sec + 1 or result.ten_minute_summaries[-1].end_sec < end_sec - 1:
-                raise ValueError(f"ten-minute summaries do not cover {start_sec:.3f}-{end_sec:.3f}")
+            for label, segments in (("three-minute", result.three_minute_summaries), ("ten-minute", result.ten_minute_summaries)):
+                if not segments:
+                    raise ValueError(f"{label} summaries are empty")
+                covered_end = start_sec
+                previous_start = start_sec
+                for segment in segments:
+                    if segment.start_sec < start_sec - 1 or segment.end_sec > end_sec + 1 or segment.end_sec < segment.start_sec:
+                        raise ValueError(f"{label} summary range is outside {start_sec:.3f}-{end_sec:.3f}")
+                    if segment.start_sec < previous_start or segment.start_sec > covered_end + 1:
+                        raise ValueError(f"{label} summaries are unordered or have a gap before {segment.start_sec:.3f}")
+                    previous_start = segment.start_sec
+                    covered_end = max(covered_end, segment.end_sec)
+                if covered_end < end_sec - 1:
+                    raise ValueError(f"{label} summaries end at {covered_end:.3f}, before {end_sec:.3f}")
 
         async with semaphore:
             started = time.monotonic()
-            result = await model.generate(stage, key, messages, messages, HourIndex, validate_coverage)
+            try:
+                result = await model.generate(stage, key, messages, messages, HourIndex, validate_coverage)
+            except ContextWindowExhausted:
+                return None, time.monotonic() - started, True
             latency = time.monotonic() - started
-        return result, latency
+        return result, latency, False
 
     async def process(job):
         output_path = args.artifact_root / "shards" / "hour_index" / f"{safe_key(job['key'])}.json"
@@ -105,17 +118,12 @@ Captions:
             [caption for caption in job["captions"] if caption["start_sec"] >= half_boundary],
         ]
         half_paths = [args.artifact_root / "shards" / "half_hour_index" / f"{safe_key(job['key'])}_half_{half_index}.json" for half_index in range(2)]
-        window_mode = "hour"
+        use_halves = any(path.is_file() for path in half_paths)
         hour_latency = 0.0
-        if any(path.is_file() for path in half_paths):
-            result = None
-        else:
-            try:
-                result, hour_latency = await generate_interval("hour_index", job["key"], job["captions"], job["start_sec"], job["end_sec"])
-            except ContextWindowExhausted:
-                result = None
-                window_mode = "two_half_hours"
-        if result is None and window_mode == "two_half_hours" or any(path.is_file() for path in half_paths):
+        result = None
+        if not use_halves:
+            result, hour_latency, use_halves = await generate_interval("hour_index", job["key"], job["captions"], job["start_sec"], job["end_sec"])
+        if use_halves:
             window_mode = "two_half_hours"
 
             async def generate_half(half_index):
@@ -124,12 +132,13 @@ Captions:
                     saved = read_json(half_path)
                     return HourIndex.model_validate(saved["index"]), saved["latency_sec"]
                 rows = half_rows[half_index]
-                half_result, half_latency = await generate_interval("half_hour_index", f"{job['key']}:half:{half_index}", rows, rows[0]["start_sec"], rows[-1]["end_sec"])
+                half_result, half_latency, half_context_exhausted = await generate_interval("half_hour_index", f"{job['key']}:half:{half_index}", rows, rows[0]["start_sec"], rows[-1]["end_sec"])
+                if half_context_exhausted:
+                    return None, half_latency
                 if half_result is not None:
                     write_json(half_path, {"video_id": args.video_id, "hour_index": job["hour_index"], "half_index": half_index, "start_sec": rows[0]["start_sec"], "end_sec": rows[-1]["end_sec"], "caption_count": len(rows), "latency_sec": half_latency, "index": half_result.model_dump(mode="json")})
                 return half_result, half_latency
 
-            half_started = time.monotonic()
             halves = await asyncio.gather(generate_half(0), generate_half(1))
             if halves[0][0] is None or halves[1][0] is None:
                 print(f"window_failed key={job['key']} attempts={args.max_retries}")
@@ -146,8 +155,9 @@ Captions:
                 entities=[IndexedEntity(name=name, mentions=mentions) for name, mentions in entities.items()],
                 triples=first.triples + second.triples,
             )
-            latency = hour_latency + time.monotonic() - half_started
+            latency = hour_latency + max(halves[0][1], halves[1][1])
         else:
+            window_mode = "hour"
             latency = hour_latency
         if result is None:
             print(f"window_failed key={job['key']} attempts={args.max_retries}")

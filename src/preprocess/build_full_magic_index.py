@@ -311,7 +311,7 @@ class LocalModel:
                 attempt_trace_messages = attempt_trace_messages + correction
         if connection_errors == self.max_retries:
             raise RuntimeError(f"model service unavailable for all {self.max_retries} attempts stage={stage} key={key}")
-        if context_length_errors:
+        if context_length_errors == self.max_retries:
             raise ContextWindowExhausted(f"context window exhausted after {self.max_retries} attempts stage={stage} key={key}")
         return None
 
