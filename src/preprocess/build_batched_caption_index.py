@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import math
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -84,10 +85,10 @@ All start_sec and end_sec values must use the absolute seconds shown below and r
 Captions:
 {caption_text}"""
         messages = [{"role": "user", "content": prompt}]
-        started = time.monotonic()
         async with semaphore:
+            started = time.monotonic()
             result = await model.generate("hour_index", job["key"], messages, messages, HourIndex)
-        latency = time.monotonic() - started
+            latency = time.monotonic() - started
         if result is None:
             print(f"window_failed key={job['key']} attempts={args.max_retries}")
             return None
@@ -111,7 +112,8 @@ Captions:
     wall_sec = time.monotonic() - started
     completed = sum(latency is not None for latency in latencies)
     failed = len(latencies) - completed
-    estimated_total_sec = wall_sec / completed * len(all_jobs) if completed else None
+    successful_latencies = [latency for latency in latencies if latency is not None]
+    estimated_total_sec = sum(successful_latencies) / completed * math.ceil(len(all_jobs) / args.concurrency) if completed else None
     summary = {
         "video_id": args.video_id,
         "caption_count": len(captions),
