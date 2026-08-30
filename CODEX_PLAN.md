@@ -170,6 +170,7 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 28. 用户确认绕过当前 TP2 的 Fabric Manager/NVSwitch 阻塞，改用物理 GPU 6 单卡、tensor parallel 1 继续正式 indexing；模型、`reasoning_effort=low`、`enable_thinking=true`、`preserve_thinking=true`、重试设置和本地模型并发 32 保持不变。
 29. GPU 6 单卡服务已绕过 NCCL 并进入模型权重加载，但在进程已使用 166.81 GiB、GPU 仅余 172.69 MiB 时申请 400 MiB 失败；GPU 6 上原有其他进程占用 11.63 GiB。服务已退出，indexing 尚未恢复。
 30. 用户决定暂停正式 indexing，不再尝试单卡服务；等待管理员重启并恢复 `nvidia-fabricmanager` 后，再使用原 Flash Next TP2 配置继续。
+31. 旧 MAGIC Video 索引已备份为 `runs/magic_index_full_magic_legacy_20260830`。新的 MM-Lifelong 索引方式把一个连续小时内按时间排序的 caption 放入一次结构化 Qwen 调用，并在同一次输出中生成约 3 分钟摘要、约 10 分钟摘要、整小时摘要、去重实体及带证据时间范围的 triples；先用 GPU 1 上的单卡 Qwen 27B 对少量小时窗口计时并估算全量 ETA，不执行全量索引。
 
 
 # EgoLife 3.2 执行计划
