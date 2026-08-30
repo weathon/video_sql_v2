@@ -169,6 +169,7 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 27. 主机资源恢复后，Flash Next TP2 服务使用原 GPU 5、6 和原参数连续三次在 `ncclCommInitRank` 失败；NCCL 诊断确认 NVLS 绑定 multicast memory 返回 CUDA 802 `system not yet initialized`，`nvidia-fabricmanager` 当前为 `failed`、`ExecMainStatus=6`。indexing 尚未恢复，继续前必须先恢复共享主机的 Fabric Manager/NVSwitch 状态。
 28. 用户确认绕过当前 TP2 的 Fabric Manager/NVSwitch 阻塞，改用物理 GPU 6 单卡、tensor parallel 1 继续正式 indexing；模型、`reasoning_effort=low`、`enable_thinking=true`、`preserve_thinking=true`、重试设置和本地模型并发 32 保持不变。
 29. GPU 6 单卡服务已绕过 NCCL 并进入模型权重加载，但在进程已使用 166.81 GiB、GPU 仅余 172.69 MiB 时申请 400 MiB 失败；GPU 6 上原有其他进程占用 11.63 GiB。服务已退出，indexing 尚未恢复。
+30. 用户决定暂停正式 indexing，不再尝试单卡服务；等待管理员重启并恢复 `nvidia-fabricmanager` 后，再使用原 Flash Next TP2 配置继续。
 
 
 # EgoLife 3.2 执行计划
