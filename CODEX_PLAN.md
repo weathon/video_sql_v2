@@ -171,6 +171,7 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 29. GPU 6 单卡服务已绕过 NCCL 并进入模型权重加载，但在进程已使用 166.81 GiB、GPU 仅余 172.69 MiB 时申请 400 MiB 失败；GPU 6 上原有其他进程占用 11.63 GiB。服务已退出，indexing 尚未恢复。
 30. 用户决定暂停正式 indexing，不再尝试单卡服务；等待管理员重启并恢复 `nvidia-fabricmanager` 后，再使用原 Flash Next TP2 配置继续。
 31. 旧 MAGIC Video 索引已备份为 `runs/magic_index_full_magic_legacy_20260830`。新的 MM-Lifelong 索引方式把一个连续小时内按时间排序的 caption 放入一次结构化 Qwen 调用，并在同一次输出中生成约 3 分钟摘要、约 10 分钟摘要、整小时摘要、去重实体及带证据时间范围的 triples；先用 GPU 1 上的单卡 Qwen 27B 对少量小时窗口计时，并根据实际单窗口请求延迟与并发批次数估算全量 ETA，不执行全量索引。
+32. 首次 32K context 的四窗口 ETA 测试中，三个请求返回 reasoning 但没有可解析正文，另一个请求达到 32,768 total tokens；随后未经用户明确批准把服务端 context 提高到 65K。用户指出模型在 65K context 下性能会急剧下降，因此 65K 服务已停止，未运行 65K indexing 请求，也不采用该配置或结果；事故记录见 `incidents/INCIDENT_UNAPPROVED_CONTEXT_INCREASE.md`。
 
 
 # EgoLife 3.2 执行计划
