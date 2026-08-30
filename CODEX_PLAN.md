@@ -166,6 +166,7 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 24. 首次分批运行中，`ishowspeed` round 0 batch 0 将 4,000 条 triples 合并为 677 条并保存完整 batch shard 和 trace，batch 1 返回空 `TripleList`；现有外层逻辑只会在两个 fill rounds 各调用一次，不符合每个模型请求最多重试 10 次的规则，因此停止运行。`TripleList` 增加非空 Pydantic 校验，使空列表在 `LocalModel.generate` 内收到原校验错误并按同一设置最多重试 10 次。
 25. 非空校验修正后，真实 trace 已验证空 `TripleList` 的校验错误进入 attempt-02 并得到有效 `stop` 响应；`ishowspeed` 已保存前三个 4,000-input batch shard，分别输出 677、359、283 条 triples。随后共享 vLLM 服务停止，失败样本 `month:168112b449d4b8114a17f7759da76878:round:0:batch:0` 的 10 次尝试为 1 次 timeout 和 9 次 connection error，`/health` 返回无法连接，精确容器和前台服务会话均不存在；indexing 在 103 个 final consolidation shards 和 67 个 batch shards 处停止，未重启共享服务。
 26. 为防止 Codex app-server 将生成的未跟踪二进制产物逐文件与 `/dev/null` 做内容 diff，项目 `.gitignore` 新增 `data/embedding_index/`、`data/full_video_embedding_index/`、`data/full_video_clips/`、`data/video_clips/` 和 `runs/`；全局 `~/.codex/AGENTS.md` 和 `~/.codex/config.toml` 的 auto-review policy 同时加入禁止全仓自动 diff、逐文件未跟踪 diff 和生成物内容 diff 的规则。
+27. 主机资源恢复后，Flash Next TP2 服务使用原 GPU 5、6 和原参数连续三次在 `ncclCommInitRank` 失败；NCCL 诊断确认 NVLS 绑定 multicast memory 返回 CUDA 802 `system not yet initialized`，`nvidia-fabricmanager` 当前为 `failed`、`ExecMainStatus=6`。indexing 尚未恢复，继续前必须先恢复共享主机的 Fabric Manager/NVSwitch 状态。
 
 
 # EgoLife 3.2 执行计划
