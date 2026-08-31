@@ -59,7 +59,7 @@ MAGIC-video 生成index流程
 - 多级 caption 聚合保持 `month`、`day`、`week` 三个逻辑 video；week 聚合不跨 DAY，同一 DAY 内按实际视频时间线连续处理。week topic 输入保留秒级本地时刻，topic/event 的 DAY 与本地时刻映射回 week 逻辑时间线秒数，event 使用完整七日 activities 并执行 EgoLife 原第二轮漏项提取。
 - week 的本地时刻使用每个实际视频文件名中的 DAY 和时钟分段映射到逻辑时间线；模型时刻落入没有实际视频的空档时，该响应校验失败并在相同设置内计入最多 10 次重试，不映射到相邻边界。
 - OpenIE 与 semantic 使用 MAGIC-video 原完整提示和 one-shot；week topic 不执行 MM-Lifelong entity filter，并排除 EgoLife 参与者姓名；topic/activity/event 的 `HH:MM:SS` 校验与数据库入库一致，小时和分钟解析为整数、秒解析为浮点数。
-- 正式索引的每个本地模型请求最多重试 10 次；全部尝试失败后跳过整个样本并记录，完成当前批次后统一补跑缺失样本。正式运行初始并发为 32，semantic 的 12,264 至 12,928 使用并发 128，之后恢复为 32。
+- 正式索引的每个本地模型请求最多重试 10 次；全部尝试失败后跳过整个样本并记录，完成当前批次后统一补跑缺失样本。正式并发量使用真实视频请求测试后固定为 32。
 - 每次本地模型重试保存该次实际发送的消息及此前校错消息，包括 VLM 请求中的实际 base64 video data URL；确定性 4xx 请求、凭据、模型或服务配置错误直接终止，不按样本跳过。补跑后仍缺失任何样本时终止当前索引运行，不装配不完整 artifact。
 - 正式索引运行记录到 W&B project `video-sql-v2`，run name 为 `magic-index-mmlifelong-full`，保存配置和各阶段完成、总数、补跑轮次及缺失数。
 - 正式索引不提供截断每条时间线 clip 数量的运行开关。
@@ -157,23 +157,8 @@ Compress repetition and long tool output, but do not drop identifiers, timestamp
 15. 正式索引 Qwen 服务已在物理 GPU 1、4、5、6 以 tensor parallel 4 启动验证：实际 server 参数包含 `reasoning_parser=qwen3`、`enable_thinking=true` 与 `preserve_thinking=true`，render 结果确认 `reasoning_effort=low` 已进入模型 prompt。简单文本问题 `Greenland能不能翻译成青岛` 以 `finish_reason=stop`、2 个 completion tokens 结束，但 `content=NULL`、`reasoning="user"`；正式单视频 caption 路径共执行四次尝试，其中第二次以重复的 `The assistant is no the no...` reasoning 达到 `finish_reason=length` 和 253,811 个 completion tokens，最终第四次返回 `<|im_start|>` 并被当前非空校验接受。正式索引尚未启动，多轮 `preserve_thinking` trace 尚未验证通过，服务已停止；事故报告见 `notes/INCIDENT_MISCLASSIFIED_LONG_OUTPUT_AS_ERROR.md`。
 16. `Inferact/Qwen3.8-27B-NVFP4` 已在物理 GPU 1、4、5、6 以 tensor parallel 4、`reasoning_effort=low`、`enable_thinking=true` 与 `preserve_thinking=true` 测试同一简单问题；请求以 `finish_reason=stop` 正常返回 reasoning 和正文，共 685 个 completion tokens，正文回答 Greenland 不能翻译成青岛。该服务已停止，本项仅记录测试结果，未改变正式索引模型选择。
 17. `Inferact/Qwen3.8-Flash-Next-NVFP4` 已按 `notes/INFRA.txt` 原始物理 GPU 5、6 和 tensor parallel 2 配置，以 `reasoning_effort=low`、`enable_thinking=true` 与 `preserve_thinking=true` 测试同一简单问题；请求在 4.51 秒内以 `finish_reason=stop` 正常返回 reasoning 和正文，共 570 个 completion tokens，其中 356 个 reasoning tokens。正式索引采用该模型与 GPU/TP 配置。
-18. 正式索引 TP2 服务已使用真实 30 秒视频和正式 harness 验证：单请求 6.93 秒完成，trace 保存 198 个 reasoning tokens 与完整 caption；16 路真实视频并发在 14.75 秒内全部一次完成，32 路真实视频并发在 20.01 秒内全部一次完成，实际 caption 内容正常，因此正式索引初始并发为 32。
+18. 正式索引 TP2 服务已使用真实 30 秒视频和正式 harness 验证：单请求 6.93 秒完成，trace 保存 198 个 reasoning tokens 与完整 caption；16 路真实视频并发在 14.75 秒内全部一次完成，32 路真实视频并发在 20.01 秒内全部一次完成，实际 caption 内容正常，因此正式索引并发固定为 32。
 19. 正式索引命令的 `--dataset-video-root` 使用 revision 快照下的 `videos` 目录；直接使用快照根目录会在模型请求前因 week 源视频匹配数为 0 终止。使用 `videos` 目录后，day1 至 day7 的实际源视频数量分别为 828、854、910、953、946、1068、707，与对应 clip 数量逐日一致。
-20. 正式索引在 semantic 完成 12,264 / 21,781 后停止前台进程，保留全部已落盘 shard；从同一 artifact root 恢复时将本地模型并发从 32 改为 128，模型、TP、GPU、reasoning、thinking 和重试设置不变。
-21. 并发 128 期间 vLLM 日志显示 Waiting 达 124、GPU KV cache usage 达 96.8%；为与共享同一服务的长 agent 请求共同运行，semantic 完成 12,928 / 21,781 后再次停止前台进程并从同一 artifact root 以并发 32 恢复，其余设置不变。
-22. semantic 已完成 21,781 / 21,781；semantic_consolidation 在 month 的规范化 subject `ishowspeed` 处因确定性 HTTP 400 停止。该 subject 实际包含 31,730 条 semantic triples，单个 prompt 为 1,599,410 字符并至少为 262,145 input tokens，超过模型 262,144 context；停止时 semantic_consolidation 已落盘 11 个 shard，未自动截断、跳过或改用其他方法。
-23. semantic_consolidation 对超过 4,000 条 triples 的 subject 使用固定每批 4,000 条的层级分批；每批继续使用同一模型和同一 consolidation prompt，每个 batch 结果立即写入 `semantic_consolidation_batches` shard，合并每轮结果后继续下一轮，直到单批完成最终 consolidation，不截断或跳过 triples。真实数据中每批 4,000 条的最大首轮 prompt 为 199,129 字符；若一轮分批后 triples 数量没有减少则终止。
-24. 首次分批运行中，`ishowspeed` round 0 batch 0 将 4,000 条 triples 合并为 677 条并保存完整 batch shard 和 trace，batch 1 返回空 `TripleList`；现有外层逻辑只会在两个 fill rounds 各调用一次，不符合每个模型请求最多重试 10 次的规则，因此停止运行。`TripleList` 增加非空 Pydantic 校验，使空列表在 `LocalModel.generate` 内收到原校验错误并按同一设置最多重试 10 次。
-25. 非空校验修正后，真实 trace 已验证空 `TripleList` 的校验错误进入 attempt-02 并得到有效 `stop` 响应；`ishowspeed` 已保存前三个 4,000-input batch shard，分别输出 677、359、283 条 triples。随后共享 vLLM 服务停止，失败样本 `month:168112b449d4b8114a17f7759da76878:round:0:batch:0` 的 10 次尝试为 1 次 timeout 和 9 次 connection error，`/health` 返回无法连接，精确容器和前台服务会话均不存在；indexing 在 103 个 final consolidation shards 和 67 个 batch shards 处停止，未重启共享服务。
-26. 为防止 Codex app-server 将生成的未跟踪二进制产物逐文件与 `/dev/null` 做内容 diff，项目 `.gitignore` 新增 `data/embedding_index/`、`data/full_video_embedding_index/`、`data/full_video_clips/`、`data/video_clips/` 和 `runs/`；全局 `~/.codex/AGENTS.md` 和 `~/.codex/config.toml` 的 auto-review policy 同时加入禁止全仓自动 diff、逐文件未跟踪 diff 和生成物内容 diff 的规则。
-27. 主机资源恢复后，Flash Next TP2 服务使用原 GPU 5、6 和原参数连续三次在 `ncclCommInitRank` 失败；NCCL 诊断确认 NVLS 绑定 multicast memory 返回 CUDA 802 `system not yet initialized`，`nvidia-fabricmanager` 当前为 `failed`、`ExecMainStatus=6`。indexing 尚未恢复，继续前必须先恢复共享主机的 Fabric Manager/NVSwitch 状态。
-28. 用户确认绕过当前 TP2 的 Fabric Manager/NVSwitch 阻塞，改用物理 GPU 6 单卡、tensor parallel 1 继续正式 indexing；模型、`reasoning_effort=low`、`enable_thinking=true`、`preserve_thinking=true`、重试设置和本地模型并发 32 保持不变。
-29. GPU 6 单卡服务已绕过 NCCL 并进入模型权重加载，但在进程已使用 166.81 GiB、GPU 仅余 172.69 MiB 时申请 400 MiB 失败；GPU 6 上原有其他进程占用 11.63 GiB。服务已退出，indexing 尚未恢复。
-30. 用户决定暂停正式 indexing，不再尝试单卡服务；等待管理员重启并恢复 `nvidia-fabricmanager` 后，再使用原 Flash Next TP2 配置继续。
-31. 旧 MAGIC Video 索引已备份为 `runs/magic_index_full_magic_legacy_20260830`。新的 MM-Lifelong 索引方式把一个连续小时内按时间排序的 caption 放入一次结构化 Qwen 调用，并在同一次输出中生成约 3 分钟摘要、约 10 分钟摘要、整小时摘要、去重实体及带证据时间范围的 triples；先用 GPU 1 上的单卡 Qwen 27B 对少量小时窗口计时，并根据实际单窗口请求延迟与并发批次数估算全量 ETA，不执行全量索引。
-32. 首次 32K context 的四窗口 ETA 测试中，三个请求返回 reasoning 但没有可解析正文，另一个请求达到 32,768 total tokens；随后未经用户明确批准把服务端 context 提高到 65K。用户指出模型在 65K context 下性能会急剧下降，因此 65K 服务已停止，未运行 65K indexing 请求，也不采用该配置或结果；事故记录见 `incidents/INCIDENT_UNAPPROVED_CONTEXT_INCREASE.md`。
-33. 用户随后明确指定使用 Qwen3.8-27B 原生最长 262,144 context，不启用 YaRN。GPU 1 单卡、并发 4 的 MM-Lifelong month ETA 测试读取 12,684 条 merged captions，共形成 106 个一小时窗口；前 4 个窗口全部生成结构化产物，单窗口延迟分别为 268.627、930.314、438.461、582.594 秒，批次墙钟时间 930.486 秒，按实际请求延迟与 27 个并发批次估算全量为 14,984.977 秒，即 4.162 小时。`month:0001` 前两次分别返回空正文和不完整 JSON，第三次成功；其他三个窗口第一次成功。真实产物检查发现 `month:0001` 的 3 分钟摘要缺少最后约 480 秒，`month:0003` 的 10 分钟摘要缺少最后 600 秒且最后一条文字截断，因此该 ETA 只代表当前实现生成现有产物的时间，不代表完整覆盖已通过。产物位于 `runs/magic_index_batched_eta`，32K 失败 trace 位于 `runs/magic_index_batched_eta_32k_failed`；262K 服务测试后已停止。
-34. 用户要求今晚在当前任务中运行完整 MM-Lifelong month 批量索引：继续使用 GPU 1 单卡 Qwen3.8-27B、原生 262,144 context、`reasoning_effort=low`、`enable_thinking=true`、`preserve_thinking=true`、并发 4 和每个请求最多 10 次重试。每个一小时窗口一次输出 3 分钟摘要、10 分钟摘要、整段摘要、实体和 triples；只有 10 次全部因 context 结束时，才把该小时拆成两个半小时请求并合并，两个半小时产物分别立即落盘；任一半小时在重试后仍失败则跳过整个小时。3 分钟和 10 分钟摘要必须按顺序完整覆盖输入区间且不越界，否则把覆盖错误反馈给同一模型重试。完整运行写入新的 `runs/magic_index_batched_full`，不复用 ETA 产物。
 
 
 # EgoLife 3.2 执行计划

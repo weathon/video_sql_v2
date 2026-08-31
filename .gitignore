@@ -17,10 +17,8 @@ data/embedding_index/
 data/full_video_embedding_index/
 data/full_video_clips/
 data/video_clips/
-runs/
 media/
-logs/
-*.log
+runs/
 infra_test/*_checkpoints/
 infra/curl_sgl*.err
 infra/bench_*.json

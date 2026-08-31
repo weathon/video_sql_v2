@@ -1,54 +1,28 @@
-**This plan is a draft and has been refined into CODEX_PLAN.md**
-
-这是一个AI Memory Agent的项目, 你的目标是构建一个agent, 用来检索视频记忆并且回答问题. 
+这是一个AI Memory Agent的项目, 你的目标是构建一个agent, 用来检索视频记忆并且回答问题. 本branch是从main checkout出来的, main是一次失败的尝试, ../video_sql也是, 除非特别指示, 不然不要去看, 以免遭受误导. 如果过程中用户更新了plan的内容, 记得要更新这个文件. 
 
 ## 材料:
 1. 数据集: https://huggingface.co/datasets/MM-Lifelong/MM-Lifelong
-2. 预处理仓库: https://github.com/lijiazheng0917/MAGIC-video.git
-3. pilot使用模型: OpenAI的gpt-5.6-luna(支持高并发(100左右)和图片输入)
-4. 使用SDK: https://github.com/openai/openai-agents-python (文档在docs/)
+2. 旧的预处理仓库: https://github.com/lijiazheng0917/MAGIC-video.git
+3. 使用的Harness框架: https://github.com/HKUDS/OpenHarness.git
 5. Embedding模型: Qwen/Qwen3-VL-Embedding-8B (Use VL for both visual and text-only), start it using vllm
-6. 缓存的试点数据集和预构建的index: /raid/wg25r/mmlifelong_pilot
-7. 数据库引擎: https://github.com/duckdb/duckdb
-8. OpenAI Doc Skill: 本次运行明确允许且需要使用这个doc来完成构建, 上面的agent辅助doc也需要使用
-9. 本地模型: Qwen/Qwen3.8-27B
+6. 数据库引擎: https://github.com/duckdb/duckdb
+7. 本地模型: Qwen/Qwen3.8-27B, 使用参考在INFRA.txt
+8. 预构建的index(只用作试点): jiazhengli7/magic-video-artifacts
+9. notes/文件夹, 上一次失败过程积累的经验和踩坑, 可以参考, 但是不一定有用甚至可能跑偏, 冲突时以当前计划为准
+
 
 ## 项目创新点:
 1. 本项目使用SQL Dataset代替graph, 从而使得query过程可以被agent控制, 并且可以直接实现多步骤跳转而不是agent自己relay. 
 2. Agent SKILL.md "训练": 训练大模型很复杂, 耗费算力, 容易过拟合, 所以我们"训练"agent的skill.md文件, 而不是模型参数. 简单来说, 每一次rollout结束之后模型复盘, 复盘经验加入一个文本文件, 这个文本被下一次模型rollout使用, 如此反复迭代实现模型进化. 
+3. 以往的index构建过于繁琐复杂, 我们使用一个简单的一次过的方式快速处理. 
 
-## 成本控制和监控
-所有的API都应该统计token的消耗, luna的pricing如下. 建议监控长context和短context. 始终需要开启cache write. 如果总消耗达到$100, 保留可以resume的状态并且暂停, 告知用户, 用户决定继续. pilot使用luna, 不要fast模式; pilot之后的所有实验全部使用本地模型, 不再使用luna. 
-| Model | Short context input | Short context cached input | Short context cache writes | Short context output | Long context input | Long context cached input | Long context cache writes | Long context output |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| gpt-5.6-sol | $4.00 | $0.40 | $5.00 | $20.00 | $8.00 | $0.80 | $10.00 | $30.00 |
-| gpt-5.6-terra | $2.00 | $0.20 | $2.50 | $12.00 | $4.00 | $0.40 | $5.00 | $18.00 |
-| gpt-5.6-luna | $0.20 | $0.02 | $0.25 | $1.20 | $0.40 | $0.04 | $0.50 | $1.80 |
-
-## 实验
-### 阶段一: 试点
-0. (跳过这个, 这个已经完成)在试点期间, 同步进行这个操作: 启动一个subagent, 让他从网上(英文社区和中文社区, 还有官方文档)找到最好的vllm/sglang配置跑Qwen/Qwen3.8-27B用的, research哪一个bug更少. 同时这个subagent在一个空的GPU自主测试效果, 用合成长图像文本混合数据集. 每个setting不需要stress test很多prompt, 但是每个prompt需要是合成数据多伦对话长context, 用一个脚本自动的添加用户回复或者让两个对话相互几乎, 包含图片, 简单看看效果就好. 把所有setting和throughput放到INFRA.txt作为best_setting, 子agent不打断你做rollout. 做test的时候要测试高并发(25-50)长context(100k token)测试.
-1. 使用已经下载的mm lifelong数据集和预处理的MAGIC-video index (/raid/wg25r/mmlifelong_pilot), 构建我们自己的index: 所有表格全部转化成一个duckdb数据库, 保留原本表格结构, normalize所有的文本和时间格式(绝对时间还是相对时间, 人类可读时间还是秒数, 等, 建议用SQL数据库支持的相对时间格式(有些视频是不知道绝对时间的, 尤其是游戏))使得JOIN更好兼容. duckdb需要开启只读模式. artifacts里面没有embedding, 需要重新抽取embedding, 抽取使用极高并发(around 8192 for text and 512 for video).
-2. 构建我们的harness (参考: 方法详情和代码结构)和简单单元测试, 完成这些测试. 完成harness之后, 停下来不要继续, 用户审核代码后再继续. 
-3. 对于pilot dataset: 根据视频与问题的连接关系构建图，并进行图划分（graph partitioning），保证训练集和测试集之间不存在重叠的问题连接。较大的分区作为训练集，较小的分区作为验证集.
-4. 在训练集上"训练"我们的SKILL.md和META-SKILL.md (Batch Size=5 questions x 5 rollouts, epochs=1), 然后在验证集上**不迭代更新**验证我们的方法. 注意: 测试集不需要META-SKILL.md. 打分方法也用openai api. 训练过程中检查INFRA.txt是否完整.
-5. 重跑一次验证集, 但是不包含SKILL.md作为baseline
-6. 记录结果, 通过记录的花费推算 cost per question, 报告出来, 推算总花费
-
-### 阶段二: 预处理
-1. 下载MM-Lifelong数据集, 有可能已经存在cache
-2. 找一个空的GPU, 用docker开启Qwen/Qwen3-VL-Embedding-8B作为embedding server. 找另一个空的GPU, 用best_setting启动Qwen/Qwen3.8-27B本地模型. 如果没有两张空的卡, 挤在一张卡, embedding不需要很多空间, 或者找另一个显存还有剩余但是compute是空的的卡启动embedding. Embedding高并发同上. 
-3. 修改MAGIC-video中的预处理脚本, 用本地模型Qwen/Qwen3.8-27B, 生成index, 所以用它作为所有模型, reasoning设置成medium. 使用embedding server作为embedding. 需要全部重新生成不能使用pilot的, 因为模型变了. 产生artifacts非常耗时和资源, 所以必须用本地模型而不是云端. 
-4. 储存所有index并且转化成SQL格式保存在一个duckdb database
-
-### 阶段三: "训练"和测试
-1. 和试点一样(使用luna), 只不过这次在完整的训练集(mmlifelong官方的split)上面训练, 一样的batch size, 只训练一个epoch, 但是SKILL.md和META-SKILL.md要重新训练, 初始状态和阶段一的**初始**状态一样. 
-2. 在mmlifelong的官方测试集采样测试, 每个长度(week, day, month)采样20个问题做测试. 同时测试有SKILL和没有SKILL
-3. 记录比较结果. 
-
-### 阶段四: 跨模型测试
-1. 启动一个vllm/sglang, 根据best_setting在一个GPU跑Qwen/Qwen3.8-27B [如果所有GPU不可用(VRAM<80% free OR always busy, it is fine if it has a small amount of VRAM being used), 暂停], medium, 测试mmlifelong测试集.由于是本地跑没有成本考量, 所以跑所有的mmlifelong测试集. 同样测试用SKILL.md和没有SKILL.md. 
-2. 记录和比较结果, 同样用deepseek/deepseek-v4-flash-0731的judge. 主要内部比较(with/without skill), 但是同时和阶段三比较, 和阶段三比较时比较同一子集. 
+## 试点实验
+1. 用提前做好的index (材料 8)和原始视频(材料 1), 构建一个新的duckdb数据库, 数据库的schema完全准许材料2, 只不过我们是用SQL database而不是graph, embedding也许需要重新准备, 参考notes/VIDEO_EMBEDDING_PIPELINE.md如何构建新的embedding.
+2. 搭建我们的harness,  见Harness架构如何搭建, 使用open harness连接本地模型, 验证他保留了过往reasoning并且支持图片或视频输入
+3. 把材料8和材料1的数据集做graph分割, 按照问题和视频连接做成一个图, 分割出两个set, 大的作为训练集, 小的作为测试集
+4. 在训练集上跑我们的`"训练"过程`, 每个问题5个rollout, 一次2个问题, 一共3个epoch
+5. 监控训练过程的平均打分到wandb, 结束后在测试集上测试. 
+6. 使用最开始的最简单SKILL, 在测试集跑一次, 对比准确度
 
 
 ## 方法详情
@@ -108,18 +82,33 @@ ORDER BY day;
 
 ### Harness架构
 #### 工具列表: 
-- run_sql: 简单的运行sql, 需要强行timeout 30s, 不然有可能会写死. 后端连接duckdb来支持高并发. 长caption做截断. 返回数量也做阶段到100行并且提示后面的被隐藏. 防止context爆炸. 
-- clip_qa: 由于video信息密度很低而且极度占用token, 我们把video_qa单独拿出来, 这个是一个subagent, 主agent给他一个视频片段(tool介绍里面建议小于10min但不强制, 强制小于20min, 如果输入超过20min返回消息让agent重来选择)和一个问题, 他可以通过类似VideoARM的方式在这个片段进一步检索和回答这个问题, 视频不进入主agent的架构. 这个字agent只有一个简单的sample_video(start_time, end_time, fps, x1, x2, y1, y2, return_caption=True), add_note(text), and read_notes(), 可以在这个10min长度的视频中先低fps采样, 检索然后截取一小段高fps来仔细查看, 还可以使用坐标进行裁剪, 仔细看视频的一个部分. 注意统一一下坐标格式, 用x/1000相对坐标. 这个agent在sample_video时一样可以看见caption用来辅助, 但是返回caption是可选的, 但是一旦选择返回, 返回这个区间内所有caption, 不做裁剪. caption的intervel和agent选择的time frame不一定一样, 优先返回更多内容覆盖而不是减少. 两个note是给agent做笔记用的, 防止agent自己的reasoning记忆在长上下文中丢失. clip_qa要被允许返回无法得知并且告诉他不要瞎猜. 需要返回得到证据的一个或者多个时间戳. harness会把这些时间戳转化为静态截图一同返回给主agent. 
-- add_note(text), and read_notes(): 主agent一样有这两个工具用于笔记
-- semantic_search(query, n, table): 用一个文本, 搜寻图片embedding或者文字embedding(具体看agent写了哪个table), 返回表名和行id以及时间, agent可以继续做检索. 返回top_n, 长caption做截断.table给一个限定(tools介绍和返回消息)只允许有embedding的table, MAGIC Video的index只有少量table有embedding. 
-- agent_raise(): 特殊工具, agent发现当前状态明显不正常, 继续rollout没有意义, 例如数据库永远失败, 这时候agent raise一个error, 停止本次rollout, 上游决定是skip还是stop (参考规则).
+## Agent 接口与 compaction
+
+### Harness 工具
+
+- `run_sql(sql)`：只读执行，30 秒硬超时；最多向模型返回 100 行并说明是否存在更多结果；每个单元格最多返回前 500 字符及原长度。SQL 语法或数据错误返回给模型，数据库系统错误直接终止。
+- `semantic_search(query, n, table)`：只允许查询已生成 embedding 的表，返回 table、row_id、video_id、start/end、规范化文本预览及 cosine score。
+- `clip_qa(video_id, start_s, end_s, question)`：建议片段不超过 10 分钟，超过 20 分钟直接拒绝。内部 agent 可调用 `sample_video`、`add_note`、`read_notes`。
+- `sample_video`：接受时间、fps 和 0–1000 整数裁剪坐标；返回覆盖请求区间的 caption 和带时间标记的 4×3 contact sheet，每页 12 帧，所有帧完整分页。contact sheet 和证据截图只向模型暴露文件名，不暴露宿主机绝对路径。
+- `clip_qa` 返回 `answered|unknown`、答案和至少一个证据时间点；harness 将证据时间点转换为独立截图交给主 agent。
+- 主 agent 提供 `add_note`、`read_notes` 和 `agent_raise(reason)`；正式运行中同一 rollout 最多按原设置重试 3 次，缺少必要数据或确定性代码错误直接终止。
+- 主 agent 最大 50 turns；达到上限按整个 rollout 重试，不截断上下文或返回半成品。
+
+### Compaction 状态机
+
+- 仅主检索 agent 使用 compaction；`clip_qa`、judge、reflection、summarizer 和 updater 不使用。
+- 每次主 agent 响应完成后读取服务端 usage，计算 `remaining = notes/INFRA.txt.context_limit - input_tokens - output_tokens`。
+- 当 `remaining <= 50,000` 时，通过流式 runner 执行 `cancel(mode="after_turn")` 并排空事件，确保当前工具轮完整结束。
+- 在当前主检索 agent 的同一对话中追加固定 compaction 指令，要求它停止工具调用并总结当前对话。该 agent 的下一次输出作为新对话中的 trusted handoff，旧对话不再传入；不创建单独的 compactor agent。
+- 第一次和第二次 compaction 后继续 rollout。第三次 compaction 输出生成后立即终止，状态设为 `compaction_limit`，分数设为 0，不调用 judge、不重试，直接进入重点分析绕圈原因的 reflection。
+- Reflection 永不 compaction；当其 remaining 小于等于 50k 时，禁止继续调用工具并强制输出最终 reflection 和 meta-reflection。
 
 #### "训练"过程:
 1. 我们定义batch size代表n个问题和每个问题m个平行rollout. 把SKILL.md放入prompt对于一整个batch做平行rollout, 得到25个结果, 这是用用一个额外的judge call来判断模型答案正确性(打分/5), 这个分数记作s. wandb log这个s. 这个s也是qwen 3.8 27b产生. 
-2. 把正确答案和s(而不只是s)都给每一个rollout, 然后告诉他这是正确答案和你的分数, 同时插入META-SKILL.md (META-SKILL.md不是最开始放进去的), 你现在要做的就是去重新复盘这个结果, 包括重新回顾自己的trace和重新对数据库检索和探索, 找到你为什么对/为什么错的原因, 把这个原因总结出来, 记错relection, 同时这个反思过程有什么经验(帮助下一次反思), 记错meta-relection. 两个反思都要去掉具体内容变得抽象化 可以辅助任何问题而不是本次情况. 本次情况可以作为案例, 但是要去掉敏感信息防止数据泄露(比如具体某天中午午饭内容)
-3. 每一个问题的m个rollout的反思被另一个call总结起来, 然后对于n个总结和当前SKILL.md状态, 另一个agent(不是single call)生成一个patch来修改它产生新的skill. 这个修改必须使用patch而不是直接输出新的是为了防止大范围改动. 使用linux标准的patch格式, 如果patch失败就让这个这个agent得到错误(需要agent的原因)然后重写一个patch. reflection进入SKILL.md meta-reflection进入META-SKILL.md. 这个patch需要包含修改和删除, 而不只是无限量添加, 不然会爆炸. 删掉旧的错误的, 或者merge相似的, 或者补充现有的, 而不是永远加下去. 
+2. 把正确答案和s(而不只是s)都给每一个rollout, 然后告诉他这是正确答案和你的分数, 同时插入META-SKILL.md (META-SKILL.md不是最开始放进去的), 你现在要做的就是去重新复盘这个结果, 包括重新回顾自己的trace和重新对数据库检索和探索, 找到你为什么对/为什么错的原因, 把这个原因总结出来, 记错relection, 同时这个反思过程有什么经验(帮助下一次反思), 记错meta-relection. 两个反思都要去掉具体内容变得抽象化 可以辅助任何问题而不是本次情况. 本次情况可以作为案例, 但是要去掉敏感信息防止数据泄露(比如具体某天中午午饭内容). 注意要模型不光总结新的经验, 还要让她注意什么时候要更新/替换/修改旧的经验. 不然经验会越变越大而且出现重复/冲突/相似的内容.
+3. 每一个问题的m个rollout的反思被另一个call总结起来, 然后模型生成一个新的SKILL.md和META-SKILL.md, 同上, 但是注意不要一味的添加, 也要值得去除/替换. 不然会冲突和越变越大. 
 4. 下一个batch带着新的SKILL.md和META-SKILL.md继续. 
-5. 只训练一个epoch, 不然很可能会过拟合
+
 
 #### Prompt
 System Prompt包含简单的任务说明和database schema, **不需要**任何详细的任务步骤描述, 例如如何搜索如何继续. 但是, 我们需要一个起始状态的SKILL.md来告诉模型怎么做检索, 同样的, 反思阶段给的guideline也应该保持最简单, 而具体的开始反思的guideline应该放在META-SKILL.md. 这样模型不会被我们的system prompt困住或者和SKILL.md和META-SKILL.md冲突, 而是可以自由修改. 然后作为baseline的no skill baseline包含这个最开始的最初始的SKILL作为system prompt, 而不是完全没有prompt. 
@@ -146,7 +135,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 10. 你的运行过程中除非停止, 不然所有消息都默认是你的自言自语用户不会读, 需要用户读取的milestone和log记录在AGENT_STDOUT.txt给用户看, 比如cost, 你自己做的决定, etc. AGENT_STDOUT是你输出给用户看的重要信息, wandb是记录run的过程. 
 
 ## 实现决定
-1. 所有文本转成ASCII并转成小写.
+1. 所有文本转成ASCII并转成小写.做成归一化
 2. 去除文本开始和结尾的空格, 所有连续空白折叠成单个空格, 总是允许一定程度的改变和坍缩, 保持一致优先.
 3. 所有依赖保持当前最新版; 如果不能工作, 回退到可以工作的版本.
 4. 环境使用uv; 不需要每次都创建新的venv, 不能使用别人创建的venv, 自己创建的venv可以复用.
@@ -155,7 +144,6 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 7. `run_sql`每个单元格保留前500字符.
 8. 轮数实际设置为50; 达到50说明模型自循环, 重试整个样本.
 9. 允许并行工具调用.
-10. `$100`限制只在整个rollout结束后检查, 允许少量超过.
-11. uv cache放到/raid.
-12. home目录满了时先清理home, 删除本次产生的无用内容.
-13. 过程中严谨访问未列出的目录和当前目录. 
+10. uv cache放到/raid.
+11. home目录满了时先清理home, 删除本次产生的无用内容.
+12. 过程中严谨访问未列出的目录和当前目录. 
