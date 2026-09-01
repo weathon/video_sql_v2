@@ -42,6 +42,7 @@ class StageAttemptsExhausted(RuntimeError):
 
 
 OutputModel = TypeVar("OutputModel", bound=BaseModel)
+TURN_SAFETY_LIMIT = 1000
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -377,12 +378,12 @@ def validate_positive(values: dict[str, int]) -> None:
 
 
 async def train(args: argparse.Namespace) -> None:
-    validate_positive({"questions_per_batch": args.questions_per_batch, "rollouts_per_question": args.rollouts_per_question, "epochs": args.epochs, "attempts": args.attempts, "clip_max_turns": args.clip_max_turns, "reflection_max_turns": args.reflection_max_turns, "context_limit": args.context_limit})
+    validate_positive({"questions_per_batch": args.questions_per_batch, "rollouts_per_question": args.rollouts_per_question, "epochs": args.epochs, "attempts": args.attempts, "context_limit": args.context_limit})
     items = json.loads(args.train_json.read_text())
     skill = args.skill_path.read_text()
     meta_skill = args.meta_skill_path.read_text()
     revision, status = git_state()
-    launch_config = {"command": "training", "git_hash": revision, "git_status": status, "database": str(args.database.resolve()), "index_root": str(args.index_root.resolve()), "clip_root": str(args.clip_root.resolve()), "train_json": str(args.train_json.resolve()), "skill_sha256": hashlib.sha256(skill.encode()).hexdigest(), "meta_skill_sha256": hashlib.sha256(meta_skill.encode()).hexdigest(), "model_base_url": args.model_base_url, "model_name": args.model_name, "embedding_base_url": args.embedding_base_url, "context_limit": args.context_limit, "questions_per_batch": args.questions_per_batch, "rollouts_per_question": args.rollouts_per_question, "epochs": args.epochs, "attempts": args.attempts, "clip_max_turns": args.clip_max_turns, "reflection_max_turns": args.reflection_max_turns, "mode": args.mode}
+    launch_config = {"command": "training", "git_hash": revision, "git_status": status, "database": str(args.database.resolve()), "index_root": str(args.index_root.resolve()), "clip_root": str(args.clip_root.resolve()), "train_json": str(args.train_json.resolve()), "skill_sha256": hashlib.sha256(skill.encode()).hexdigest(), "meta_skill_sha256": hashlib.sha256(meta_skill.encode()).hexdigest(), "model_base_url": args.model_base_url, "model_name": args.model_name, "embedding_base_url": args.embedding_base_url, "context_limit": args.context_limit, "questions_per_batch": args.questions_per_batch, "rollouts_per_question": args.rollouts_per_question, "epochs": args.epochs, "attempts": args.attempts, "clip_max_turns": TURN_SAFETY_LIMIT, "reflection_max_turns": TURN_SAFETY_LIMIT, "mode": args.mode}
     wandb_run = initialize_wandb(args.run_dir, launch_config, args.wandb_entity, args.wandb_project, args.wandb_run_name)
     runtime = PilotHarness(args.database, args.index_root, args.clip_root, args.model_base_url, args.model_name, args.embedding_base_url, args.context_limit)
     global_batch = 0
@@ -409,7 +410,7 @@ async def train(args: argparse.Namespace) -> None:
                     for item in batch_items:
                         for rollout_index in range(args.rollouts_per_question):
                             rollout_dir = batch_dir / "questions" / f"question-{int(item['index']):06d}" / f"rollout-{rollout_index:02d}"
-                            rollout_tasks.append(rollout_group.create_task(run_training_rollout(runtime, item, rollout_index, skill, meta_skill, rollout_dir, args.attempts, args.mode, args.clip_max_turns, args.reflection_max_turns)))
+                            rollout_tasks.append(rollout_group.create_task(run_training_rollout(runtime, item, rollout_index, skill, meta_skill, rollout_dir, args.attempts, args.mode, TURN_SAFETY_LIMIT, TURN_SAFETY_LIMIT)))
                 results = [task.result() for task in rollout_tasks]
                 async with asyncio.TaskGroup() as summary_group:
                     summary_tasks = []
@@ -418,9 +419,9 @@ async def train(args: argparse.Namespace) -> None:
                         reflections = [result["reflection"] for result in question_results]
                         if reflections:
                             summary_dir = batch_dir / "question-summaries" / f"question-{int(item['index']):06d}"
-                            summary_tasks.append(summary_group.create_task(summarize_question(runtime, reflections, summary_dir, args.attempts, args.mode, args.clip_max_turns)))
+                            summary_tasks.append(summary_group.create_task(summarize_question(runtime, reflections, summary_dir, args.attempts, args.mode, TURN_SAFETY_LIMIT)))
                 summaries = [task.result() for task in summary_tasks]
-                update = await update_skills(runtime, skill, meta_skill, [summary.model_dump(mode="json") for summary in summaries], batch_dir / "updater", args.attempts, args.mode, args.clip_max_turns)
+                update = await update_skills(runtime, skill, meta_skill, [summary.model_dump(mode="json") for summary in summaries], batch_dir / "updater", args.attempts, args.mode, TURN_SAFETY_LIMIT)
                 skill = update.skill_md
                 meta_skill = update.meta_skill_md
                 (batch_dir / "SKILL-after.md").write_text(skill)
@@ -457,8 +458,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rollouts-per-question", type=int, required=True)
     parser.add_argument("--epochs", type=int, required=True)
     parser.add_argument("--attempts", type=int, required=True)
-    parser.add_argument("--clip-max-turns", type=int, required=True)
-    parser.add_argument("--reflection-max-turns", type=int, required=True)
     parser.add_argument("--mode", choices=["debug", "formal"], required=True)
     parser.add_argument("--wandb-entity", required=True)
     parser.add_argument("--wandb-project", required=True)
