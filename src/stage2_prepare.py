@@ -2,7 +2,6 @@ import argparse
 import asyncio
 import json
 import math
-import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -303,7 +302,7 @@ async def generate_dense(run_root: Path, base_url: str) -> dict[str, int]:
             if whisper_payload["source_video_id"] != chunk.source_video_id or whisper_payload["model"] != WHISPER_MODEL:
                 raise RuntimeError(f"Whisper checkpoint mismatch in {whisper_path}")
             whisper_cache[chunk.source_video_id] = whisper_payload["segments"]
-    client = AsyncOpenAI(base_url=base_url.rstrip("/") + "/v1", api_key=os.environ["OPENAI_API_KEY"], max_retries=0)
+    client = AsyncOpenAI(base_url=base_url.rstrip("/") + "/v1", api_key="local", max_retries=0)
     semaphore = asyncio.Semaphore(WORKERS)
     system_prompt = "You are an expert video captioner. Describe the supplied video clip in one factual 2-4 sentence paragraph. Treat the visual stream as primary evidence and integrate the aligned Whisper transcript naturally. Mention concrete actions, people, objects, locations, visible text, interface state, and spoken content when present. Do not claim anything not supported by the video or transcript."
     async def generate_one(chunk: Chunk) -> None:
