@@ -35,8 +35,10 @@ async def embed_video(client: httpx.AsyncClient, semaphore: asyncio.Semaphore, r
             response.raise_for_status()
     except httpx.HTTPStatusError as error:
         print(json.dumps({"kind": "video", "row_id": row_id, "clip_path": str(clip_path), "status_code": error.response.status_code, "response": error.response.text}))
-        if error.response.status_code == 500 and "Requested next frame while there are no more frames left to decode." in error.response.text:
-            return row_id
+        if error.response.status_code == 500:
+            error_body = error.response.json()
+            if error_body["exception_type"] == "RuntimeError" and error_body["detail"] == "Requested next frame while there are no more frames left to decode.":
+                return row_id
         raise
     except httpx.RequestError as error:
         print(json.dumps({"kind": "video", "row_id": row_id, "clip_path": str(clip_path), "error": str(error)}))
