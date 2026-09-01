@@ -62,7 +62,7 @@ class DenseOutputError(RuntimeError):
     pass
 
 
-def probe_media(path: Path) -> tuple[float, str, str]:
+def probe_media(path: Path, require_audio: bool) -> tuple[float, str, str]:
     result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name", "-of", "json", str(path)], capture_output=True, text=True)
     if result.returncode != 0:
         print(json.dumps({"command": "ffprobe", "path": str(path), "stderr": result.stderr}))
@@ -71,9 +71,9 @@ def probe_media(path: Path) -> tuple[float, str, str]:
     duration_s = float(payload["format"]["duration"])
     video_codecs = [stream["codec_name"] for stream in payload["streams"] if stream["codec_type"] == "video"]
     audio_codecs = [stream["codec_name"] for stream in payload["streams"] if stream["codec_type"] == "audio"]
-    if not video_codecs or not audio_codecs:
+    if not video_codecs or (require_audio and not audio_codecs):
         raise RuntimeError(f"Missing video or audio stream in {path}")
-    return duration_s, video_codecs[0], audio_codecs[0]
+    return duration_s, video_codecs[0], audio_codecs[0] if audio_codecs else ""
 
 
 def load_jsonl(path: Path, model: type[BaseModel]) -> list[BaseModel]:
@@ -116,7 +116,7 @@ def build_inventory(dataset_root: Path, artifact_root: Path, run_root: Path, cli
             raise RuntimeError(f"Missing source video {path}")
     media = {}
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        futures = {pool.submit(probe_media, path): path for path in all_paths}
+        futures = {pool.submit(probe_media, path, True): path for path in all_paths}
         for completed, future in enumerate(as_completed(futures), 1):
             path = futures[future]
             media[path] = future.result()
@@ -155,7 +155,6 @@ def build_inventory(dataset_root: Path, artifact_root: Path, run_root: Path, cli
             source_offset_s += duration_s
         groups.append(SourceGroup(source_group_id=f"week:{day_name}", video_id="week", name=day_name, timeline_start_s=day_start_s, timeline_end_s=day_start_s + source_offset_s))
 
-    source_by_id = {source.source_video_id: source for source in sources}
     official_month = {}
     for source_name in sorted((path.name for path in (artifact_root / "mmlifelong").iterdir() if path.is_dir()), key=int):
         caption_path = artifact_root / "mmlifelong" / source_name / "merge" / "captions" / f"{source_name}_30sec.json"
@@ -191,7 +190,7 @@ def build_inventory(dataset_root: Path, artifact_root: Path, run_root: Path, cli
                 official_artifact = str(official_week_path)
             if official_text == "":
                 raise RuntimeError(f"Empty official dense caption for {source.source_video_id} chunk {source_index}")
-            chunks.append(Chunk(row_id=row_id, visual_row_id=visual_row_id, video_id=source.video_id, source_video_id=source.source_video_id, source_group_id=source.source_group_id, source_filename=source.filename, source_start_s=source_start_s, source_end_s=source_end_s, start_s=source.timeline_start_s + source_start_s, end_s=source.timeline_start_s + source_end_s, clip_filename=str((clip_root / source.video_id / f"{video_index:06d}.mp4").relative_to(Path.cwd())), official_text=official_text, official_artifact=official_artifact))
+            chunks.append(Chunk(row_id=row_id, visual_row_id=visual_row_id, video_id=source.video_id, source_video_id=source.source_video_id, source_group_id=source.source_group_id, source_filename=source.filename, source_start_s=source_start_s, source_end_s=source_end_s, start_s=source.timeline_start_s + source_start_s, end_s=source.timeline_start_s + source_end_s, clip_filename=str((clip_root.resolve() / source.video_id / f"{video_index:06d}.mp4").relative_to(Path.cwd())), official_text=official_text, official_artifact=official_artifact))
             video_indexes[source.video_id] += 1
 
     write_jsonl(run_root / "source_videos.jsonl", sources)
@@ -208,7 +207,7 @@ def prepare_clips(dataset_root: Path, run_root: Path) -> dict[str, int]:
     def encode_clip(chunk: Chunk) -> None:
         output_path = Path.cwd() / chunk.clip_filename
         if output_path.exists():
-            duration_s, _, _ = probe_media(output_path)
+            duration_s, _, _ = probe_media(output_path, False)
             if abs(duration_s - (chunk.source_end_s - chunk.source_start_s)) <= 0.2:
                 return
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -217,7 +216,7 @@ def prepare_clips(dataset_root: Path, run_root: Path) -> dict[str, int]:
         if result.returncode != 0:
             print(json.dumps({"command": "ffmpeg", "row_id": chunk.row_id, "source": str(source_path), "start_s": chunk.source_start_s, "end_s": chunk.source_end_s, "stderr": result.stderr}))
             result.check_returncode()
-        duration_s, _, _ = probe_media(output_path)
+        duration_s, _, _ = probe_media(output_path, False)
         if abs(duration_s - (chunk.source_end_s - chunk.source_start_s)) > 0.2:
             raise RuntimeError(f"Encoded clip duration mismatch for {chunk.row_id}: expected={chunk.source_end_s - chunk.source_start_s}, actual={duration_s}")
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
