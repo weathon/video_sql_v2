@@ -27,12 +27,13 @@ async def evaluate(args: argparse.Namespace) -> None:
                 all_scores.extend(json.loads(completed_path.read_text())["scores"])
                 batch_index += 1
                 continue
-            tasks = []
-            for item in batch_items:
-                for rollout_index in range(args.rollouts_per_question):
-                    rollout_dir = batch_dir / "questions" / f"question-{int(item['index']):06d}" / f"rollout-{rollout_index:02d}"
-                    tasks.append(run_evaluation_rollout(runtime, item, rollout_index, skill, rollout_dir, args.attempts, args.mode, args.clip_max_turns))
-            results = await asyncio.gather(*tasks)
+            async with asyncio.TaskGroup() as rollout_group:
+                tasks = []
+                for item in batch_items:
+                    for rollout_index in range(args.rollouts_per_question):
+                        rollout_dir = batch_dir / "questions" / f"question-{int(item['index']):06d}" / f"rollout-{rollout_index:02d}"
+                        tasks.append(rollout_group.create_task(run_evaluation_rollout(runtime, item, rollout_index, skill, rollout_dir, args.attempts, args.mode, args.clip_max_turns)))
+            results = [task.result() for task in tasks]
             scores = [int(result["score"]) for result in results]
             all_scores.extend(scores)
             completed_rollouts = sum(result["status"] != "failed" for result in results)

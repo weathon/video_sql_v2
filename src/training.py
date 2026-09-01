@@ -402,20 +402,22 @@ async def train(args: argparse.Namespace) -> None:
                 else:
                     (batch_dir / "SKILL-before.md").write_text(skill)
                     (batch_dir / "META-SKILL-before.md").write_text(meta_skill)
-                tasks = []
-                for item in batch_items:
-                    for rollout_index in range(args.rollouts_per_question):
-                        rollout_dir = batch_dir / "questions" / f"question-{int(item['index']):06d}" / f"rollout-{rollout_index:02d}"
-                        tasks.append(run_training_rollout(runtime, item, rollout_index, skill, meta_skill, rollout_dir, args.attempts, args.mode, args.clip_max_turns, args.reflection_max_turns))
-                results = await asyncio.gather(*tasks)
-                summary_tasks = []
-                for item in batch_items:
-                    question_results = [result for result in results if result["question_index"] == item["index"] and result["status"] != "failed"]
-                    reflections = [result["reflection"] for result in question_results]
-                    if reflections:
-                        summary_dir = batch_dir / "question-summaries" / f"question-{int(item['index']):06d}"
-                        summary_tasks.append(summarize_question(runtime, reflections, summary_dir, args.attempts, args.mode, args.clip_max_turns))
-                summaries = await asyncio.gather(*summary_tasks)
+                async with asyncio.TaskGroup() as rollout_group:
+                    rollout_tasks = []
+                    for item in batch_items:
+                        for rollout_index in range(args.rollouts_per_question):
+                            rollout_dir = batch_dir / "questions" / f"question-{int(item['index']):06d}" / f"rollout-{rollout_index:02d}"
+                            rollout_tasks.append(rollout_group.create_task(run_training_rollout(runtime, item, rollout_index, skill, meta_skill, rollout_dir, args.attempts, args.mode, args.clip_max_turns, args.reflection_max_turns)))
+                results = [task.result() for task in rollout_tasks]
+                async with asyncio.TaskGroup() as summary_group:
+                    summary_tasks = []
+                    for item in batch_items:
+                        question_results = [result for result in results if result["question_index"] == item["index"] and result["status"] != "failed"]
+                        reflections = [result["reflection"] for result in question_results]
+                        if reflections:
+                            summary_dir = batch_dir / "question-summaries" / f"question-{int(item['index']):06d}"
+                            summary_tasks.append(summary_group.create_task(summarize_question(runtime, reflections, summary_dir, args.attempts, args.mode, args.clip_max_turns)))
+                summaries = [task.result() for task in summary_tasks]
                 update = await update_skills(runtime, skill, meta_skill, [summary.model_dump(mode="json") for summary in summaries], batch_dir / "updater", args.attempts, args.mode, args.clip_max_turns)
                 skill = update.skill_md
                 meta_skill = update.meta_skill_md
