@@ -233,7 +233,8 @@ async def build_structure(run_root: Path, base_url: str) -> dict[str, int]:
             output = await call_structured(client, semaphore, run_root, level, scope_id, messages, HierarchyOutput, set(caption_row_ids))
         except ContextWindowExceeded as error:
             raise RuntimeError(f"{level} hierarchy input exceeded context after 5 attempts for {scope_id}") from error
-        payload = {"level": level, "scope_id": scope_id, "video_id": children[0]["video_id"], "source_group_id": children[0].get("source_group_id"), "start_s": children[0]["start_s"], "end_s": children[-1]["end_s"], "caption_row_ids": caption_row_ids, "output": output.model_dump(mode="json")}
+        source_group_id = None if level == "scale" else children[0]["source_group_id"]
+        payload = {"level": level, "scope_id": scope_id, "video_id": children[0]["video_id"], "source_group_id": source_group_id, "start_s": children[0]["start_s"], "end_s": children[-1]["end_s"], "caption_row_ids": caption_row_ids, "output": output.model_dump(mode="json")}
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
         return payload
@@ -298,6 +299,43 @@ def build_database(run_root: Path, output_path: Path) -> dict[str, int]:
             output = model.model_validate(payload["output"])
             validate_evidence(output, set(payload["caption_row_ids"]))
 
+    chunks_by_group = defaultdict(list)
+    for chunk in chunks:
+        chunks_by_group[chunk.source_group_id].append(chunk)
+    for group_chunks in chunks_by_group.values():
+        group_chunks.sort(key=lambda chunk: (chunk.start_s, chunk.row_id))
+    expected = {level: {} for level in ["30min", "1h", "6h", "video", "scale"]}
+    for group in source_groups:
+        group_chunks = chunks_by_group[group.source_group_id]
+        for index in range(0, len(group_chunks), 60):
+            scope_id = f"{group.source_group_id}:30min:{index // 60:04d}"
+            expected["30min"][scope_id] = [chunk.row_id for chunk in group_chunks[index:index + 60]]
+        window_scopes = list(expected["30min"])[-((len(group_chunks) + 59) // 60):]
+        one_hour_scopes = []
+        for index in range(0, len(window_scopes), 2):
+            scope_id = f"{group.source_group_id}:1h:{index // 2:04d}"
+            child_scopes = window_scopes[index:index + 2]
+            expected["1h"][scope_id] = [row_id for child_scope in child_scopes for row_id in expected["30min"][child_scope]]
+            one_hour_scopes.append(scope_id)
+        six_hour_scopes = []
+        for index in range(0, len(one_hour_scopes), 6):
+            scope_id = f"{group.source_group_id}:6h:{index // 6:04d}"
+            child_scopes = one_hour_scopes[index:index + 6]
+            expected["6h"][scope_id] = [row_id for child_scope in child_scopes for row_id in expected["1h"][child_scope]]
+            six_hour_scopes.append(scope_id)
+        video_scope_id = f"{group.source_group_id}:video"
+        expected["video"][video_scope_id] = [row_id for child_scope in six_hour_scopes for row_id in expected["6h"][child_scope]]
+    groups_by_video = defaultdict(list)
+    for group in source_groups:
+        groups_by_video[group.video_id].append(group)
+    for video_id, video_groups in groups_by_video.items():
+        video_groups.sort(key=lambda group: (group.timeline_start_s, group.source_group_id))
+        expected["scale"][f"{video_id}:scale"] = [row_id for group in video_groups for row_id in expected["video"][f"{group.source_group_id}:video"]]
+    for level in expected:
+        actual = {payload["scope_id"]: payload["caption_row_ids"] for payload in structure[level]}
+        if actual != expected[level]:
+            raise RuntimeError(f"Incomplete or stale {level} checkpoints: expected={len(expected[level])}, actual={len(actual)}")
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     connection = duckdb.connect(str(output_path))
     connection.execute((Path(__file__).parent / "stage2_schema.sql").read_text())
@@ -322,9 +360,7 @@ def build_database(run_root: Path, output_path: Path) -> dict[str, int]:
     for source in sources:
         connection.execute("INSERT INTO source_videos VALUES (?, ?, ?, ?, ?, ?, ?)", [source.source_video_id, source.video_id, source.source_group_id, source.filename, source.duration_s, source.timeline_start_s, source.timeline_end_s])
 
-    chunks_by_video = defaultdict(list)
     for chunk in chunks:
-        chunks_by_video[chunk.video_id].append(chunk)
         text = dense[chunk.row_id]
         insert_node(chunk.row_id, "episode", chunk.video_id, chunk.start_s, chunk.end_s, text)
         connection.execute("INSERT INTO episodes VALUES (?, ?, ?, ?, ?, ?, ?)", [chunk.row_id, chunk.video_id, chunk.source_video_id, chunk.start_s, chunk.end_s, "30sec", text])
@@ -335,11 +371,14 @@ def build_database(run_root: Path, output_path: Path) -> dict[str, int]:
 
     caption_to_3min = {}
     episode_rows_by_level = defaultdict(list)
-    for video_id, video_chunks in chunks_by_video.items():
-        video_chunks.sort(key=lambda chunk: (chunk.start_s, chunk.row_id))
-        for index in range(0, len(video_chunks), 6):
-            batch = video_chunks[index:index + 6]
-            row_id = f"{video_id}:episodes:3min:{index // 6:06d}"
+    three_min_indexes = defaultdict(int)
+    for group in source_groups:
+        group_chunks = chunks_by_group[group.source_group_id]
+        for index in range(0, len(group_chunks), 6):
+            batch = group_chunks[index:index + 6]
+            video_id = group.video_id
+            row_id = f"{video_id}:episodes:3min:{three_min_indexes[video_id]:06d}"
+            three_min_indexes[video_id] += 1
             source_video_ids = {chunk.source_video_id for chunk in batch}
             source_video_id = next(iter(source_video_ids)) if len(source_video_ids) == 1 else None
             text = normalize_text(" ".join(dense[chunk.row_id] for chunk in batch))
@@ -350,7 +389,6 @@ def build_database(run_root: Path, output_path: Path) -> dict[str, int]:
                 caption_to_3min[chunk.row_id] = row_id
                 insert_edge(video_id, row_id, chunk.row_id, "contains", 1.0)
 
-    hierarchy_episode_ids = {}
     for level in ["1h", "6h", "video", "scale"]:
         for index, payload in enumerate(sorted(structure[level], key=lambda item: (item["video_id"], item["start_s"], item["scope_id"]))):
             video_id = payload["video_id"]
@@ -358,7 +396,6 @@ def build_database(run_root: Path, output_path: Path) -> dict[str, int]:
             text = normalize_text(payload["output"]["summary"])
             insert_node(row_id, "episode", video_id, payload["start_s"], payload["end_s"], text)
             connection.execute("INSERT INTO episodes VALUES (?, ?, ?, ?, ?, ?, ?)", [row_id, video_id, None, payload["start_s"], payload["end_s"], level, text])
-            hierarchy_episode_ids[(level, payload["scope_id"])] = row_id
             episode_rows_by_level[(video_id, level)].append((row_id, payload["start_s"], payload["end_s"]))
             for caption_row_id in payload["caption_row_ids"]:
                 insert_edge(video_id, row_id, caption_row_id, "contains", 0.5)
@@ -379,11 +416,9 @@ def build_database(run_root: Path, output_path: Path) -> dict[str, int]:
             key = (payload["video_id"], normalized_name)
             state = entity_state.setdefault(key, {"name": entity.name, "evidence": set()})
             state["evidence"].update(entity.evidence_caption_row_ids)
-    entity_ids = {}
     for entity_index, ((video_id, normalized_name), state) in enumerate(sorted(entity_state.items())):
         evidence = sorted(state["evidence"], key=lambda row_id: (chunks_by_id[row_id].start_s, row_id))
         row_id = f"{video_id}:entities:{entity_index:06d}"
-        entity_ids[(video_id, normalized_name)] = row_id
         name = normalize_text(state["name"])
         start_s = chunks_by_id[evidence[0]].start_s
         end_s = chunks_by_id[evidence[-1]].end_s
