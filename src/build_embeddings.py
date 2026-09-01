@@ -1,6 +1,5 @@
 import argparse
 import asyncio
-import base64
 import json
 from pathlib import Path
 
@@ -15,7 +14,7 @@ VIDEO_CONCURRENCY = 64
 EMBEDDING_DIMENSION = 4096
 
 
-async def embed_video(client: httpx.AsyncClient, row: tuple, clip_root: Path, shard_dir: Path) -> None:
+async def embed_video(client: httpx.AsyncClient, semaphore: asyncio.Semaphore, row: tuple, clip_root: Path, shard_dir: Path) -> str | None:
     row_id, video_id, _, _, _ = row
     video_shard_dir = shard_dir / video_id
     video_shard_dir.mkdir(parents=True, exist_ok=True)
@@ -27,15 +26,17 @@ async def embed_video(client: httpx.AsyncClient, row: tuple, clip_root: Path, sh
             vector = shard["vectors"]
         if vector.shape != (1, EMBEDDING_DIMENSION) or not np.isfinite(vector).all():
             raise RuntimeError(f"Invalid embedding shard {shard_path}")
-        return
+        return None
     clip_path = clip_root / video_id / f"{int(row_id.rsplit(':', 1)[1]):06d}.mp4"
-    video_url = "data:video/mp4;base64," + base64.b64encode(clip_path.read_bytes()).decode("ascii")
-    payload = {"model": MODEL, "input": [{"role": "user", "content": [{"type": "video_url", "video_url": {"url": video_url}}]}]}
+    payload = {"model": MODEL, "input": [{"role": "user", "content": [{"type": "video_url", "video_url": {"url": clip_path.resolve().as_uri()}}]}]}
     try:
-        response = await client.post("/v1/embeddings", json=payload)
-        response.raise_for_status()
+        async with semaphore:
+            response = await client.post("/v1/embeddings", json=payload)
+            response.raise_for_status()
     except httpx.HTTPStatusError as error:
         print(json.dumps({"kind": "video", "row_id": row_id, "clip_path": str(clip_path), "status_code": error.response.status_code, "response": error.response.text}))
+        if error.response.status_code == 500 and "Requested next frame while there are no more frames left to decode." in error.response.text:
+            return row_id
         raise
     except httpx.RequestError as error:
         print(json.dumps({"kind": "video", "row_id": row_id, "clip_path": str(clip_path), "error": str(error)}))
@@ -47,15 +48,22 @@ async def embed_video(client: httpx.AsyncClient, row: tuple, clip_root: Path, sh
     if vector.shape != (EMBEDDING_DIMENSION,) or not np.isfinite(vector).all():
         raise RuntimeError(f"Invalid video embedding for {row_id}")
     np.savez_compressed(shard_path, row_ids=np.asarray([row_id]), vectors=vector[None, :])
+    return None
 
 
-async def build_video_embeddings(rows: list[tuple], base_url: str, clip_root: Path, shard_dir: Path) -> None:
+async def build_video_embeddings(rows: list[tuple], base_url: str, clip_root: Path, shard_dir: Path) -> set[str]:
     limits = httpx.Limits(max_connections=VIDEO_CONCURRENCY, max_keepalive_connections=VIDEO_CONCURRENCY)
+    semaphore = asyncio.Semaphore(VIDEO_CONCURRENCY)
+    skipped_row_ids = set()
     async with httpx.AsyncClient(base_url=base_url, timeout=None, limits=limits) as client:
-        for offset in range(0, len(rows), VIDEO_CONCURRENCY):
-            batch = rows[offset:offset + VIDEO_CONCURRENCY]
-            await asyncio.gather(*(embed_video(client, row, clip_root, shard_dir) for row in batch))
-            print(json.dumps({"table": "visual_clips", "embedded": min(offset + VIDEO_CONCURRENCY, len(rows)), "total": len(rows)}))
+        tasks = [asyncio.create_task(embed_video(client, semaphore, row, clip_root, shard_dir)) for row in rows]
+        for completed, task in enumerate(asyncio.as_completed(tasks), 1):
+            skipped_row_id = await task
+            if skipped_row_id is not None:
+                skipped_row_ids.add(skipped_row_id)
+            if completed % 500 == 0 or completed == len(rows):
+                print(json.dumps({"table": "visual_clips", "completed": completed, "total": len(rows), "skipped": len(skipped_row_ids)}))
+    return skipped_row_ids
 
 
 if __name__ == "__main__":
@@ -122,11 +130,12 @@ if __name__ == "__main__":
         rows = connection.execute("SELECT row_id, video_id, start_s, end_s, text FROM visual_clips ORDER BY CAST(video_id AS INTEGER), start_s, row_id").fetchall()
         shard_dir = args.shard_root / "video" / "visual_clips"
         shard_dir.mkdir(parents=True, exist_ok=True)
-        asyncio.run(build_video_embeddings(rows, args.base_url, args.clip_root, shard_dir))
+        skipped_video_row_ids = asyncio.run(build_video_embeddings(rows, args.base_url, args.clip_root, shard_dir))
         tables = ["visual_clips"]
     for table in tables:
         if table == "visual_clips":
             rows = connection.execute("SELECT row_id, video_id FROM visual_clips ORDER BY CAST(video_id AS INTEGER), start_s, row_id").fetchall()
+            rows = [row for row in rows if row[0] not in skipped_video_row_ids]
             shard_dir = args.shard_root / "video" / table
             shard_paths = [shard_dir / video_id / f"{int(row_id.rsplit(':', 1)[1]):06d}.npz" for row_id, video_id in rows]
         else:

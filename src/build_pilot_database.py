@@ -18,6 +18,8 @@ def parse_hms(value: str) -> float:
 
 def magic_entity_key(value: str) -> str:
     stripped = str(value).strip()
+    if stripped in ("I", "i", "me", "Me", "my", "My"):
+        return "ishowspeed"
     return stripped.lower().replace(" ", "_").replace("'", "").replace("-", "_")
 
 
