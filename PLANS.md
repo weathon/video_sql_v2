@@ -190,7 +190,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 6. `clip_qa` 和 reflection 各只保留 `TURN_SAFETY_LIMIT=1000` 的死循环保护，不再暴露 `--clip-max-turns` 或 `--reflection-max-turns`，正常流程不以该值截断。
 7. Agents SDK 结构化输出解析失败时，harness 从真实 `response.completed` 事件保留本轮失败的 reasoning 和 assistant output，把原解析错误追加到同一对话后继续生成，不改用其他 parser、模型或方法；轮数和 usage 继续累计。
 8. 每段 trace 在磁盘保存清理后的 input、responses、items、raw stream events、usage 和 final output；base64 图片内容替换为占位符，工具参数、图片项和 reasoning item ID 保留。
-9. Reflection 输入保留完整语义 trace，但不重复传入已由 responses/items 表达的逐 token raw stream events；磁盘原始 trace 不变。
+9. Reflection 输入从每段 trace 保留 `input`、`is_complete`、`current_turn` 和包含真实工具返回的 `items`；不重复传入 `responses`、逐 token raw stream events、usage 或已单独提供的 final output，磁盘原始 trace 不变。
 10. 已用真实多轮模型调用验证主 agent 调用 `clip_qa`、`clip_qa` 调用 `sample_video`、图片返回、shared notes、reasoning item 保留、结构化错误纠正和最终结构化答案；生成的 contact sheet 与证据截图已实际检查。
 11. 主 agent compaction 后的新上下文保留 developer trusted handoff，并重新附加原始问题作为 user 消息，确保本地 Responses 服务收到 user query。
 
