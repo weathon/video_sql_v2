@@ -28,16 +28,17 @@ def partition_questions(rows: list[dict], available_video_ids: set[str]) -> tupl
     return ([rows_by_id[question_id] for question_id in sorted(train_ids)], [rows_by_id[question_id] for question_id in sorted(test_ids)])
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--train-json", type=Path, required=True)
-parser.add_argument("--val-json", type=Path, required=True)
-parser.add_argument("--artifact-root", type=Path, required=True)
-parser.add_argument("--output-dir", type=Path, required=True)
-args = parser.parse_args()
-questions = json.loads(args.train_json.read_text()) + json.loads(args.val_json.read_text())
-available = {path.name for path in (args.artifact_root / "mmlifelong").iterdir() if path.is_dir()}
-train, test = partition_questions(questions, available)
-args.output_dir.mkdir(parents=True, exist_ok=True)
-(args.output_dir / "train.json").write_text(json.dumps(train, ensure_ascii=False, indent=2) + "\n")
-(args.output_dir / "test.json").write_text(json.dumps(test, ensure_ascii=False, indent=2) + "\n")
-print(json.dumps({"train": len(train), "test": len(test), "train_ids": [row["index"] for row in train], "test_ids": [row["index"] for row in test]}))
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train-json", type=Path, required=True)
+    parser.add_argument("--val-json", type=Path, required=True)
+    parser.add_argument("--artifact-root", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    args = parser.parse_args()
+    questions = json.loads(args.train_json.read_text()) + json.loads(args.val_json.read_text())
+    available = {path.name for path in (args.artifact_root / "mmlifelong").iterdir() if path.is_dir()}
+    train, test = partition_questions(questions, available)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    (args.output_dir / "train.json").write_text(json.dumps(train, ensure_ascii=False, indent=2) + "\n")
+    (args.output_dir / "test.json").write_text(json.dumps(test, ensure_ascii=False, indent=2) + "\n")
+    print(json.dumps({"train": len(train), "test": len(test), "train_ids": [row["index"] for row in train], "test_ids": [row["index"] for row in test]}))

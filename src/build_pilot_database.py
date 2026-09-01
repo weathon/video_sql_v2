@@ -161,10 +161,11 @@ def build_database(artifact_root: Path, dataset_root: Path, output_path: Path) -
     connection.close()
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--artifact-root", type=Path, required=True)
-parser.add_argument("--dataset-root", type=Path, required=True)
-parser.add_argument("--output", type=Path, required=True)
-args = parser.parse_args()
-args.output.parent.mkdir(parents=True, exist_ok=True)
-build_database(args.artifact_root, args.dataset_root, args.output)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--artifact-root", type=Path, required=True)
+    parser.add_argument("--dataset-root", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    build_database(args.artifact_root, args.dataset_root, args.output)
