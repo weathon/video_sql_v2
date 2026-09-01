@@ -33,15 +33,15 @@ async def evaluate(args: argparse.Namespace) -> None:
                     rollout_dir = batch_dir / "questions" / f"question-{int(item['index']):06d}" / f"rollout-{rollout_index:02d}"
                     tasks.append(run_evaluation_rollout(runtime, item, rollout_index, skill, rollout_dir, args.attempts, args.mode, args.clip_max_turns))
             results = await asyncio.gather(*tasks)
-            scores = [int(result["score"]) for result in results if result["score"] is not None]
+            scores = [int(result["score"]) for result in results]
             all_scores.extend(scores)
-            completed = {"batch": batch_index, "question_indices": [item["index"] for item in batch_items], "completed_rollouts": len(scores), "failed_rollouts": len(results) - len(scores), "scores": scores}
-            write_json(completed_path, completed)
-            metrics = {"validation/completed_rollouts": len(scores), "validation/failed_rollouts": len(results) - len(scores)}
-            if scores:
-                metrics["validation/mean_score"] = sum(scores) / len(scores)
+            completed_rollouts = sum(result["status"] != "failed" for result in results)
+            failed_rollouts = len(results) - completed_rollouts
+            completed = {"batch": batch_index, "question_indices": [item["index"] for item in batch_items], "completed_rollouts": completed_rollouts, "failed_rollouts": failed_rollouts, "scores": scores}
+            metrics = {"validation/completed_rollouts": completed_rollouts, "validation/failed_rollouts": failed_rollouts, "validation/mean_score": sum(scores) / len(scores)}
             wandb_run.log(metrics, step=batch_index)
-            milestone(args.run_dir, {"event": "validation_batch_completed", **completed, **({"mean_score": sum(scores) / len(scores)} if scores else {})})
+            write_json(completed_path, completed)
+            milestone(args.run_dir, {"event": "validation_batch_completed", **completed, "mean_score": sum(scores) / len(scores)})
             batch_index += 1
         final = {"event": "validation_completed", "batches": batch_index, "scored_rollouts": len(all_scores)}
         if all_scores:

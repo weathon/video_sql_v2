@@ -63,9 +63,9 @@ def usage_payload(result: object) -> dict[str, int]:
 
 
 def is_retryable_error(error: BaseException, mode: Literal["debug", "formal"]) -> bool:
-    if isinstance(error, AgentRaised):
-        return mode == "formal"
     candidate = error.__cause__ if isinstance(error, UserError) and error.__cause__ is not None else error
+    if isinstance(candidate, AgentRaised):
+        return mode == "formal"
     if isinstance(candidate, (BadRequestError, AuthenticationError, PermissionDeniedError, NotFoundError, ConflictError, UnprocessableEntityError)):
         return False
     if isinstance(candidate, (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError, APIResponseValidationError, ModelBehaviorError, ModelTimeoutError, MaxTurnsExceeded)):
@@ -109,7 +109,7 @@ async def run_stage(stage_dir: Path, output_type: type[OutputModel], attempts: i
             write_json(output_path, output.model_dump(mode="json"))
             write_json(usage_path, usage)
             return output, usage
-        except BaseException as error:
+        except Exception as error:
             error_payload = {"type": type(error).__name__, "message": str(error), "traceback": "".join(traceback.format_exception(error))}
             write_json(attempt_dir / "error.json", error_payload)
             if not is_retryable_error(error, mode):
@@ -185,7 +185,7 @@ async def run_training_rollout(runtime: PilotHarness, item: dict[str, object], r
     lock_stage_input(rollout_dir / "input.json", {"question_index": item["index"], "question": item["question"], "rollout_index": rollout_index, "skill_sha256": hashlib.sha256(skill.encode()).hexdigest()})
     prior_attempts = sorted(path for path in rollout_dir.glob("attempt-*") if path.is_dir())
     if len(prior_attempts) >= attempts:
-        failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": None, "attempts": len(prior_attempts), "reason": "rollout_attempts_exhausted"}
+        failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": 0, "attempts": len(prior_attempts), "reason": "rollout_attempts_exhausted"}
         write_json(result_path, failure)
         return failure
     for attempt_index in range(len(prior_attempts), attempts):
@@ -210,17 +210,17 @@ async def run_training_rollout(runtime: PilotHarness, item: dict[str, object], r
             write_json(result_path, payload)
             return payload
         except StageAttemptsExhausted as error:
-            failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": None, "attempt": attempt_index + 1, "reason": str(error)}
+            failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": 0, "attempt": attempt_index + 1, "reason": str(error)}
             write_json(result_path, failure)
             return failure
-        except BaseException as error:
+        except Exception as error:
             error_payload = {"type": type(error).__name__, "message": str(error), "traceback": "".join(traceback.format_exception(error))}
             write_json(attempt_dir / "error.json", error_payload)
             if not is_retryable_error(error, mode):
                 write_json(rollout_dir / "terminal_error.json", error_payload)
                 raise
             if attempt_index + 1 == attempts:
-                failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": None, "attempts": attempts, "reason": error_payload}
+                failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": 0, "attempts": attempts, "reason": error_payload}
                 write_json(result_path, failure)
                 return failure
     raise RuntimeError("Unreachable rollout retry state")
@@ -236,7 +236,7 @@ async def run_evaluation_rollout(runtime: PilotHarness, item: dict[str, object],
     lock_stage_input(rollout_dir / "input.json", {"question_index": item["index"], "question": item["question"], "rollout_index": rollout_index, "skill_sha256": hashlib.sha256(skill.encode()).hexdigest()})
     prior_attempts = sorted(path for path in rollout_dir.glob("attempt-*") if path.is_dir())
     if len(prior_attempts) >= attempts:
-        failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": None, "attempts": len(prior_attempts), "reason": "rollout_attempts_exhausted"}
+        failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": 0, "attempts": len(prior_attempts), "reason": "rollout_attempts_exhausted"}
         write_json(result_path, failure)
         return failure
     for attempt_index in range(len(prior_attempts), attempts):
@@ -257,17 +257,17 @@ async def run_evaluation_rollout(runtime: PilotHarness, item: dict[str, object],
             write_json(result_path, payload)
             return payload
         except StageAttemptsExhausted as error:
-            failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": None, "attempt": attempt_index + 1, "reason": str(error)}
+            failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": 0, "attempt": attempt_index + 1, "reason": str(error)}
             write_json(result_path, failure)
             return failure
-        except BaseException as error:
+        except Exception as error:
             error_payload = {"type": type(error).__name__, "message": str(error), "traceback": "".join(traceback.format_exception(error))}
             write_json(attempt_dir / "error.json", error_payload)
             if not is_retryable_error(error, mode):
                 write_json(rollout_dir / "terminal_error.json", error_payload)
                 raise
             if attempt_index + 1 == attempts:
-                failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": None, "attempts": attempts, "reason": error_payload}
+                failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": 0, "attempts": attempts, "reason": error_payload}
                 write_json(result_path, failure)
                 return failure
     raise RuntimeError("Unreachable rollout retry state")
@@ -382,14 +382,14 @@ async def train(args: argparse.Namespace) -> None:
                 meta_skill = update.meta_skill_md
                 (batch_dir / "SKILL-after.md").write_text(skill)
                 (batch_dir / "META-SKILL-after.md").write_text(meta_skill)
-                scores = [int(result["score"]) for result in results if result["score"] is not None]
-                completed = {"epoch": epoch, "global_batch": global_batch, "question_indices": [item["index"] for item in batch_items], "completed_rollouts": len(scores), "failed_rollouts": len(results) - len(scores), "scores": scores}
-                write_json(completed_path, completed)
-                metrics = {"train/epoch": epoch, "train/completed_rollouts": len(scores), "train/failed_rollouts": len(results) - len(scores)}
-                if scores:
-                    metrics["train/mean_score"] = sum(scores) / len(scores)
+                scores = [int(result["score"]) for result in results]
+                completed_rollouts = sum(result["status"] != "failed" for result in results)
+                failed_rollouts = len(results) - completed_rollouts
+                completed = {"epoch": epoch, "global_batch": global_batch, "question_indices": [item["index"] for item in batch_items], "completed_rollouts": completed_rollouts, "failed_rollouts": failed_rollouts, "scores": scores}
+                metrics = {"train/epoch": epoch, "train/completed_rollouts": completed_rollouts, "train/failed_rollouts": failed_rollouts, "train/mean_score": sum(scores) / len(scores)}
                 wandb_run.log(metrics, step=global_batch)
-                milestone(args.run_dir, {"event": "batch_completed", **completed, **({"mean_score": sum(scores) / len(scores)} if scores else {})})
+                write_json(completed_path, completed)
+                milestone(args.run_dir, {"event": "batch_completed", **completed, "mean_score": sum(scores) / len(scores)})
                 global_batch += 1
         milestone(args.run_dir, {"event": "training_completed", "epochs": args.epochs, "batches": global_batch})
     finally:
