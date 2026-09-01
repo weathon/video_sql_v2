@@ -106,7 +106,7 @@ def json_sanitize(value: Any) -> Any:
 def write_trace(result: RunResultStreaming, events: list[Any], trace_path: Path) -> None:
     responses = [{"response_id": response.response_id, "request_id": response.request_id, "usage": json_sanitize(response.usage), "output": json_sanitize(response.output)} for response in result.raw_responses]
     items = [json_sanitize(item.to_input_item()) for item in result.new_items]
-    payload = {"is_complete": result.is_complete, "current_turn": result.current_turn, "responses": responses, "items": items, "events": events, "usage": json_sanitize(result.context_wrapper.usage), "final_output": json_sanitize(result.final_output)}
+    payload = {"input": json_sanitize(result.input), "is_complete": result.is_complete, "current_turn": result.current_turn, "responses": responses, "items": items, "events": events, "usage": json_sanitize(result.context_wrapper.usage), "final_output": json_sanitize(result.final_output)}
     trace_path.parent.mkdir(parents=True, exist_ok=True)
     trace_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
 
