@@ -81,5 +81,4 @@
 - Run the repository tests and inspect the actual test output; the last verified suite contained 20 passing tests.
 - Perform the required full-repository Claude CLI review immediately before the formal run because small debugging commits followed the previous full review.
 - Confirm the embedding service on `127.0.0.1:8012` serves `qwen3-vl-embedding-8b` and verify a real 4096-dimensional response.
-- Load `LAB_OPENAI_KEY` from `.env` and export it as `OPENAI_API_KEY` for the Pilot process.
 - After launch, manually inspect the first newly completed rollout: every tool input and returned value, partial and final responses, usage, judge input and score, contact sheet, and evidence screenshots.

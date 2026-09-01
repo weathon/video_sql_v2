@@ -156,7 +156,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 3. 主 agent、`clip_qa`、judge、reflection、question summarizer 和 skill updater 都使用 Agents SDK；需要结构化输出的阶段使用 Pydantic `output_type`。
 4. Python 环境使用 uv，项目依赖已写入 `pyproject.toml` 和 `uv.lock`，包括 `openai-agents`、`openai`、DuckDB、Qwen VL embedding 所需依赖、W&B 和 pytest。
 5. 全局 `AGENTS.md` 已加入规则：修改、停止、重启或重建容器不需要再次向用户请求允许。
-6. 本地 OpenAI SDK 客户端不读取或注入 `OPENAI_API_KEY`；SDK 的必填鉴权字段使用非敏感本地标识 `local`。
+6. 本地 OpenAI SDK 客户端不要求或注入 `OPENAI_API_KEY`；不提供 `api_key`，关闭 SDK 的凭证强制检查，并使用不含密钥的空 `Authorization` 头通过客户端校验。
 7. 正式训练使用 `vllm/vllm-openai:qwen38` Docker 镜像和 host network，以 root 用户运行；仓库读写挂载，host uv Python、`/usr/bin/git` 和用于 W&B 登录的 `/home/wg25r/.netrc` 只读挂载，不传入 OpenAI key。
 
 ### Pilot 数据、数据库与 split

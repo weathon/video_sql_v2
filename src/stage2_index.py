@@ -156,7 +156,7 @@ async def build_structure(run_root: Path, base_url: str) -> dict[str, int]:
         if payload["row_id"] != chunk.row_id or not str(payload["text"]).strip():
             raise RuntimeError(f"Dense checkpoint mismatch in {dense_path}")
         dense[chunk.row_id] = str(payload["text"]).strip()
-    client = AsyncOpenAI(base_url=base_url.rstrip("/") + "/v1", api_key="local", max_retries=0)
+    client = AsyncOpenAI(base_url=base_url.rstrip("/") + "/v1", max_retries=0, default_headers={"Authorization": ""}, _enforce_credentials=False)
     semaphore = asyncio.Semaphore(WORKERS)
     window_system = "You build a factual video-memory index from ordered 30-second dense captions. Extract stable entities, directly supported semantic triples, topic lifecycle facts, chronological local event chains, important object or interface states, and a faithful rollup summary. Every output record must cite one or more supplied caption row IDs. Object states must cite the exact single 30-second row where that state is visible or stated. Keep concrete details and do not infer unsupported facts."
     hierarchy_system = "You merge child video-memory indexes into a higher temporal level. Produce a faithful summary and merged topic and event chains. Preserve concrete details and chronology. Every fact and event step must cite only 30-second caption row IDs present in the child inputs. Do not add entities, facts, states, or events unsupported by those inputs."
