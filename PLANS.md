@@ -212,5 +212,5 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 ### 当前验证结果和未执行项
 1. 当前测试为 15 项，全部通过；测试覆盖归一化、schema、split、只读 SQL、工具拒绝、并发视频采样、gold answer 隔离、重试、取消恢复、失败计 0、结构化输出纠错、trace 图片清理和 reflection trace 去重。
 2. 当前主服务已按 TP=1、max sequences=100 重建并完成真实 Responses API 多轮 harness 验证。
-3. 正式训练已在 Docker 中启动并产生真实 agent、`clip_qa`、judge 和 reflection trace；当前一次运行在第一次主 agent compaction 后因续段缺少 user query 被本地 Responses 服务以 400 终止，该代码错误已修复，正式训练需要使用新 run 目录重新启动；训练后测试集验证和初始 SKILL baseline 对比尚未执行。
+3. Docker 正式训练已产生真实 agent、`clip_qa`、judge 和 reflection trace，并先后暴露两个已修复的确定性错误：主 agent compaction 续段缺少 user query，以及 reflection 重复传入 trace 表示导致初始上下文超过 262144。修复后的真实 reflection 调用以 216241 input tokens 进入模型，执行两次 `run_sql` 后按阈值关闭工具并返回有效结构化结果；正式训练需要使用新 run 目录重新启动，训练后测试集验证和初始 SKILL baseline 对比尚未执行。
 4. 正式训练前的 Claude CLI 全仓库审查已完成；审查发现的空验证集防御分支已删除，并由新的 REVIEW.md 审查代理复核通过。
