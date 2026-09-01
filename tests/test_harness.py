@@ -7,7 +7,15 @@ import duckdb
 from agents import RunContextWrapper
 from PIL import Image
 
-from src.harness import ClipContext, RolloutContext, clip_qa, run_sql, sample_video, semantic_search
+from src.harness import ClipContext, RolloutContext, clip_qa, run_sql, sample_video, semantic_search, write_trace
+
+
+def test_write_trace_persists_input_without_image_bytes(tmp_path: Path) -> None:
+    result = SimpleNamespace(raw_responses=[], new_items=[], input=[{"role": "user", "content": [{"type": "input_text", "text": "caption"}, {"type": "input_image", "image_url": "data:image/jpeg;base64,secret"}]}], is_complete=True, current_turn=1, context_wrapper=SimpleNamespace(usage={}), final_output="done")
+    trace_path = tmp_path / "trace.json"
+    write_trace(result, [], trace_path)
+    payload = json.loads(trace_path.read_text())
+    assert payload["input"] == [{"role": "user", "content": [{"type": "input_text", "text": "caption"}, {"type": "input_image", "image_url": "<image_data_removed>"}]}]
 
 
 async def test_run_sql_limits_cells_and_blocks_external_access(tmp_path: Path) -> None:
