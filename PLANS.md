@@ -203,7 +203,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 9. 重试耗尽的 rollout 保存为 `status=failed`、score=0；训练和验证均把所有指定 rollout 的分数纳入均值，失败项不会从分母移除。
 10. 同一 batch 的并行 rollout 和 question summary 使用 `asyncio.TaskGroup`；一个任务异常时取消并等待同组任务完成取消，再关闭共享客户端。
 11. 训练和验证按 batch 保存 stage input、attempt trace、usage、result、SKILL before/after、META-SKILL before/after 和 completed marker；恢复时核对已保存输入和配置，完成 batch 可直接继续。
-12. W&B 初始化记录 run id、git hash、git status、路径、模型、数据和协议配置；每个 batch 先写 W&B 指标，再写 completed marker，避免恢复时跳过未记录的指标。
+12. W&B 初始化通过当前 SDK 的 `wandb.sdk.lib.runid.generate_id` 生成 run id，并记录 git hash、git status、路径、模型、数据和协议配置；每个 batch 先写 W&B 指标，再写 completed marker，避免恢复时跳过未记录的指标。
 13. 训练记录 completed rollouts、failed rollouts 和包含 0 分失败项的 mean score；验证记录相同统计并生成最终 validation summary，空测试集直接失败。
 
 ### 当前验证结果和未执行项
