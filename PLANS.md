@@ -190,7 +190,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 6. `clip_qa` 和 reflection 各只保留 `TURN_SAFETY_LIMIT=1000` 的死循环保护，不再暴露 `--clip-max-turns` 或 `--reflection-max-turns`，正常流程不以该值截断。
 7. Agents SDK 结构化输出解析失败时，harness 从真实 `response.completed` 事件保留本轮失败的 reasoning 和 assistant output，把原解析错误追加到同一对话后继续生成，不改用其他 parser、模型或方法；轮数和 usage 继续累计。
 8. 每段 trace 在磁盘保存清理后的 input、responses、items、raw stream events、usage 和 final output；base64 图片内容替换为占位符，工具参数、图片项和 reasoning item ID 保留。
-9. Reflection 输入从每段 trace 保留 `input`、`is_complete`、`current_turn` 和包含真实工具返回的 `items`；不重复传入 `responses`、逐 token raw stream events、usage 或已单独提供的 final output，磁盘原始 trace 不变。
+9. Reflection 输入只保留最新有效 `main-segment` 的 `input`、`is_complete`、`current_turn` 和包含真实工具返回的 `items`；compaction 后该段的 developer trusted handoff 已概括旧主段，主段 `items` 已包含主 agent 实际接收的 `clip_qa` 返回，因此不再重复传入旧主段、compaction trace、嵌套 clip trace、`responses`、逐 token raw stream events、usage 或已单独提供的 final output，磁盘原始 trace 不变。
 10. 已用真实多轮模型调用验证主 agent 调用 `clip_qa`、`clip_qa` 调用 `sample_video`、图片返回、shared notes、reasoning item 保留、结构化错误纠正和最终结构化答案；生成的 contact sheet 与证据截图已实际检查。
 11. 主 agent compaction 后的新上下文保留 developer trusted handoff，并重新附加原始问题作为 user 消息，确保本地 Responses 服务收到 user query。
 
@@ -212,5 +212,6 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 ### 当前验证结果和未执行项
 1. 当前测试为 15 项，全部通过；测试覆盖归一化、schema、split、只读 SQL、工具拒绝、并发视频采样、gold answer 隔离、重试、取消恢复、失败计 0、结构化输出纠错、trace 图片清理和 reflection trace 去重。
 2. 当前主服务已按 TP=1、max sequences=100 重建并完成真实 Responses API 多轮 harness 验证。
-3. Docker 正式训练已产生真实 agent、`clip_qa`、judge 和 reflection trace，并先后暴露两个已修复的确定性错误：主 agent compaction 续段缺少 user query，以及 reflection 重复传入 trace 表示导致初始上下文超过 262144。修复后的真实 reflection 调用以 216241 input tokens 进入模型，执行两次 `run_sql` 后按阈值关闭工具并返回有效结构化结果；随后 v4 运行中的 `clip_qa` 遇到一次 600 秒 `httpx2.ReadTimeout`，因 timeout 类型未被现有分类器识别而终止，该分类缺口已修复。正式训练需要使用新 run 目录重新启动，训练后测试集验证和初始 SKILL baseline 对比尚未执行。
-4. 正式训练前的 Claude CLI 全仓库审查已完成；审查发现的空验证集防御分支已删除，并由新的 REVIEW.md 审查代理复核通过。
+3. Docker 正式训练已产生真实 agent、`clip_qa`、judge 和 reflection trace，并先后暴露两个已修复的确定性错误：主 agent compaction 续段缺少 user query，以及 reflection 重复传入 trace 表示导致初始上下文超过 262144。修复后的真实 reflection 调用以 216241 input tokens 进入模型，执行两次 `run_sql` 后按阈值关闭工具并返回有效结构化结果；随后 v4 运行中的 `clip_qa` 遇到一次 600 秒 `httpx2.ReadTimeout`，因 timeout 类型未被现有分类器识别而终止，该分类缺口已修复。
+4. v5 正式训练产生一条已完整核验的成功 rollout，随后一个发生 compaction 的 rollout 在 reflection 首次请求前失败：旧投影仍同时传入旧主段、compaction 输入、嵌套 clip trace 和最新主段，本机 tokenizer 计为 728704 tokens，服务返回 262144 上下文错误。提交 `cbfafb3` 改为只投影最新有效主段；同一失败输入的 Docker 重放不传 OpenAI key，首轮为 203179 input tokens，实际完成 7 次 `run_sql`、1 次 `clip_qa` 及嵌套 `sample_video`，最终强制输出段为 217748 input tokens 并返回有效结构化 reflection。接触表、证据截图、全部工具输入和返回均已检查，独立 REVIEW.md 审查无阻塞项。正式训练需要使用新 run 目录重新启动，训练后测试集验证和初始 SKILL baseline 对比尚未执行。
+5. 正式训练前的 Claude CLI 全仓库审查已完成；审查发现的空验证集防御分支已删除，并由新的 REVIEW.md 审查代理复核通过。
