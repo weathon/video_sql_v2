@@ -17,6 +17,7 @@ data/embedding_index/
 data/full_video_embedding_index/
 data/full_video_clips/
 data/video_clips/
+data/pilot/
 media/
 runs/
 infra_test/*_checkpoints/
