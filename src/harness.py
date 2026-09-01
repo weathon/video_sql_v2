@@ -331,15 +331,17 @@ async def clip_qa(context: RunContextWrapper[RolloutContext], video_id: str, sta
     clip_context = ClipContext(rollout=rollout, video_id=video_id, start_s=start_s, end_s=end_s, call_id=call_id)
     instructions = "Answer the visual question only from the active video interval. Use sample_video to inspect the frames and captions. You may use shared notes. Return status answered only when the answer is supported and include at least one exact evidence timestamp; otherwise return unknown."
     clip_agent = Agent(name="clip_qa", instructions=instructions, tools=[sample_video, add_note, read_notes], model=rollout.runtime.model, model_settings=rollout.runtime.model_settings, output_type=ClipAnswer)
+    active_agent = clip_agent
     input_items: str | list[dict[str, Any]] = f"Video {video_id}, interval {start_s} to {end_s} seconds. Question: {question}"
     used_turns = 0
     segment = 0
+    tools_enabled = True
     while True:
         if used_turns >= rollout.clip_max_turns:
             raise MaxTurnsExceeded(f"clip_qa exceeded {rollout.clip_max_turns} total turns")
         trace_path = rollout.attempt_dir / "traces" / f"clip-{call_id}-segment-{segment:02d}.json"
         try:
-            result, _ = await stream_agent(clip_agent, input_items, clip_context, rollout.clip_max_turns - used_turns, rollout.runtime.run_config, trace_path, rollout.runtime.context_limit, False)
+            result, final_required = await stream_agent(active_agent, input_items, clip_context, rollout.clip_max_turns - used_turns, rollout.runtime.run_config, trace_path, rollout.runtime.context_limit, tools_enabled)
         except StreamModelBehaviorError as error:
             result = error.result
             used_turns += result.current_turn
@@ -349,6 +351,14 @@ async def clip_qa(context: RunContextWrapper[RolloutContext], video_id: str, sta
             segment += 1
             continue
         used_turns += result.current_turn
+        if final_required:
+            if used_turns >= rollout.clip_max_turns:
+                raise MaxTurnsExceeded(f"clip_qa reached {rollout.clip_max_turns} turns before its forced final response")
+            active_agent = clip_agent.clone(tools=[])
+            tools_enabled = False
+            input_items = result.to_input_list() + [{"role": "user", "content": "The context limit is near. Do not call tools. Return the required ClipAnswer with status, answer, and evidence_timestamps_s now."}]
+            segment += 1
+            continue
         answer = result.final_output_as(ClipAnswer, raise_if_incorrect_type=True)
         validation_error = None
         if answer.status == "answered" and not answer.evidence_timestamps_s:
