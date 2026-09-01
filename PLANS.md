@@ -201,7 +201,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 4. Reflection 接收 question、candidate answer、reference answer、score、rollout status、完整语义 trace、当前 SKILL 和 META-SKILL；它可以重新查询数据库或视频，并输出去具体内容后的可复用经验。
 5. 同一问题的多个 rollout reflection 先汇总为 question summary，再由 updater 输出完整替换的 SKILL.md 和 META-SKILL.md；下一个 batch 使用更新后的文件。
 6. 初始文件已创建为 `skills/initial/SKILL.md` 和 `skills/initial/META-SKILL.md`，baseline 使用同一个初始 SKILL，不使用空 prompt。
-7. Retryable API、模型解析、超时、max-turn 和正式模式的 `agent_raise` 错误按原方法重试；确定性输入、权限、认证、坏请求和代码错误直接终止，不使用替代方法。
+7. Retryable API、模型解析、超时、max-turn 和正式模式的 `agent_raise` 错误按原方法重试；Agents SDK `UserError` 包装的 `httpx` 或 `httpx2` transport error 先取出原始原因后按同一规则分类；确定性输入、权限、认证、坏请求和代码错误直接终止，不使用替代方法。
 8. 进程取消会写入 `cancelled.json` 并传播，取消的 attempt 不占重试预算；恢复时创建新的物理 attempt 编号。
 9. 重试耗尽的 rollout 保存为 `status=failed`、score=0；训练和验证均把所有指定 rollout 的分数纳入均值，失败项不会从分母移除。
 10. 同一 batch 的并行 rollout 和 question summary 使用 `asyncio.TaskGroup`；一个任务异常时取消并等待同组任务完成取消，再关闭共享客户端。
@@ -212,5 +212,5 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 ### 当前验证结果和未执行项
 1. 当前测试为 15 项，全部通过；测试覆盖归一化、schema、split、只读 SQL、工具拒绝、并发视频采样、gold answer 隔离、重试、取消恢复、失败计 0、结构化输出纠错、trace 图片清理和 reflection trace 去重。
 2. 当前主服务已按 TP=1、max sequences=100 重建并完成真实 Responses API 多轮 harness 验证。
-3. Docker 正式训练已产生真实 agent、`clip_qa`、judge 和 reflection trace，并先后暴露两个已修复的确定性错误：主 agent compaction 续段缺少 user query，以及 reflection 重复传入 trace 表示导致初始上下文超过 262144。修复后的真实 reflection 调用以 216241 input tokens 进入模型，执行两次 `run_sql` 后按阈值关闭工具并返回有效结构化结果；正式训练需要使用新 run 目录重新启动，训练后测试集验证和初始 SKILL baseline 对比尚未执行。
+3. Docker 正式训练已产生真实 agent、`clip_qa`、judge 和 reflection trace，并先后暴露两个已修复的确定性错误：主 agent compaction 续段缺少 user query，以及 reflection 重复传入 trace 表示导致初始上下文超过 262144。修复后的真实 reflection 调用以 216241 input tokens 进入模型，执行两次 `run_sql` 后按阈值关闭工具并返回有效结构化结果；随后 v4 运行中的 `clip_qa` 遇到一次 600 秒 `httpx2.ReadTimeout`，因 transport 类型未被现有分类器识别而终止，该分类缺口已修复。正式训练需要使用新 run 目录重新启动，训练后测试集验证和初始 SKILL baseline 对比尚未执行。
 4. 正式训练前的 Claude CLI 全仓库审查已完成；审查发现的空验证集防御分支已删除，并由新的 REVIEW.md 审查代理复核通过。
