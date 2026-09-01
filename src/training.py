@@ -202,6 +202,7 @@ def rollout_trace(attempt_dir: Path) -> list[dict[str, object]]:
     trace_path = sorted((attempt_dir / "traces").glob("main-segment-*.json"))[-1]
     trace = json.loads(trace_path.read_text())
     trace = {key: trace[key] for key in ("input", "is_complete", "current_turn", "items")}
+    trace["items"] = [item for item in trace["items"] if item["type"] != "reasoning"]
     return [{"path": str(trace_path.relative_to(attempt_dir)), "trace": trace}]
 
 
