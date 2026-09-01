@@ -15,7 +15,7 @@ from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError, ModelTimeout
 from openai import APIConnectionError, APIError, APIResponseValidationError, APITimeoutError, AuthenticationError, BadRequestError, ConflictError, InternalServerError, NotFoundError, PermissionDeniedError, RateLimitError, UnprocessableEntityError
 from pydantic import BaseModel, Field
 
-from src.harness import AgentRaised, PilotHarness, RolloutContext, add_note, agent_raise, clip_qa, read_notes, run_sql, semantic_search, stream_agent
+from src.harness import AgentRaised, PilotHarness, RolloutContext, StreamModelBehaviorError, add_note, agent_raise, clip_qa, read_notes, run_sql, semantic_search, stream_agent
 
 
 class JudgeResult(BaseModel):
@@ -87,21 +87,24 @@ async def run_stage(stage_dir: Path, output_type: type[OutputModel], attempts: i
     if (stage_dir / "attempts_exhausted.json").exists():
         raise StageAttemptsExhausted(f"Stage retry attempts are exhausted: {stage_dir}")
     stage_dir.mkdir(parents=True, exist_ok=True)
-    prior_attempts = sorted(path for path in stage_dir.glob("attempt-*") if path.is_dir())
-    for prior_attempt in prior_attempts:
+    all_attempts = sorted(path for path in stage_dir.glob("attempt-*") if path.is_dir())
+    for prior_attempt in all_attempts:
         if (prior_attempt / "output.json").exists():
             output = output_type.model_validate_json((prior_attempt / "output.json").read_text())
             usage = json.loads((prior_attempt / "usage.json").read_text())
             write_json(output_path, output.model_dump(mode="json"))
             write_json(usage_path, usage)
             return output, usage
+    prior_attempts = [path for path in all_attempts if not (path / "cancelled.json").exists()]
     if len(prior_attempts) >= attempts:
         write_json(stage_dir / "attempts_exhausted.json", {"attempts": len(prior_attempts)})
         raise StageAttemptsExhausted(f"Stage retry attempts are exhausted: {stage_dir}")
+    next_attempt_number = max((int(path.name.removeprefix("attempt-")) for path in all_attempts), default=0) + 1
     for attempt_index in range(len(prior_attempts), attempts):
-        attempt_dir = stage_dir / f"attempt-{attempt_index + 1:02d}"
+        attempt_number = next_attempt_number + attempt_index - len(prior_attempts)
+        attempt_dir = stage_dir / f"attempt-{attempt_number:02d}"
         attempt_dir.mkdir(parents=True)
-        write_json(attempt_dir / "started.json", {"attempt": attempt_index + 1})
+        write_json(attempt_dir / "started.json", {"attempt": attempt_number})
         try:
             output, usage = await call(attempt_dir)
             write_json(attempt_dir / "output.json", output.model_dump(mode="json"))
@@ -109,6 +112,9 @@ async def run_stage(stage_dir: Path, output_type: type[OutputModel], attempts: i
             write_json(output_path, output.model_dump(mode="json"))
             write_json(usage_path, usage)
             return output, usage
+        except asyncio.CancelledError:
+            write_json(attempt_dir / "cancelled.json", {"attempt": attempt_number})
+            raise
         except Exception as error:
             error_payload = {"type": type(error).__name__, "message": str(error), "traceback": "".join(traceback.format_exception(error))}
             write_json(attempt_dir / "error.json", error_payload)
@@ -143,20 +149,41 @@ async def run_reflection_once(runtime: PilotHarness, input_payload: object, meta
     context = RolloutContext(runtime=runtime, attempt_dir=attempt_dir, clip_max_turns=clip_max_turns)
     instructions = f"Re-examine the rollout trace, its final answer, the reference answer, and the score. Use the retrieval tools when additional database or visual inspection is needed to establish why the approach worked or failed. Return two reusable abstractions: reflection for future retrieval and meta_reflection for future reflection. Remove dataset-specific names, dates, answer values, and private details from both outputs. Update, replace, or reject prior guidance when appropriate instead of only adding advice.\n\nCurrent reflection skill:\n{meta_skill}"
     agent = Agent(name="rollout_reflection", instructions=instructions, tools=[run_sql, semantic_search, clip_qa, add_note, read_notes, agent_raise], model=runtime.model, model_settings=runtime.model_settings, output_type=ReflectionResult)
-    result, final_required = await stream_agent(agent, json.dumps(input_payload, ensure_ascii=False), context, reflection_max_turns, runtime.run_config, attempt_dir / "reflection-segment-00.json", runtime.context_limit, True)
-    usage = usage_payload(result)
-    if not final_required:
+    active_agent = agent
+    input_items: str | list[dict[str, object]] = json.dumps(input_payload, ensure_ascii=False)
+    used_turns = 0
+    segment = 0
+    tools_enabled = True
+    usage = {"requests": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    while True:
+        if used_turns >= reflection_max_turns:
+            raise MaxTurnsExceeded(f"Reflection exceeded {reflection_max_turns} total turns")
+        try:
+            result, final_required = await stream_agent(active_agent, input_items, context, reflection_max_turns - used_turns, runtime.run_config, attempt_dir / f"reflection-segment-{segment:02d}.json", runtime.context_limit, tools_enabled)
+        except StreamModelBehaviorError as error:
+            result = error.result
+            used_turns += result.current_turn
+            segment_usage = usage_payload(result)
+            for key in usage:
+                usage[key] += segment_usage[key]
+            if used_turns >= reflection_max_turns:
+                raise MaxTurnsExceeded(f"Reflection exceeded {reflection_max_turns} total turns") from error
+            input_items = result.to_input_list() + [{"role": "user", "content": f"Your output could not be parsed as ReflectionResult JSON: {error}. Continue evidence checking if needed. When ready, return exactly the required structured output with reflection and meta_reflection."}]
+            segment += 1
+            continue
+        used_turns += result.current_turn
+        segment_usage = usage_payload(result)
+        for key in usage:
+            usage[key] += segment_usage[key]
+        if final_required:
+            if used_turns >= reflection_max_turns:
+                raise MaxTurnsExceeded(f"Reflection reached {reflection_max_turns} turns before its forced final response")
+            active_agent = agent.clone(tools=[])
+            tools_enabled = False
+            input_items = result.to_input_list() + [{"role": "user", "content": "The context limit is near. Do not call tools. Return the required abstract reflection and meta_reflection now."}]
+            segment += 1
+            continue
         return result.final_output_as(ReflectionResult, raise_if_incorrect_type=True), usage
-    used_turns = len(result.raw_responses)
-    if used_turns >= reflection_max_turns:
-        raise MaxTurnsExceeded(f"Reflection reached {reflection_max_turns} turns before its forced final response")
-    final_agent = agent.clone(tools=[])
-    final_input = result.to_input_list() + [{"role": "user", "content": "The context limit is near. Do not call tools. Return the required abstract reflection and meta_reflection now."}]
-    final_result, _ = await stream_agent(final_agent, final_input, context, reflection_max_turns - used_turns, runtime.run_config, attempt_dir / "reflection-final.json", runtime.context_limit, False)
-    final_usage = usage_payload(final_result)
-    for key in usage:
-        usage[key] += final_usage[key]
-    return final_result.final_output_as(ReflectionResult, raise_if_incorrect_type=True), usage
 
 
 async def run_reflection(runtime: PilotHarness, input_payload: object, meta_skill: str, stage_dir: Path, attempts: int, mode: Literal["debug", "formal"], clip_max_turns: int, reflection_max_turns: int) -> tuple[ReflectionResult, dict[str, int]]:
@@ -183,15 +210,18 @@ async def run_training_rollout(runtime: PilotHarness, item: dict[str, object], r
         raise RuntimeError(f"Rollout has a saved non-retryable failure: {rollout_dir}")
     rollout_dir.mkdir(parents=True, exist_ok=True)
     lock_stage_input(rollout_dir / "input.json", {"question_index": item["index"], "question": item["question"], "rollout_index": rollout_index, "skill_sha256": hashlib.sha256(skill.encode()).hexdigest()})
-    prior_attempts = sorted(path for path in rollout_dir.glob("attempt-*") if path.is_dir())
+    all_attempts = sorted(path for path in rollout_dir.glob("attempt-*") if path.is_dir())
+    prior_attempts = [path for path in all_attempts if not (path / "cancelled.json").exists()]
     if len(prior_attempts) >= attempts:
         failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": 0, "attempts": len(prior_attempts), "reason": "rollout_attempts_exhausted"}
         write_json(result_path, failure)
         return failure
+    next_attempt_number = max((int(path.name.removeprefix("attempt-")) for path in all_attempts), default=0) + 1
     for attempt_index in range(len(prior_attempts), attempts):
-        attempt_dir = rollout_dir / f"attempt-{attempt_index + 1:02d}"
+        attempt_number = next_attempt_number + attempt_index - len(prior_attempts)
+        attempt_dir = rollout_dir / f"attempt-{attempt_number:02d}"
         attempt_dir.mkdir(parents=True)
-        write_json(attempt_dir / "started.json", {"attempt": attempt_index + 1})
+        write_json(attempt_dir / "started.json", {"attempt": attempt_number})
         try:
             retrieval = await runtime.run_rollout(str(item["question"]), skill, attempt_dir, clip_max_turns)
             write_json(attempt_dir / "retrieval.json", dataclasses.asdict(retrieval))
@@ -206,13 +236,16 @@ async def run_training_rollout(runtime: PilotHarness, item: dict[str, object], r
             if retrieval.status == "compaction_limit":
                 reflection_input["focus"] = "Identify the reusable causes of repeated or circular retrieval that forced the third compaction."
             reflection, reflection_usage = await run_reflection(runtime, reflection_input, meta_skill, attempt_dir / "reflection", attempts, mode, clip_max_turns, reflection_max_turns)
-            payload = {"status": retrieval.status, "question_index": item["index"], "rollout_index": rollout_index, "attempt": attempt_index + 1, "answer": retrieval.answer, "reference_answer": item["answer"], "score": score, "turns": retrieval.turns, "compactions": retrieval.compactions, "retrieval_usage": retrieval.usage, "judge": judge_payload, "reflection": reflection.model_dump(mode="json"), "reflection_usage": reflection_usage}
+            payload = {"status": retrieval.status, "question_index": item["index"], "rollout_index": rollout_index, "attempt": attempt_number, "answer": retrieval.answer, "reference_answer": item["answer"], "score": score, "turns": retrieval.turns, "compactions": retrieval.compactions, "retrieval_usage": retrieval.usage, "judge": judge_payload, "reflection": reflection.model_dump(mode="json"), "reflection_usage": reflection_usage}
             write_json(result_path, payload)
             return payload
         except StageAttemptsExhausted as error:
-            failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": 0, "attempt": attempt_index + 1, "reason": str(error)}
+            failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": 0, "attempt": attempt_number, "reason": str(error)}
             write_json(result_path, failure)
             return failure
+        except asyncio.CancelledError:
+            write_json(attempt_dir / "cancelled.json", {"attempt": attempt_number})
+            raise
         except Exception as error:
             error_payload = {"type": type(error).__name__, "message": str(error), "traceback": "".join(traceback.format_exception(error))}
             write_json(attempt_dir / "error.json", error_payload)
@@ -234,15 +267,18 @@ async def run_evaluation_rollout(runtime: PilotHarness, item: dict[str, object],
         raise RuntimeError(f"Rollout has a saved non-retryable failure: {rollout_dir}")
     rollout_dir.mkdir(parents=True, exist_ok=True)
     lock_stage_input(rollout_dir / "input.json", {"question_index": item["index"], "question": item["question"], "rollout_index": rollout_index, "skill_sha256": hashlib.sha256(skill.encode()).hexdigest()})
-    prior_attempts = sorted(path for path in rollout_dir.glob("attempt-*") if path.is_dir())
+    all_attempts = sorted(path for path in rollout_dir.glob("attempt-*") if path.is_dir())
+    prior_attempts = [path for path in all_attempts if not (path / "cancelled.json").exists()]
     if len(prior_attempts) >= attempts:
         failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": 0, "attempts": len(prior_attempts), "reason": "rollout_attempts_exhausted"}
         write_json(result_path, failure)
         return failure
+    next_attempt_number = max((int(path.name.removeprefix("attempt-")) for path in all_attempts), default=0) + 1
     for attempt_index in range(len(prior_attempts), attempts):
-        attempt_dir = rollout_dir / f"attempt-{attempt_index + 1:02d}"
+        attempt_number = next_attempt_number + attempt_index - len(prior_attempts)
+        attempt_dir = rollout_dir / f"attempt-{attempt_number:02d}"
         attempt_dir.mkdir(parents=True)
-        write_json(attempt_dir / "started.json", {"attempt": attempt_index + 1})
+        write_json(attempt_dir / "started.json", {"attempt": attempt_number})
         try:
             retrieval = await runtime.run_rollout(str(item["question"]), skill, attempt_dir, clip_max_turns)
             write_json(attempt_dir / "retrieval.json", dataclasses.asdict(retrieval))
@@ -253,13 +289,16 @@ async def run_evaluation_rollout(runtime: PilotHarness, item: dict[str, object],
                 judge, judge_usage = await run_judge(runtime, str(item["answer"]), retrieval.answer, attempt_dir / "judge", attempts, mode, clip_max_turns)
                 score = judge.score
                 judge_payload = {"score": judge.score, "usage": judge_usage}
-            payload = {"status": retrieval.status, "question_index": item["index"], "rollout_index": rollout_index, "attempt": attempt_index + 1, "answer": retrieval.answer, "reference_answer": item["answer"], "score": score, "turns": retrieval.turns, "compactions": retrieval.compactions, "retrieval_usage": retrieval.usage, "judge": judge_payload}
+            payload = {"status": retrieval.status, "question_index": item["index"], "rollout_index": rollout_index, "attempt": attempt_number, "answer": retrieval.answer, "reference_answer": item["answer"], "score": score, "turns": retrieval.turns, "compactions": retrieval.compactions, "retrieval_usage": retrieval.usage, "judge": judge_payload}
             write_json(result_path, payload)
             return payload
         except StageAttemptsExhausted as error:
-            failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": 0, "attempt": attempt_index + 1, "reason": str(error)}
+            failure = {"status": "failed", "question_index": item["index"], "rollout_index": rollout_index, "score": 0, "attempt": attempt_number, "reason": str(error)}
             write_json(result_path, failure)
             return failure
+        except asyncio.CancelledError:
+            write_json(attempt_dir / "cancelled.json", {"attempt": attempt_number})
+            raise
         except Exception as error:
             error_payload = {"type": type(error).__name__, "message": str(error), "traceback": "".join(traceback.format_exception(error))}
             write_json(attempt_dir / "error.json", error_payload)
