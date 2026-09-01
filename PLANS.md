@@ -3,7 +3,7 @@
 ## 材料:
 1. 数据集: https://huggingface.co/datasets/MM-Lifelong/MM-Lifelong
 2. 旧的预处理仓库: https://github.com/lijiazheng0917/MAGIC-video.git
-3. 使用的Harness框架: https://github.com/HKUDS/OpenHarness.git
+3. 使用的Harness框架: https://github.com/openai/openai-agents-python
 5. Embedding模型: Qwen/Qwen3-VL-Embedding-8B (Use VL for both visual and text-only), start it using vllm
 6. 数据库引擎: https://github.com/duckdb/duckdb
 7. 本地模型: Qwen/Qwen3.8-27B, 使用参考在INFRA.txt
@@ -18,7 +18,7 @@
 
 ## 试点实验
 1. 用提前做好的index (材料 8)和原始视频(材料 1), 构建一个新的duckdb数据库, 数据库的schema完全准许材料2, 只不过我们是用SQL database而不是graph, embedding也许需要重新准备, 参考notes/VIDEO_EMBEDDING_PIPELINE.md如何构建新的embedding.
-2. 搭建我们的harness,  见Harness架构如何搭建, 使用open harness连接本地模型, 验证他保留了过往reasoning并且支持图片或视频输入
+2. 搭建我们的harness,  见Harness架构如何搭建, 使用OpenAI Agents SDK连接本地模型, 验证他保留了过往reasoning并且支持图片或视频输入
 3. 把材料8和材料1的数据集做graph分割, 按照问题和视频连接做成一个图, 分割出两个set, 大的作为训练集, 小的作为测试集
 4. 在训练集上跑我们的`"训练"过程`, 每个问题5个rollout, 一次2个问题, 一共3个epoch
 5. 监控训练过程的平均打分到wandb, 结束后在测试集上测试. 
