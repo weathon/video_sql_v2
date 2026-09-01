@@ -35,6 +35,7 @@ def build_database(artifact_root: Path, dataset_root: Path, output_path: Path) -
     connection.execute(schema)
     connection.execute("BEGIN TRANSACTION")
     edge_counter = 0
+    excluded_visual_clip_ids = {"23:visual_clips:750"}
 
     def insert_graph_node(row_id: str, node_type: str, video_id: str, start_s: float, end_s: float, text: str) -> None:
         connection.execute("INSERT INTO graph_nodes VALUES (?, ?, ?, ?, ?, ?)", [row_id, node_type, video_id, start_s, end_s, text])
@@ -67,10 +68,11 @@ def build_database(artifact_root: Path, dataset_root: Path, output_path: Path) -
                     chunk_id = "chunk-" + hashlib.md5(entry["text"].encode()).hexdigest()
                     episode_by_chunk[chunk_id] = row_id
                     visual_id = f"{video_id}:visual_clips:{index}"
-                    insert_graph_node(visual_id, "visual_clip", video_id, start_s, end_s, text)
-                    connection.execute("INSERT INTO visual_clips VALUES (?, ?, ?, ?, ?)", [visual_id, video_id, start_s, end_s, text])
-                    insert_edge(video_id, visual_id, row_id, "co_clip", 1.0)
-                    insert_edge(video_id, row_id, visual_id, "co_clip", 1.0)
+                    if visual_id not in excluded_visual_clip_ids:
+                        insert_graph_node(visual_id, "visual_clip", video_id, start_s, end_s, text)
+                        connection.execute("INSERT INTO visual_clips VALUES (?, ?, ?, ?, ?)", [visual_id, video_id, start_s, end_s, text])
+                        insert_edge(video_id, visual_id, row_id, "co_clip", 1.0)
+                        insert_edge(video_id, row_id, visual_id, "co_clip", 1.0)
             episodes_by_granularity[granularity] = rows
             for current, following in zip(rows, rows[1:]):
                 gap = following[1] - current[2]
@@ -114,6 +116,8 @@ def build_database(artifact_root: Path, dataset_root: Path, output_path: Path) -
             entity_id = entity_ids[entity_key]
             insert_edge(video_id, entity_id, episode_id, "mentioned_in", 1.0)
             visual_id = episode_id.replace(":episodes:30sec:", ":visual_clips:")
+            if visual_id in excluded_visual_clip_ids:
+                continue
             pair = (entity_id, visual_id)
             if pair not in appeared_pairs:
                 appeared_pairs.add(pair)
