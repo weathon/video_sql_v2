@@ -11,7 +11,7 @@ from agents.exceptions import ModelBehaviorError
 from agents.exceptions import UserError
 
 from src.harness import AgentRaised, ClipAnswer, RolloutContext, RolloutResult, StreamModelBehaviorError, clip_qa
-from src.training import JudgeResult, is_retryable_error, run_evaluation_rollout, run_judge, run_stage
+from src.training import JudgeResult, is_retryable_error, rollout_trace, run_evaluation_rollout, run_judge, run_stage
 
 
 async def test_run_stage_retries_and_reuses_saved_output(tmp_path: Path) -> None:
@@ -140,3 +140,12 @@ async def test_clip_qa_continues_after_structured_output_error(tmp_path: Path, m
     assert json.loads(output[0].text) == {"status": "unknown", "answer": "insufficient evidence", "evidence_timestamps_s": [], "evidence_files": []}
     assert inputs[1][-2] == {"role": "assistant", "type": "message", "content": [{"type": "output_text", "text": "plain text"}]}
     assert "Invalid JSON when parsing model output" in inputs[1][-1]["content"]
+
+
+def test_reflection_trace_excludes_duplicate_stream_events(tmp_path: Path) -> None:
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()
+    payload = {"input": "question", "responses": [{"output": [{"type": "message", "content": "answer"}]}], "items": [{"type": "message", "content": "answer"}], "events": [{"type": "response.output_text.delta", "delta": "answer"}], "usage": {"total_tokens": 5}, "final_output": "answer"}
+    (trace_dir / "main-segment-00.json").write_text(json.dumps(payload))
+    reflected = rollout_trace(tmp_path)
+    assert reflected == [{"path": "traces/main-segment-00.json", "trace": {"input": "question", "responses": [{"output": [{"type": "message", "content": "answer"}]}], "items": [{"type": "message", "content": "answer"}], "usage": {"total_tokens": 5}, "final_output": "answer"}}]

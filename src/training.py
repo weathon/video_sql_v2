@@ -198,7 +198,9 @@ async def run_reflection(runtime: PilotHarness, input_payload: object, meta_skil
 def rollout_trace(attempt_dir: Path) -> list[dict[str, object]]:
     traces = []
     for trace_path in sorted((attempt_dir / "traces").glob("*.json")):
-        traces.append({"path": str(trace_path.relative_to(attempt_dir)), "trace": json.loads(trace_path.read_text())})
+        trace = json.loads(trace_path.read_text())
+        del trace["events"]
+        traces.append({"path": str(trace_path.relative_to(attempt_dir)), "trace": trace})
     return traces
 
 
