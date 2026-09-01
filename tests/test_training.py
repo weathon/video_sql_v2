@@ -120,7 +120,7 @@ async def test_clip_qa_continues_after_structured_output_error(tmp_path: Path, m
         current_turn = 3
 
         def to_input_list(self):
-            return [{"role": "assistant", "content": "plain text"}]
+            return [{"role": "user", "content": "original question"}]
 
     class ValidResult:
         current_turn = 1
@@ -131,10 +131,12 @@ async def test_clip_qa_continues_after_structured_output_error(tmp_path: Path, m
     async def fake_stream_agent(agent, input_items, context, max_turns: int, run_config, trace_path: Path, context_limit: int, allow_compaction: bool):
         inputs.append(input_items)
         if len(inputs) == 1:
-            raise StreamModelBehaviorError(ModelBehaviorError("Invalid JSON when parsing model output"), InvalidResult())
+            failed_output = [{"role": "assistant", "type": "message", "content": [{"type": "output_text", "text": "plain text"}]}]
+            raise StreamModelBehaviorError(ModelBehaviorError("Invalid JSON when parsing model output"), InvalidResult(), failed_output)
         return ValidResult(), False
 
     monkeypatch.setattr("src.harness.stream_agent", fake_stream_agent)
     output = await clip_qa.__wrapped__(RunContextWrapper(rollout), "4", 0.0, 2.0, "What is visible?")
     assert json.loads(output[0].text) == {"status": "unknown", "answer": "insufficient evidence", "evidence_timestamps_s": [], "evidence_files": []}
+    assert inputs[1][-2] == {"role": "assistant", "type": "message", "content": [{"type": "output_text", "text": "plain text"}]}
     assert "Invalid JSON when parsing model output" in inputs[1][-1]["content"]

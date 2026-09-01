@@ -168,7 +168,7 @@ async def run_reflection_once(runtime: PilotHarness, input_payload: object, meta
                 usage[key] += segment_usage[key]
             if used_turns >= reflection_max_turns:
                 raise MaxTurnsExceeded(f"Reflection exceeded {reflection_max_turns} total turns") from error
-            input_items = result.to_input_list() + [{"role": "user", "content": f"Your output could not be parsed as ReflectionResult JSON: {error}. Continue evidence checking if needed. When ready, return exactly the required structured output with reflection and meta_reflection."}]
+            input_items = result.to_input_list() + error.failed_output_items + [{"role": "user", "content": f"Your output could not be parsed as ReflectionResult JSON: {error}. Continue evidence checking if needed. When ready, return exactly the required structured output with reflection and meta_reflection."}]
             segment += 1
             continue
         used_turns += result.current_turn

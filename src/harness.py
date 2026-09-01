@@ -33,9 +33,10 @@ class AgentRaised(RuntimeError):
 
 
 class StreamModelBehaviorError(ModelBehaviorError):
-    def __init__(self, error: ModelBehaviorError, result: RunResultStreaming):
+    def __init__(self, error: ModelBehaviorError, result: RunResultStreaming, failed_output_items: list[dict[str, Any]]):
         super().__init__(str(error))
         self.result = result
+        self.failed_output_items = failed_output_items
 
 
 class ClipAnswer(BaseModel):
@@ -115,10 +116,15 @@ async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], co
     result = Runner.run_streamed(agent, input_items, context=context, max_turns=max_turns, run_config=run_config)
     events = []
     compact_required = False
+    failed_output_items = None
     try:
         async for event in result.stream_events():
             if event.type == "raw_response_event":
                 events.append(json_sanitize(event.data.model_dump(mode="json", exclude_none=True)))
+                if event.data.type == "response.created":
+                    failed_output_items = None
+                elif event.data.type == "response.completed":
+                    failed_output_items = [json_sanitize(item.model_dump(mode="json", exclude_none=True)) for item in event.data.response.output]
                 if allow_compaction and not compact_required and event.data.type == "response.completed":
                     response = event.data.response
                     remaining = context_limit - response.usage.input_tokens - response.usage.output_tokens
@@ -127,7 +133,9 @@ async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], co
                         result.cancel(mode="after_turn")
                         compact_required = True
     except ModelBehaviorError as error:
-        raise StreamModelBehaviorError(error, result) from error
+        if failed_output_items is None:
+            raise
+        raise StreamModelBehaviorError(error, result, failed_output_items) from error
     finally:
         write_trace(result, events, trace_path)
     return result, compact_required
@@ -338,7 +346,7 @@ async def clip_qa(context: RunContextWrapper[RolloutContext], video_id: str, sta
             used_turns += result.current_turn
             if used_turns >= rollout.clip_max_turns:
                 raise MaxTurnsExceeded(f"clip_qa exceeded {rollout.clip_max_turns} total turns") from error
-            input_items = result.to_input_list() + [{"role": "user", "content": f"Your output could not be parsed as ClipAnswer JSON: {error}. Continue using tools if evidence is still needed. When ready, return exactly the required structured output with status, answer, and evidence_timestamps_s."}]
+            input_items = result.to_input_list() + error.failed_output_items + [{"role": "user", "content": f"Your output could not be parsed as ClipAnswer JSON: {error}. Continue using tools if evidence is still needed. When ready, return exactly the required structured output with status, answer, and evidence_timestamps_s."}]
             segment += 1
             continue
         used_turns += result.current_turn
