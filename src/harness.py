@@ -439,5 +439,5 @@ class PilotHarness:
             handoff = str(compact_result.final_output)
             if compactions == 3:
                 return RolloutResult(status="compaction_limit", answer=handoff, turns=total_turns, compactions=compactions, usage=usage)
-            input_items = [{"role": "developer", "content": f"Trusted handoff from the prior context of this same rollout:\n{handoff}"}]
+            input_items = [{"role": "developer", "content": f"Trusted handoff from the prior context of this same rollout:\n{handoff}"}, {"role": "user", "content": question}]
             segment += 1
