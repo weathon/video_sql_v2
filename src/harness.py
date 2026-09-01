@@ -14,7 +14,7 @@ from typing import Any, Literal
 import duckdb
 import httpx
 import numpy as np
-from agents import Agent, ModelSettings, RunConfig, RunContextWrapper, Runner, ToolOutputImage, ToolOutputText, function_tool
+from agents import Agent, ModelSettings, OpenAIResponsesModel, RunConfig, RunContextWrapper, Runner, ToolOutputImage, ToolOutputText, function_tool
 from agents.exceptions import MaxTurnsExceeded
 from agents.result import RunResultStreaming
 from openai import AsyncOpenAI
@@ -354,7 +354,7 @@ class PilotHarness:
         self.context_limit = context_limit
         self.schema = (Path(__file__).parent / "schema.sql").read_text()
         self.model_client = AsyncOpenAI(base_url=model_base_url.rstrip("/") + "/v1", api_key=os.environ["OPENAI_API_KEY"])
-        self.model = __import__("agents").OpenAIResponsesModel(model=model_name, openai_client=self.model_client)
+        self.model = OpenAIResponsesModel(model=model_name, openai_client=self.model_client)
         self.embedding_client = httpx.AsyncClient(base_url=embedding_base_url, timeout=None)
         self.model_settings = ModelSettings(parallel_tool_calls=True, reasoning=Reasoning(effort="medium"), include_usage=True)
         self.run_config = RunConfig(tracing_disabled=True, workflow_name="video_sql_retrieval", reasoning_item_id_policy="preserve")
