@@ -156,6 +156,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 3. 主 agent、`clip_qa`、judge、reflection、question summarizer 和 skill updater 都使用 Agents SDK；需要结构化输出的阶段使用 Pydantic `output_type`。
 4. Python 环境使用 uv，项目依赖已写入 `pyproject.toml` 和 `uv.lock`，包括 `openai-agents`、`openai`、DuckDB、Qwen VL embedding 所需依赖、W&B 和 pytest。
 5. 全局 `AGENTS.md` 已加入规则：修改、停止、重启或重建容器不需要再次向用户请求允许。
+6. 本地 OpenAI SDK 客户端不读取或注入 `OPENAI_API_KEY`；SDK 的必填鉴权字段使用非敏感本地标识 `local`。
 
 ### Pilot 数据、数据库与 split
 1. 已实现统一文本归一化：转小写、折叠连续空白、去除首尾空白；Latin 非 ASCII 字符转成 ASCII，非 Latin 字符保留。
