@@ -129,7 +129,8 @@ def build_inventory(dataset_root: Path, artifact_root: Path, run_root: Path, cli
         raise RuntimeError(f"Unexpected Month annotation source IDs: {sorted(month_offsets, key=int)}")
     if sorted(week_offsets) != [f"day{index}" for index in range(1, 8)]:
         raise RuntimeError(f"Unexpected Week annotation source IDs: {sorted(week_offsets)}")
-    month_offsets["2"] = media[month_paths[0]][0]
+    if abs(media[month_paths[0]][0] + media[month_paths[1]][0] - month_offsets["3"]) > 0.05:
+        raise RuntimeError(f"Month logical video 1 physical parts do not end at official video 3 offset: parts={media[month_paths[0]][0] + media[month_paths[1]][0]}, video3_offset={month_offsets['3']}")
 
     sources = []
     groups = []
@@ -139,9 +140,15 @@ def build_inventory(dataset_root: Path, artifact_root: Path, run_root: Path, cli
     for path in month_paths:
         duration_s, video_codec, audio_codec = media[path]
         source_name = path.stem
-        start_s = month_offsets[source_name]
-        sources.append(SourceVideo(source_video_id=f"month:{source_name}", video_id="month", source_group_id=f"month:{source_name}", filename=str(path.relative_to(dataset_root)), duration_s=duration_s, timeline_start_s=start_s, timeline_end_s=start_s + duration_s, video_codec=video_codec, audio_codec=audio_codec))
-        groups.append(SourceGroup(source_group_id=f"month:{source_name}", video_id="month", name=source_name, timeline_start_s=start_s, timeline_end_s=start_s + duration_s))
+        logical_source_name = "1" if source_name == "2" else source_name
+        start_s = media[month_paths[0]][0] if source_name == "2" else month_offsets[source_name]
+        sources.append(SourceVideo(source_video_id=f"month:{source_name}", video_id="month", source_group_id=f"month:{logical_source_name}", filename=str(path.relative_to(dataset_root)), duration_s=duration_s, timeline_start_s=start_s, timeline_end_s=start_s + duration_s, video_codec=video_codec, audio_codec=audio_codec))
+    month_sources_by_group = {}
+    for source in sources:
+        if source.video_id == "month":
+            month_sources_by_group.setdefault(source.source_group_id, []).append(source)
+    for source_group_id, group_sources in month_sources_by_group.items():
+        groups.append(SourceGroup(source_group_id=source_group_id, video_id="month", name=source_group_id.removeprefix("month:"), timeline_start_s=min(source.timeline_start_s for source in group_sources), timeline_end_s=max(source.timeline_end_s for source in group_sources)))
     week_by_day = {f"day{index}": [] for index in range(1, 8)}
     for path in week_paths:
         week_by_day[path.parent.name].append(path)
