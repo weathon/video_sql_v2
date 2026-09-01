@@ -14,6 +14,7 @@ from agents import Agent
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError, ModelTimeoutError, UserError
 from openai import APIConnectionError, APIError, APIResponseValidationError, APITimeoutError, AuthenticationError, BadRequestError, ConflictError, InternalServerError, NotFoundError, PermissionDeniedError, RateLimitError, UnprocessableEntityError
 from pydantic import BaseModel, Field
+from wandb.sdk.lib.runid import generate_id
 
 from src.harness import AgentRaised, PilotHarness, RolloutContext, StreamModelBehaviorError, add_note, agent_raise, clip_qa, read_notes, run_sql, semantic_search, stream_agent
 
@@ -356,7 +357,7 @@ def initialize_wandb(run_dir: Path, launch_config: dict[str, object], entity: st
         if run is None:
             raise RuntimeError("wandb.init returned no run")
         return run
-    wandb_id = wandb.util.generate_id()
+    wandb_id = generate_id()
     run = wandb.init(entity=entity, project=project, name=run_name, id=wandb_id, resume="never", config=launch_config)
     if run is None:
         raise RuntimeError("wandb.init returned no run")
