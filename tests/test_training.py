@@ -151,5 +151,10 @@ def test_reflection_trace_excludes_duplicate_representations(tmp_path: Path) -> 
     trace_dir.mkdir()
     payload = {"input": "question", "is_complete": True, "current_turn": 1, "responses": [{"output": [{"type": "message", "content": "answer"}]}], "items": [{"type": "message", "content": "answer"}], "events": [{"type": "response.output_text.delta", "delta": "answer"}], "usage": {"total_tokens": 5}, "final_output": "answer"}
     (trace_dir / "main-segment-00.json").write_text(json.dumps(payload))
+    (trace_dir / "clip-123-segment-00.json").write_text(json.dumps(payload))
+    (trace_dir / "compaction-01.json").write_text(json.dumps(payload))
+    payload["input"] = [{"role": "developer", "content": "trusted handoff"}, {"role": "user", "content": "question"}]
+    payload["current_turn"] = 2
+    (trace_dir / "main-segment-01.json").write_text(json.dumps(payload))
     reflected = rollout_trace(tmp_path)
-    assert reflected == [{"path": "traces/main-segment-00.json", "trace": {"input": "question", "is_complete": True, "current_turn": 1, "items": [{"type": "message", "content": "answer"}]}}]
+    assert reflected == [{"path": "traces/main-segment-01.json", "trace": {"input": [{"role": "developer", "content": "trusted handoff"}, {"role": "user", "content": "question"}], "is_complete": True, "current_turn": 2, "items": [{"type": "message", "content": "answer"}]}}]

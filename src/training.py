@@ -199,12 +199,10 @@ async def run_reflection(runtime: PilotHarness, input_payload: object, meta_skil
 
 
 def rollout_trace(attempt_dir: Path) -> list[dict[str, object]]:
-    traces = []
-    for trace_path in sorted((attempt_dir / "traces").glob("*.json")):
-        trace = json.loads(trace_path.read_text())
-        trace = {key: trace[key] for key in ("input", "is_complete", "current_turn", "items")}
-        traces.append({"path": str(trace_path.relative_to(attempt_dir)), "trace": trace})
-    return traces
+    trace_path = sorted((attempt_dir / "traces").glob("main-segment-*.json"))[-1]
+    trace = json.loads(trace_path.read_text())
+    trace = {key: trace[key] for key in ("input", "is_complete", "current_turn", "items")}
+    return [{"path": str(trace_path.relative_to(attempt_dir)), "trace": trace}]
 
 
 async def run_training_rollout(runtime: PilotHarness, item: dict[str, object], rollout_index: int, skill: str, meta_skill: str, rollout_dir: Path, attempts: int, mode: Literal["debug", "formal"], clip_max_turns: int, reflection_max_turns: int) -> dict[str, object]:
