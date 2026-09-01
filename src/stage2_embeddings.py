@@ -14,6 +14,10 @@ WORKERS = 32
 EMBEDDING_DIMENSION = 4096
 
 
+class EmbeddingOutputError(RuntimeError):
+    pass
+
+
 def load_shard(path: Path, expected_row_id: str) -> np.ndarray:
     with np.load(path, allow_pickle=False) as shard:
         row_ids = shard["row_ids"]
@@ -60,12 +64,18 @@ async def build_table(table: str, rows: list[tuple], base_url: str, shard_root: 
                     trace_path.write_text(json.dumps({"request": payload, "error": str(error)}, ensure_ascii=False, indent=2))
                     print(json.dumps({"stage": "embedding", "kind": kind, "table": table, "row_id": row_id, "attempt": attempt, "error": str(error)}))
                     continue
-                data = response.json()["data"]
-                if len(data) != 1 or data[0]["index"] != 0:
-                    raise RuntimeError(f"Unexpected embedding response for {row_id}")
-                vector = np.asarray(data[0]["embedding"], dtype=np.float32)
-                if vector.shape != (EMBEDDING_DIMENSION,) or not np.isfinite(vector).all():
-                    raise RuntimeError(f"Invalid embedding response for {row_id}")
+                try:
+                    data = response.json()["data"]
+                    if len(data) != 1 or data[0]["index"] != 0:
+                        raise EmbeddingOutputError(f"Unexpected embedding response for {row_id}")
+                    vector = np.asarray(data[0]["embedding"], dtype=np.float32)
+                    if vector.shape != (EMBEDDING_DIMENSION,) or not np.isfinite(vector).all():
+                        raise EmbeddingOutputError(f"Invalid embedding response for {row_id}")
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError, EmbeddingOutputError) as error:
+                    last_error = error
+                    trace_path.write_text(json.dumps({"request": payload, "response": response.text, "error": str(error)}, ensure_ascii=False, indent=2))
+                    print(json.dumps({"stage": "embedding", "kind": kind, "table": table, "row_id": row_id, "attempt": attempt, "error": str(error)}))
+                    continue
                 np.savez_compressed(shard_path, row_ids=np.asarray([row_id]), vectors=vector[None, :])
                 trace_path.write_text(json.dumps({"request": payload, "response": {"index": data[0]["index"], "dimension": len(data[0]["embedding"]), "norm": float(np.linalg.norm(vector)), "shard": str(shard_path)}}, ensure_ascii=False, indent=2))
                 return
