@@ -201,7 +201,7 @@ def rollout_trace(attempt_dir: Path) -> list[dict[str, object]]:
     traces = []
     for trace_path in sorted((attempt_dir / "traces").glob("*.json")):
         trace = json.loads(trace_path.read_text())
-        del trace["events"]
+        trace = {key: trace[key] for key in ("input", "is_complete", "current_turn", "items")}
         traces.append({"path": str(trace_path.relative_to(attempt_dir)), "trace": trace})
     return traces
 
