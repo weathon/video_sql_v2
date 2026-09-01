@@ -15,7 +15,7 @@ import duckdb
 import httpx
 import numpy as np
 from agents import Agent, ModelSettings, OpenAIResponsesModel, RunConfig, RunContextWrapper, Runner, ToolOutputImage, ToolOutputText, function_tool
-from agents.exceptions import MaxTurnsExceeded
+from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
 from agents.result import RunResultStreaming
 from openai import AsyncOpenAI
 from openai.types.shared import Reasoning
@@ -30,6 +30,12 @@ COMPACTION_INSTRUCTION = "Stop calling tools. Produce a trusted handoff for a fr
 
 class AgentRaised(RuntimeError):
     pass
+
+
+class StreamModelBehaviorError(ModelBehaviorError):
+    def __init__(self, error: ModelBehaviorError, result: RunResultStreaming):
+        super().__init__(str(error))
+        self.result = result
 
 
 class ClipAnswer(BaseModel):
@@ -120,6 +126,8 @@ async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], co
                     if remaining <= 50000 and has_tool_calls:
                         result.cancel(mode="after_turn")
                         compact_required = True
+    except ModelBehaviorError as error:
+        raise StreamModelBehaviorError(error, result) from error
     finally:
         write_trace(result, events, trace_path)
     return result, compact_required
@@ -323,8 +331,17 @@ async def clip_qa(context: RunContextWrapper[RolloutContext], video_id: str, sta
         if used_turns >= rollout.clip_max_turns:
             raise MaxTurnsExceeded(f"clip_qa exceeded {rollout.clip_max_turns} total turns")
         trace_path = rollout.attempt_dir / "traces" / f"clip-{call_id}-segment-{segment:02d}.json"
-        result, _ = await stream_agent(clip_agent, input_items, clip_context, rollout.clip_max_turns - used_turns, rollout.runtime.run_config, trace_path, rollout.runtime.context_limit, False)
-        used_turns += len(result.raw_responses)
+        try:
+            result, _ = await stream_agent(clip_agent, input_items, clip_context, rollout.clip_max_turns - used_turns, rollout.runtime.run_config, trace_path, rollout.runtime.context_limit, False)
+        except StreamModelBehaviorError as error:
+            result = error.result
+            used_turns += result.current_turn
+            if used_turns >= rollout.clip_max_turns:
+                raise MaxTurnsExceeded(f"clip_qa exceeded {rollout.clip_max_turns} total turns") from error
+            input_items = result.to_input_list() + [{"role": "user", "content": f"Your output could not be parsed as ClipAnswer JSON: {error}. Continue using tools if evidence is still needed. When ready, return exactly the required structured output with status, answer, and evidence_timestamps_s."}]
+            segment += 1
+            continue
+        used_turns += result.current_turn
         answer = result.final_output_as(ClipAnswer, raise_if_incorrect_type=True)
         validation_error = None
         if answer.status == "answered" and not answer.evidence_timestamps_s:
