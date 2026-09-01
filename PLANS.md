@@ -1,4 +1,4 @@
-这是一个AI Memory Agent的项目, 你的目标是构建一个agent, 用来检索视频记忆并且回答问题. 本branch是从main checkout出来的, main是一次失败的尝试, ../video_sql也是, 除非特别指示, 不然不要去看, 以免遭受误导. 如果过程中用户更新了plan的内容, 记得要更新这个文件. 
+这是一个AI Memory Agent的项目, 你的目标是构建一个agent, 用来检索视频记忆并且回答问题. 本branch是从main checkout出来的, 不要查看git历史, main是一次失败的尝试, ../video_sql也是, 除非特别指示, 不然不要去看, 以免遭受误导. 如果过程中用户更新了plan的内容, 记得要更新这个文件. 
 
 ## 材料:
 1. 数据集: https://huggingface.co/datasets/MM-Lifelong/MM-Lifelong
@@ -147,3 +147,66 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 10. uv cache放到/raid.
 11. home目录满了时先清理home, 删除本次产生的无用内容.
 12. 过程中严谨访问未列出的目录和当前目录. 
+
+## 当前实现状态与已完成修改
+
+### 框架、依赖与权限规则
+1. Agent harness 已改回 `openai-agents`，使用 OpenAI Agents SDK 的 `OpenAIResponsesModel`、`Runner.run_streamed` 和 Responses API，不再使用自制 agent loop。
+2. Responses API harness 使用 `reasoning_item_id_policy="preserve"`，本地模型服务同时启用 `enable_thinking=true` 和 `preserve_thinking=true`，保留多轮 reasoning item。
+3. 主 agent、`clip_qa`、judge、reflection、question summarizer 和 skill updater 都使用 Agents SDK；需要结构化输出的阶段使用 Pydantic `output_type`。
+4. Python 环境使用 uv，项目依赖已写入 `pyproject.toml` 和 `uv.lock`，包括 `openai-agents`、`openai`、DuckDB、Qwen VL embedding 所需依赖、W&B 和 pytest。
+5. 全局 `AGENTS.md` 已加入规则：修改、停止、重启或重建容器不需要再次向用户请求允许。
+
+### Pilot 数据、数据库与 split
+1. 已实现统一文本归一化：转小写、折叠连续空白、去除首尾空白；Latin 非 ASCII 字符转成 ASCII，非 Latin 字符保留。
+2. 已从预构建材料和 14 个原始视频重建 `data/pilot/pilot.duckdb`。当前行数为：videos 14、episodes 11311、visual_clips 9167、entities 23447、semantic_triples 54375、openie_triples 92296、topic_chains 1680、topic_facts 10359、event_chains 173、event_chain_entities 1130、event_steps 775、graph_nodes 98300、graph_edges 243291。
+3. DuckDB 同时保存结构化 SQL 表以及用于 split 的 graph_nodes/graph_edges；检索 harness 使用 SQL 表，不使用 PPR。
+4. 已按问题和 clue video 的连通分量完成 split，生成 `data/pilot/train.json` 646 个问题和 `data/pilot/test.json` 24 个问题，两个集合不共享连通的视频分量。
+5. 已把原视频按实际边界缓存为 30 秒左右的 MP4 clip，并核对每个视频的 clip 数量、单段时长总和与源视频时长；`visual_clips` 的时间边界已按实际缓存片段回写数据库。
+6. 数据库、clip、embedding shard、embedding index、运行 trace、media、W&B 和 runs 输出均已加入忽略规则，不进入 git 历史。
+
+### Embedding
+1. 已启动 `Qwen/Qwen3-VL-Embedding-8B` pooling 服务，served model name 为 `qwen3-vl-embedding-8b`，host 端口为 8013；文本和视频都使用同一个 VL embedding 模型。
+2. 文本表按 batch 512 生成可恢复 shard；视频表按 clip 文件生成可恢复 shard；所有最终向量为 float32、4096 维并与 row_id 顺序逐项校验。
+3. 已生成 episodes 11311、entities 23447、semantic_triples 54375、openie_triples 92296、topic_facts 10359、event_steps 775 的文本索引。
+4. 已处理 9167 个 visual clip；3 个 clip 的解码器明确返回无下一帧错误，因此完整跳过对应 clip 并记录错误，没有替代输入；最终 visual_clips 视频索引包含 9164 行。
+5. `semantic_search` 从 mmap NPY 索引执行精确 cosine similarity，并回查 DuckDB 返回对应 row_id、video_id、时间范围、文本预览和分数。
+
+### 本地 Qwen 服务
+1. 当前主模型为 `Inferact/Qwen3.8-27B-NVFP4`，运行在 GPU 5、TP=1、host 端口 8000。
+2. 当前服务参数为 max model length 262144、max batched tokens 32768、max sequences 100、image limit 1024、video limit 0、KV cache FP8、GPU memory utilization 0.75、chunked prefill、async scheduling 和 MTP 3 speculative tokens。
+3. 当前服务使用 qwen3 reasoning parser、qwen3_coder tool parser、auto tool choice、Responses API，并通过 chat-template kwargs 保留 thinking。
+4. 主 agent 和 reflection 使用 `reasoning_effort=medium`；未设置 temperature、top_p、客户端 input token cap 或 completion token cap。
+
+### Harness、工具与 trace
+1. `run_sql` 使用只读 DuckDB，并关闭 external access；SQL 查询 30 秒超时，最多返回 100 行，每个单元格最多给模型 500 字符及原始长度。
+2. `sample_video` 支持时间范围、fps、0–1000 整数裁剪坐标和 caption；输出完整分页的 4×3 contact sheet，每页最多 12 帧。
+3. `clip_qa` 是嵌套 Agents SDK agent，可调用 `sample_video`、`add_note` 和 `read_notes`；返回 `answered|unknown`、答案和证据时间点，随后生成独立证据截图给主 agent。
+4. 主 agent 可调用 `run_sql`、`semantic_search`、`clip_qa`、`add_note`、`read_notes` 和 `agent_raise`；问题输入不包含正确答案。
+5. 主 agent 的上下文阈值、after-turn cancellation、handoff 和最多三次 compaction 状态机已实现；第三次 compaction 结束后记 `compaction_limit` 和 0 分并进入 reflection。
+6. `clip_qa` 和 reflection 各只保留 `TURN_SAFETY_LIMIT=1000` 的死循环保护，不再暴露 `--clip-max-turns` 或 `--reflection-max-turns`，正常流程不以该值截断。
+7. Agents SDK 结构化输出解析失败时，harness 从真实 `response.completed` 事件保留本轮失败的 reasoning 和 assistant output，把原解析错误追加到同一对话后继续生成，不改用其他 parser、模型或方法；轮数和 usage 继续累计。
+8. 每段 trace 在磁盘保存清理后的 input、responses、items、raw stream events、usage 和 final output；base64 图片内容替换为占位符，工具参数、图片项和 reasoning item ID 保留。
+9. Reflection 输入保留完整语义 trace，但不重复传入已由 responses/items 表达的逐 token raw stream events；磁盘原始 trace 不变。
+10. 已用真实多轮模型调用验证主 agent 调用 `clip_qa`、`clip_qa` 调用 `sample_video`、图片返回、shared notes、reasoning item 保留、结构化错误纠正和最终结构化答案；生成的 contact sheet 与证据截图已实际检查。
+
+### 训练、恢复与验证
+1. 正式训练配置保持每个问题 5 个 rollout、每 batch 2 个问题、3 个 epoch、每个可重试阶段最多 3 次尝试；主 agent 仍保持 50 turns 上限。
+2. Judge 只接收 `{reference_answer, candidate_answer}`，输出 0–5 整数分；主 agent 永远不接收 reference answer。
+3. 每个成功执行的训练 rollout 只创建一次 reflection 任务；该任务可在一次 reflection 内进行多轮工具检索，最终输出 reflection 和 meta_reflection。
+4. Reflection 接收 question、candidate answer、reference answer、score、rollout status、完整语义 trace、当前 SKILL 和 META-SKILL；它可以重新查询数据库或视频，并输出去具体内容后的可复用经验。
+5. 同一问题的多个 rollout reflection 先汇总为 question summary，再由 updater 输出完整替换的 SKILL.md 和 META-SKILL.md；下一个 batch 使用更新后的文件。
+6. 初始文件已创建为 `skills/initial/SKILL.md` 和 `skills/initial/META-SKILL.md`，baseline 使用同一个初始 SKILL，不使用空 prompt。
+7. Retryable API、模型解析、超时、max-turn 和正式模式的 `agent_raise` 错误按原方法重试；确定性输入、权限、认证、坏请求和代码错误直接终止，不使用替代方法。
+8. 进程取消会写入 `cancelled.json` 并传播，取消的 attempt 不占重试预算；恢复时创建新的物理 attempt 编号。
+9. 重试耗尽的 rollout 保存为 `status=failed`、score=0；训练和验证均把所有指定 rollout 的分数纳入均值，失败项不会从分母移除。
+10. 同一 batch 的并行 rollout 和 question summary 使用 `asyncio.TaskGroup`；一个任务异常时取消并等待同组任务完成取消，再关闭共享客户端。
+11. 训练和验证按 batch 保存 stage input、attempt trace、usage、result、SKILL before/after、META-SKILL before/after 和 completed marker；恢复时核对已保存输入和配置，完成 batch 可直接继续。
+12. W&B 初始化记录 run id、git hash、git status、路径、模型、数据和协议配置；每个 batch 先写 W&B 指标，再写 completed marker，避免恢复时跳过未记录的指标。
+13. 训练记录 completed rollouts、failed rollouts 和包含 0 分失败项的 mean score；验证记录相同统计并生成最终 validation summary。
+
+### 当前验证结果和未执行项
+1. 当前测试为 15 项，全部通过；测试覆盖归一化、schema、split、只读 SQL、工具拒绝、并发视频采样、gold answer 隔离、重试、取消恢复、失败计 0、结构化输出纠错、trace 图片清理和 reflection trace 去重。
+2. 当前主服务已按 TP=1、max sequences=100 重建并完成真实 Responses API 多轮 harness 验证。
+3. 正式训练、训练后测试集验证和初始 SKILL baseline 对比尚未启动。
+4. 正式训练启动前仍按规则执行一次 Claude CLI 全仓库审查；若修复仅是小范围修改，再由新的 REVIEW.md 审查代理复核修复后直接开始正式运行。
