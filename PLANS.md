@@ -166,6 +166,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 4. 已按问题和 clue video 的连通分量完成 split，生成 `data/pilot/train.json` 646 个问题和 `data/pilot/test.json` 24 个问题，两个集合不共享连通的视频分量。
 5. 已把原视频按实际边界缓存为 30 秒左右的 MP4 clip，并核对每个视频的 clip 数量、单段时长总和与源视频时长；`visual_clips` 的时间边界已按实际缓存片段回写数据库。
 6. 数据库、clip、embedding shard、embedding index、运行 trace、media、W&B 和 runs 输出均已加入忽略规则，不进入 git 历史。
+7. 官方 dense caption 存在但文本为空时立即抛出错误，不改用 Whisper 或 Qwen 生成内容替代。
 
 ### Embedding
 1. 已启动 `Qwen/Qwen3-VL-Embedding-8B` pooling 服务，served model name 为 `qwen3-vl-embedding-8b`，host 端口为 8013；文本和视频都使用同一个 VL embedding 模型。
