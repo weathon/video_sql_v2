@@ -157,6 +157,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 4. Python 环境使用 uv，项目依赖已写入 `pyproject.toml` 和 `uv.lock`，包括 `openai-agents`、`openai`、DuckDB、Qwen VL embedding 所需依赖、W&B 和 pytest。
 5. 全局 `AGENTS.md` 已加入规则：修改、停止、重启或重建容器不需要再次向用户请求允许。
 6. 本地 OpenAI SDK 客户端不读取或注入 `OPENAI_API_KEY`；SDK 的必填鉴权字段使用非敏感本地标识 `local`。
+7. 正式训练使用 `vllm/vllm-openai:qwen38` Docker 镜像和 host network，以 root 用户运行；仓库读写挂载，host uv Python、`/usr/bin/git` 和用于 W&B 登录的 `/home/wg25r/.netrc` 只读挂载，不传入 OpenAI key。
 
 ### Pilot 数据、数据库与 split
 1. 已实现统一文本归一化：转小写、折叠连续空白、去除首尾空白；Latin 非 ASCII 字符转成 ASCII，非 Latin 字符保留。
@@ -190,6 +191,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 8. 每段 trace 在磁盘保存清理后的 input、responses、items、raw stream events、usage 和 final output；base64 图片内容替换为占位符，工具参数、图片项和 reasoning item ID 保留。
 9. Reflection 输入保留完整语义 trace，但不重复传入已由 responses/items 表达的逐 token raw stream events；磁盘原始 trace 不变。
 10. 已用真实多轮模型调用验证主 agent 调用 `clip_qa`、`clip_qa` 调用 `sample_video`、图片返回、shared notes、reasoning item 保留、结构化错误纠正和最终结构化答案；生成的 contact sheet 与证据截图已实际检查。
+11. 主 agent compaction 后的新上下文保留 developer trusted handoff，并重新附加原始问题作为 user 消息，确保本地 Responses 服务收到 user query。
 
 ### 训练、恢复与验证
 1. 正式训练配置保持每个问题 5 个 rollout、每 batch 2 个问题、3 个 epoch、每个可重试阶段最多 3 次尝试；主 agent 仍保持 50 turns 上限。
@@ -209,5 +211,5 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 ### 当前验证结果和未执行项
 1. 当前测试为 15 项，全部通过；测试覆盖归一化、schema、split、只读 SQL、工具拒绝、并发视频采样、gold answer 隔离、重试、取消恢复、失败计 0、结构化输出纠错、trace 图片清理和 reflection trace 去重。
 2. 当前主服务已按 TP=1、max sequences=100 重建并完成真实 Responses API 多轮 harness 验证。
-3. 正式训练、训练后测试集验证和初始 SKILL baseline 对比尚未启动。
-4. 正式训练启动前仍按规则执行一次 Claude CLI 全仓库审查；若修复仅是小范围修改，再由新的 REVIEW.md 审查代理复核修复后直接开始正式运行。
+3. 正式训练已在 Docker 中启动并产生真实 agent、`clip_qa`、judge 和 reflection trace；当前一次运行在第一次主 agent compaction 后因续段缺少 user query 被本地 Responses 服务以 400 终止，该代码错误已修复，正式训练需要使用新 run 目录重新启动；训练后测试集验证和初始 SKILL baseline 对比尚未执行。
+4. 正式训练前的 Claude CLI 全仓库审查已完成；审查发现的空验证集防御分支已删除，并由新的 REVIEW.md 审查代理复核通过。
