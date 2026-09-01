@@ -309,18 +309,22 @@ async def generate_dense(run_root: Path, base_url: str) -> dict[str, int]:
         clip_path = (Path.cwd() / chunk.clip_filename).resolve()
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": [{"type": "video_url", "video_url": {"url": clip_path.as_uri()}}, {"type": "text", "text": f"Whisper transcript for this exact clip:\n{transcript}"}]}]
         last_error = None
+        repair_message = None
         for attempt in range(1, 6):
+            attempt_messages = messages if repair_message is None else messages + [{"role": "user", "content": repair_message}]
             trace_path = run_root / "traces" / "dense" / chunk.row_id.replace(":", "__") / f"attempt-{attempt}.json"
             trace_path.parent.mkdir(parents=True, exist_ok=True)
-            request = {"model": QWEN_MODEL, "reasoning_effort": "low", "messages": messages, "response_format": DenseCaption.model_json_schema()}
+            request = {"model": QWEN_MODEL, "reasoning_effort": "low", "messages": attempt_messages, "response_format": DenseCaption.model_json_schema()}
             try:
                 async with semaphore:
-                    response = await client.beta.chat.completions.parse(model=QWEN_MODEL, messages=messages, response_format=DenseCaption, reasoning_effort="low")
+                    response = await client.beta.chat.completions.parse(model=QWEN_MODEL, messages=attempt_messages, response_format=DenseCaption, reasoning_effort="low")
                 parsed = response.choices[0].message.parsed
                 if parsed is None or not parsed.text.strip():
                     raise DenseOutputError(f"Missing parsed dense caption: {response.choices[0].message.model_dump(mode='json')}")
             except (APIError, LengthFinishReasonError, ValidationError, DenseOutputError) as error:
                 last_error = error
+                if isinstance(error, (ValidationError, DenseOutputError)):
+                    repair_message = f"Your structured response was rejected by validation: {error}. Return the complete corrected DenseCaption object."
                 trace_path.write_text(json.dumps({"request": request, "error": str(error)}, ensure_ascii=False, indent=2))
                 print(json.dumps({"stage": "dense", "row_id": chunk.row_id, "attempt": attempt, "error": str(error)}))
                 continue
