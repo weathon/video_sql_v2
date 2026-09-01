@@ -2,12 +2,15 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import duckdb
 import pytest
+from agents import ModelSettings, RunContextWrapper
 from agents.exceptions import ModelBehaviorError
 from agents.exceptions import UserError
 
-from src.harness import AgentRaised, RolloutResult
+from src.harness import AgentRaised, ClipAnswer, RolloutContext, RolloutResult, StreamModelBehaviorError, clip_qa
 from src.training import JudgeResult, is_retryable_error, run_evaluation_rollout, run_judge, run_stage
 
 
@@ -82,8 +85,16 @@ async def test_cancelled_stage_does_not_save_terminal_error(tmp_path: Path) -> N
         raise asyncio.CancelledError
 
     with pytest.raises(asyncio.CancelledError):
-        await run_stage(tmp_path / "stage", JudgeResult, 3, "formal", cancelled_call)
+        await run_stage(tmp_path / "stage", JudgeResult, 1, "formal", cancelled_call)
     assert not (tmp_path / "stage" / "terminal_error.json").exists()
+    assert (tmp_path / "stage" / "attempt-01" / "cancelled.json").exists()
+
+    async def completed_call(attempt_dir: Path) -> tuple[JudgeResult, dict[str, int]]:
+        return JudgeResult(score=5), {"requests": 1, "input_tokens": 2, "output_tokens": 3, "total_tokens": 5}
+
+    output, _ = await run_stage(tmp_path / "stage", JudgeResult, 1, "formal", completed_call)
+    assert output.score == 5
+    assert (tmp_path / "stage" / "attempt-02" / "output.json").exists()
 
 
 async def test_exhausted_evaluation_rollout_is_zero_scored(tmp_path: Path) -> None:
@@ -93,3 +104,37 @@ async def test_exhausted_evaluation_rollout_is_zero_scored(tmp_path: Path) -> No
     result = await run_evaluation_rollout(object(), item, 0, "current skill", rollout_dir, 1, "formal", 12)
     assert result["status"] == "failed"
     assert result["score"] == 0
+
+
+async def test_clip_qa_continues_after_structured_output_error(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "clip.duckdb"
+    connection = duckdb.connect(str(database_path))
+    connection.execute("CREATE TABLE videos (video_id VARCHAR, duration_s DOUBLE)")
+    connection.execute("INSERT INTO videos VALUES ('4', 10.0)")
+    connection.close()
+    runtime = SimpleNamespace(database_path=database_path, model="test-model", model_settings=ModelSettings(), run_config=object(), context_limit=262144)
+    rollout = RolloutContext(runtime=runtime, attempt_dir=tmp_path / "attempt", clip_max_turns=10)
+    inputs = []
+
+    class InvalidResult:
+        current_turn = 3
+
+        def to_input_list(self):
+            return [{"role": "assistant", "content": "plain text"}]
+
+    class ValidResult:
+        current_turn = 1
+
+        def final_output_as(self, output_type, raise_if_incorrect_type: bool):
+            return ClipAnswer(status="unknown", answer="insufficient evidence", evidence_timestamps_s=[])
+
+    async def fake_stream_agent(agent, input_items, context, max_turns: int, run_config, trace_path: Path, context_limit: int, allow_compaction: bool):
+        inputs.append(input_items)
+        if len(inputs) == 1:
+            raise StreamModelBehaviorError(ModelBehaviorError("Invalid JSON when parsing model output"), InvalidResult())
+        return ValidResult(), False
+
+    monkeypatch.setattr("src.harness.stream_agent", fake_stream_agent)
+    output = await clip_qa.__wrapped__(RunContextWrapper(rollout), "4", 0.0, 2.0, "What is visible?")
+    assert json.loads(output[0].text) == {"status": "unknown", "answer": "insufficient evidence", "evidence_timestamps_s": [], "evidence_files": []}
+    assert "Invalid JSON when parsing model output" in inputs[1][-1]["content"]
