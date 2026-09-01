@@ -33,6 +33,7 @@ def build_database(artifact_root: Path, dataset_root: Path, output_path: Path) -
     schema = (Path(__file__).parent / "schema.sql").read_text()
     connection = duckdb.connect(str(output_path))
     connection.execute(schema)
+    connection.execute("BEGIN TRANSACTION")
     edge_counter = 0
 
     def insert_graph_node(row_id: str, node_type: str, video_id: str, start_s: float, end_s: float, text: str) -> None:
@@ -158,6 +159,7 @@ def build_database(artifact_root: Path, dataset_root: Path, output_path: Path) -
             for step_index, step in enumerate(event["steps"]):
                 connection.execute("INSERT INTO event_steps VALUES (?, ?, ?, ?, ?, ?, ?)", [f"{chain_id}:steps:{step_index}", chain_id, video_id, step_index, parse_hms(step["start_time"]), parse_hms(step["end_time"]), normalize_text(step["description"])])
         print(json.dumps({"video_id": video_id, "episodes": sum(len(rows) for rows in episodes_by_granularity.values()), "entities": len(entity_ids)}))
+    connection.execute("COMMIT")
     connection.close()
 
 
