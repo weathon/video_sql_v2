@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import duckdb
+import httpx2
 import pytest
 from agents import ModelSettings, RunContextWrapper
 from agents.exceptions import ModelBehaviorError
@@ -78,6 +79,9 @@ def test_agent_raise_retries_only_in_formal_mode() -> None:
     wrapped.__cause__ = error
     assert is_retryable_error(wrapped, "formal") is True
     assert is_retryable_error(wrapped, "debug") is False
+    wrapped.__cause__ = httpx2.ReadTimeout("timed out")
+    assert is_retryable_error(wrapped, "formal") is True
+    assert is_retryable_error(wrapped, "debug") is True
 
 
 async def test_cancelled_stage_does_not_save_terminal_error(tmp_path: Path) -> None:

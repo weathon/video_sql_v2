@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Literal, TypeVar
 
 import httpx
+import httpx2
 import wandb
 from agents import Agent
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError, ModelTimeoutError, UserError
@@ -76,7 +77,7 @@ def is_retryable_error(error: BaseException, mode: Literal["debug", "formal"]) -
         return True
     if isinstance(candidate, httpx.HTTPStatusError):
         return candidate.response.status_code == 429 or candidate.response.status_code >= 500
-    return isinstance(candidate, httpx.RequestError)
+    return isinstance(candidate, (httpx.RequestError, httpx2.RequestError))
 
 
 async def run_stage(stage_dir: Path, output_type: type[OutputModel], attempts: int, mode: Literal["debug", "formal"], call: Callable[[Path], Awaitable[tuple[OutputModel, dict[str, int]]]]) -> tuple[OutputModel, dict[str, int]]:
