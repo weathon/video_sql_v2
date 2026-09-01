@@ -45,8 +45,7 @@ async def evaluate(args: argparse.Namespace) -> None:
             milestone(args.run_dir, {"event": "validation_batch_completed", **completed, "mean_score": sum(scores) / len(scores)})
             batch_index += 1
         final = {"event": "validation_completed", "batches": batch_index, "scored_rollouts": len(all_scores)}
-        if all_scores:
-            final["mean_score"] = sum(all_scores) / len(all_scores)
+        final["mean_score"] = sum(all_scores) / len(all_scores)
         write_json(args.run_dir / "validation_summary.json", final)
         milestone(args.run_dir, final)
     finally:
