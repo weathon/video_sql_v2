@@ -196,7 +196,8 @@ def build_inventory(dataset_root: Path, artifact_root: Path, run_root: Path, cli
                 official_text = str(official_week[source_path.name]["text"]).strip()
                 official_artifact = str(official_week_path)
             if official_text == "":
-                raise RuntimeError(f"Empty official dense caption for {source.source_video_id} chunk {source_index}")
+                official_text = None
+                official_artifact = None
             chunks.append(Chunk(row_id=row_id, visual_row_id=visual_row_id, video_id=source.video_id, source_video_id=source.source_video_id, source_group_id=source.source_group_id, source_filename=source.filename, source_start_s=source_start_s, source_end_s=source_end_s, start_s=source.timeline_start_s + source_start_s, end_s=source.timeline_start_s + source_end_s, clip_filename=str((clip_root.resolve() / source.video_id / f"{video_index:06d}.mp4").relative_to(Path.cwd())), official_text=official_text, official_artifact=official_artifact))
             video_indexes[source.video_id] += 1
 
