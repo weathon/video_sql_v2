@@ -149,7 +149,7 @@ async def test_clip_qa_continues_after_structured_output_error(tmp_path: Path, m
 def test_reflection_trace_excludes_duplicate_representations(tmp_path: Path) -> None:
     trace_dir = tmp_path / "traces"
     trace_dir.mkdir()
-    payload = {"input": "question", "is_complete": True, "current_turn": 1, "responses": [{"output": [{"type": "message", "content": "answer"}]}], "items": [{"type": "reasoning", "content": "analysis"}, {"type": "message", "content": "answer"}], "events": [{"type": "response.output_text.delta", "delta": "answer"}], "usage": {"total_tokens": 5}, "final_output": "answer"}
+    payload = {"input": "question", "is_complete": True, "current_turn": 1, "responses": [{"output": [{"type": "message", "content": "answer"}]}], "items": [{"type": "reasoning", "content": "analysis"}, {"type": "function_call", "arguments": "{\"sql\": \"SELECT 1\"}", "call_id": "call-1"}, {"type": "function_call_output", "output": "{\"columns\": [\"1\"], \"rows\": [[[\"1\", 1]]], \"has_more\": false}", "call_id": "call-1"}, {"type": "message", "content": "answer"}], "events": [{"type": "response.output_text.delta", "delta": "answer"}], "usage": {"total_tokens": 5}, "final_output": "answer"}
     (trace_dir / "main-segment-00.json").write_text(json.dumps(payload))
     (trace_dir / "clip-123-segment-00.json").write_text(json.dumps(payload))
     (trace_dir / "compaction-01.json").write_text(json.dumps(payload))
@@ -157,4 +157,4 @@ def test_reflection_trace_excludes_duplicate_representations(tmp_path: Path) -> 
     payload["current_turn"] = 2
     (trace_dir / "main-segment-01.json").write_text(json.dumps(payload))
     reflected = rollout_trace(tmp_path)
-    assert reflected == [{"path": "traces/main-segment-01.json", "trace": {"input": [{"role": "developer", "content": "trusted handoff"}, {"role": "user", "content": "question"}], "is_complete": True, "current_turn": 2, "items": [{"type": "message", "content": "answer"}]}}]
+    assert reflected == [{"path": "traces/main-segment-01.json", "trace": {"input": [{"role": "developer", "content": "trusted handoff"}, {"role": "user", "content": "question"}], "is_complete": True, "current_turn": 2, "items": [{"type": "reasoning", "content": "analysis"}, {"type": "function_call", "arguments": {"sql": "SELECT 1"}, "call_id": "call-1"}, {"type": "function_call_output", "output": {"columns": ["1"], "rows": [[['1', 1]]], "has_more": False}, "call_id": "call-1"}, {"type": "message", "content": "answer"}]}}]

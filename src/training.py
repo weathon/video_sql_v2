@@ -158,6 +158,14 @@ async def run_reflection_once(runtime: PilotHarness, input_payload: object, meta
     segment = 0
     tools_enabled = True
     usage = {"requests": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    async with httpx.AsyncClient(base_url=runtime.model_base_url, timeout=None) as tokenizer_client:
+        print(json.dumps({"stage": "reflection_tokenize", "input_chars": len(input_items)}))
+        token_response = await tokenizer_client.post("/tokenize", json={"model": runtime.model_name, "prompt": input_items})
+        token_response.raise_for_status()
+        input_tokens = token_response.json()["count"]
+    if input_tokens >= runtime.context_limit - 50_000:
+        active_agent = agent.clone(tools=[])
+        tools_enabled = False
     while True:
         if used_turns >= reflection_max_turns:
             raise MaxTurnsExceeded(f"Reflection exceeded {reflection_max_turns} total turns")
@@ -202,7 +210,17 @@ def rollout_trace(attempt_dir: Path) -> list[dict[str, object]]:
     trace_path = sorted((attempt_dir / "traces").glob("main-segment-*.json"))[-1]
     trace = json.loads(trace_path.read_text())
     trace = {key: trace[key] for key in ("input", "is_complete", "current_turn", "items")}
-    trace["items"] = [item for item in trace["items"] if item["type"] != "reasoning"]
+    for item in trace["items"]:
+        if item["type"] == "function_call":
+            item["arguments"] = json.loads(item["arguments"])
+        elif item["type"] == "function_call_output":
+            if isinstance(item["output"], str):
+                item["output"] = json.loads(item["output"])
+            else:
+                assert isinstance(item["output"], list)
+                for part in item["output"]:
+                    if part["type"] == "input_text":
+                        part["text"] = json.loads(part["text"])
     return [{"path": str(trace_path.relative_to(attempt_dir)), "trace": trace}]
 
 

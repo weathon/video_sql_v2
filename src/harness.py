@@ -376,8 +376,10 @@ class PilotHarness:
         self.index_root = index_root
         self.clip_root = clip_root
         self.context_limit = context_limit
+        self.model_base_url = model_base_url.rstrip("/")
+        self.model_name = model_name
         self.schema = (Path(__file__).parent / "schema.sql").read_text()
-        self.model_client = AsyncOpenAI(base_url=model_base_url.rstrip("/") + "/v1", api_key="local")
+        self.model_client = AsyncOpenAI(base_url=self.model_base_url + "/v1", api_key="local")
         self.model = OpenAIResponsesModel(model=model_name, openai_client=self.model_client)
         self.embedding_client = httpx.AsyncClient(base_url=embedding_base_url, timeout=None)
         self.model_settings = ModelSettings(parallel_tool_calls=True, reasoning=Reasoning(effort="medium"), include_usage=True)
