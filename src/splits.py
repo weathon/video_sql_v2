@@ -41,4 +41,4 @@ if __name__ == "__main__":
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "train.json").write_text(json.dumps(train, ensure_ascii=False, indent=2) + "\n")
     (args.output_dir / "test.json").write_text(json.dumps(test, ensure_ascii=False, indent=2) + "\n")
-    print(json.dumps({"train": len(train), "test": len(test), "train_ids": [row["index"] for row in train], "test_ids": [row["index"] for row in test]}))
+    print(json.dumps({"train": len(train), "test": len(test)}))
