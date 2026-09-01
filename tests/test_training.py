@@ -1,8 +1,11 @@
+import asyncio
 import hashlib
 import json
 from pathlib import Path
 
+import pytest
 from agents.exceptions import ModelBehaviorError
+from agents.exceptions import UserError
 
 from src.harness import AgentRaised, RolloutResult
 from src.training import JudgeResult, is_retryable_error, run_evaluation_rollout, run_judge, run_stage
@@ -68,3 +71,25 @@ def test_agent_raise_retries_only_in_formal_mode() -> None:
     error = AgentRaised("stop")
     assert is_retryable_error(error, "formal") is True
     assert is_retryable_error(error, "debug") is False
+    wrapped = UserError("wrapped")
+    wrapped.__cause__ = error
+    assert is_retryable_error(wrapped, "formal") is True
+    assert is_retryable_error(wrapped, "debug") is False
+
+
+async def test_cancelled_stage_does_not_save_terminal_error(tmp_path: Path) -> None:
+    async def cancelled_call(attempt_dir: Path) -> tuple[JudgeResult, dict[str, int]]:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_stage(tmp_path / "stage", JudgeResult, 3, "formal", cancelled_call)
+    assert not (tmp_path / "stage" / "terminal_error.json").exists()
+
+
+async def test_exhausted_evaluation_rollout_is_zero_scored(tmp_path: Path) -> None:
+    rollout_dir = tmp_path / "rollout"
+    (rollout_dir / "attempt-01").mkdir(parents=True)
+    item = {"index": 9, "question": "question only", "answer": "secret gold"}
+    result = await run_evaluation_rollout(object(), item, 0, "current skill", rollout_dir, 1, "formal", 12)
+    assert result["status"] == "failed"
+    assert result["score"] == 0
