@@ -352,7 +352,14 @@ async def clip_qa(context: RunContextWrapper[RolloutContext], video_id: str, sta
             used_turns += result.current_turn
             if used_turns >= rollout.clip_max_turns:
                 raise MaxTurnsExceeded(f"clip_qa exceeded {rollout.clip_max_turns} total turns") from error
-            input_items = result.to_input_list() + error.failed_output_items + [{"role": "user", "content": f"Your output could not be parsed as ClipAnswer JSON: {error}. Continue using tools if evidence is still needed. When ready, return exactly the required structured output with status, answer, and evidence_timestamps_s."}]
+            remaining = rollout.runtime.context_limit - error.failed_input_tokens - error.failed_output_tokens
+            if tools_enabled and remaining <= 50_000:
+                active_agent = clip_agent.clone(tools=[])
+                tools_enabled = False
+                correction = f"The context limit is near. Do not call tools. Your output could not be parsed as ClipAnswer JSON: {error}. Return exactly the required structured output with status, answer, and evidence_timestamps_s."
+            else:
+                correction = f"Your output could not be parsed as ClipAnswer JSON: {error}. Continue using tools if evidence is still needed. When ready, return exactly the required structured output with status, answer, and evidence_timestamps_s."
+            input_items = result.to_input_list() + error.failed_output_items + [{"role": "user", "content": correction}]
             segment += 1
             continue
         used_turns += result.current_turn
