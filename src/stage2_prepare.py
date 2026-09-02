@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import math
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -9,7 +10,7 @@ from pathlib import Path
 import wandb
 from faster_whisper import WhisperModel
 from openai import APIError, AsyncOpenAI, LengthFinishReasonError
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 
 WORKERS = 32
@@ -55,6 +56,15 @@ class Chunk(BaseModel):
 
 class DenseCaption(BaseModel):
     text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate_complete_paragraph(cls, text: str) -> str:
+        text = text.strip()
+        sentence_endings = re.findall(r'[.!?。！？]["”’)]?(?=\s|$)', text)
+        if len(sentence_endings) < 2 or re.search(r'[.!?。！？]["”’)]?$', text) is None:
+            raise ValueError("Dense caption must contain at least two sentence endings and end with sentence punctuation")
+        return text
 
 
 class DenseOutputError(RuntimeError):
@@ -281,13 +291,31 @@ async def generate_dense(run_root: Path, base_url: str) -> dict[str, int]:
     dense_dir = run_root / "dense"
     dense_dir.mkdir(parents=True, exist_ok=True)
     missing_chunks = []
+    retry_attempts = {}
+    repair_messages = {}
     for chunk in chunks:
         output_path = dense_dir / f"{chunk.row_id.replace(':', '__')}.json"
         if output_path.exists():
             payload = json.loads(output_path.read_text())
             if payload["row_id"] != chunk.row_id or not str(payload["text"]).strip():
                 raise RuntimeError(f"Dense checkpoint mismatch in {output_path}")
-            continue
+            if payload["kind"] == "official":
+                continue
+            if payload["kind"] != "generated":
+                raise RuntimeError(f"Unknown dense checkpoint kind in {output_path}")
+            try:
+                DenseCaption(text=payload["text"])
+            except ValidationError as error:
+                trace_dir = run_root / "traces" / "dense" / chunk.row_id.replace(":", "__")
+                attempt_numbers = sorted(int(path.stem.removeprefix("attempt-")) for path in trace_dir.glob("attempt-*.json"))
+                if not attempt_numbers or attempt_numbers != list(range(1, max(attempt_numbers) + 1)):
+                    raise RuntimeError(f"Dense trace attempts are incomplete for {chunk.row_id}")
+                retry_attempts[chunk.row_id] = max(attempt_numbers) + 1
+                repair_messages[chunk.row_id] = f"Your structured response was rejected by validation: {error}. Return the complete corrected DenseCaption object."
+                if retry_attempts[chunk.row_id] > 5:
+                    raise RuntimeError(f"Dense caption failed after 5 attempts for {chunk.row_id}: {error}")
+            else:
+                continue
         if chunk.official_text is not None:
             output_path.write_text(json.dumps({"row_id": chunk.row_id, "kind": "official", "artifact": chunk.official_artifact, "text": chunk.official_text}, ensure_ascii=False, indent=2))
         else:
@@ -315,8 +343,9 @@ async def generate_dense(run_root: Path, base_url: str) -> dict[str, int]:
         clip_path = (Path.cwd() / chunk.clip_filename).resolve()
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": [{"type": "video_url", "video_url": {"url": clip_path.as_uri()}}, {"type": "text", "text": f"Whisper transcript for this exact clip:\n{transcript}"}]}]
         last_error = None
-        repair_message = None
-        for attempt in range(1, 6):
+        repair_message = repair_messages[chunk.row_id] if chunk.row_id in repair_messages else None
+        first_attempt = retry_attempts[chunk.row_id] if chunk.row_id in retry_attempts else 1
+        for attempt in range(first_attempt, 6):
             attempt_messages = messages if repair_message is None else messages + [{"role": "user", "content": repair_message}]
             trace_path = run_root / "traces" / "dense" / chunk.row_id.replace(":", "__") / f"attempt-{attempt}.json"
             trace_path.parent.mkdir(parents=True, exist_ok=True)
