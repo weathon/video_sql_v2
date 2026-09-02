@@ -440,7 +440,10 @@ class PilotHarness:
                 usage["output_tokens"] += response.usage.output_tokens
                 usage["total_tokens"] += response.usage.total_tokens
             if not compact_required:
-                return RolloutResult(status="completed", answer=str(result.final_output), turns=total_turns, compactions=compactions, usage=usage)
+                answer = str(result.final_output)
+                if not answer.strip():
+                    raise ModelBehaviorError("Main retrieval agent returned no final answer")
+                return RolloutResult(status="completed", answer=answer, turns=total_turns, compactions=compactions, usage=usage)
             if total_turns >= 50:
                 raise MaxTurnsExceeded("Main retrieval agent reached 50 turns before compaction")
             compact_agent = main_agent.clone(tools=[])
