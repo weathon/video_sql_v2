@@ -136,7 +136,7 @@ async def test_clip_qa_continues_after_structured_output_error(tmp_path: Path, m
         inputs.append(input_items)
         if len(inputs) == 1:
             failed_output = [{"role": "assistant", "type": "message", "content": [{"type": "output_text", "text": "plain text"}]}]
-            raise StreamModelBehaviorError(ModelBehaviorError("Invalid JSON when parsing model output"), InvalidResult(), failed_output)
+            raise StreamModelBehaviorError(ModelBehaviorError("Invalid JSON when parsing model output"), InvalidResult(), failed_output, 1000, 100)
         return ValidResult(), False
 
     monkeypatch.setattr("src.harness.stream_agent", fake_stream_agent)
