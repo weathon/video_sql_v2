@@ -217,6 +217,37 @@ async def build_structure(run_root: Path, base_url: str) -> dict[str, int]:
             print(json.dumps({"stage": "30min", "completed": completed, "total": len(window_tasks)}))
     windows.sort(key=lambda payload: (payload["video_id"], payload["start_s"], payload["scope_id"]))
 
+    async def process_scale_fragment(scope_id: str, children: list[dict]) -> dict:
+        output_path = checkpoint_path(run_root, "scale_fragments", scope_id)
+        caption_row_ids = list(dict.fromkeys(row_id for child in children for row_id in child["caption_row_ids"]))
+        if output_path.exists():
+            payload = json.loads(output_path.read_text())
+            if payload["caption_row_ids"] != caption_row_ids:
+                raise RuntimeError(f"Scale fragment checkpoint row mismatch in {output_path}")
+            output = HierarchyOutput.model_validate(payload["output"])
+            validate_evidence(output, set(caption_row_ids))
+            return payload
+        child_inputs = [{"level": child["level"], "scope_id": child["scope_id"], "start_s": child["start_s"], "end_s": child["end_s"], "output": child["output"]} for child in children]
+        messages = [{"role": "system", "content": hierarchy_system}, {"role": "user", "content": json.dumps({"target_level": "scale", "scope_id": scope_id, "children": child_inputs}, ensure_ascii=False)}]
+        try:
+            output = await call_structured(client, semaphore, run_root, "scale_fragments", scope_id, messages, HierarchyOutput, set(caption_row_ids))
+        except ContextWindowExceeded:
+            if len(children) == 1:
+                raise RuntimeError(f"Single-child scale fragment exceeded context after 5 attempts for {scope_id}")
+            midpoint = len(children) // 2
+            left, right = await asyncio.gather(process_scale_fragment(f"{scope_id}:left", children[:midpoint]), process_scale_fragment(f"{scope_id}:right", children[midpoint:]))
+            fragment_children = [left, right]
+            child_inputs = [{"level": child["level"], "scope_id": child["scope_id"], "start_s": child["start_s"], "end_s": child["end_s"], "output": child["output"]} for child in fragment_children]
+            messages = [{"role": "system", "content": hierarchy_system}, {"role": "user", "content": json.dumps({"target_level": "scale", "scope_id": scope_id, "children": child_inputs}, ensure_ascii=False)}]
+            try:
+                output = await call_structured(client, semaphore, run_root, "scale_fragments", f"{scope_id}:merge", messages, HierarchyOutput, set(caption_row_ids))
+            except ContextWindowExceeded as error:
+                raise RuntimeError(f"Layered scale fragment exceeded context after 5 attempts for {scope_id}") from error
+        payload = {"level": "scale_fragment", "scope_id": scope_id, "video_id": children[0]["video_id"], "source_group_id": None, "start_s": children[0]["start_s"], "end_s": children[-1]["end_s"], "caption_row_ids": caption_row_ids, "output": output.model_dump(mode="json")}
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+        return payload
+
     async def process_hierarchy(level: str, scope_id: str, children: list[dict]) -> dict:
         output_path = checkpoint_path(run_root, level, scope_id)
         caption_row_ids = list(dict.fromkeys(row_id for child in children for row_id in child["caption_row_ids"]))
@@ -228,10 +259,37 @@ async def build_structure(run_root: Path, base_url: str) -> dict[str, int]:
             return payload
         child_inputs = [{"level": child["level"], "scope_id": child["scope_id"], "start_s": child["start_s"], "end_s": child["end_s"], "caption_row_ids": child["caption_row_ids"], "output": child["output"]} for child in children]
         messages = [{"role": "system", "content": hierarchy_system}, {"role": "user", "content": json.dumps({"target_level": level, "scope_id": scope_id, "children": child_inputs}, ensure_ascii=False)}]
-        try:
-            output = await call_structured(client, semaphore, run_root, level, scope_id, messages, HierarchyOutput, set(caption_row_ids))
-        except ContextWindowExceeded as error:
-            raise RuntimeError(f"{level} hierarchy input exceeded context after 5 attempts for {scope_id}") from error
+        direct_context_exhausted = False
+        trace_dir = run_root / "traces" / level / scope_id.replace(":", "__")
+        attempt_paths = sorted(trace_dir.glob("attempt-*.json"), key=lambda path: int(path.stem.removeprefix("attempt-")))
+        if attempt_paths and len(attempt_paths) == 5:
+            attempt_numbers = [int(path.stem.removeprefix("attempt-")) for path in attempt_paths]
+            if attempt_numbers != [1, 2, 3, 4, 5]:
+                raise RuntimeError(f"Hierarchy trace attempts are incomplete for {scope_id}")
+            trace_payloads = [json.loads(path.read_text()) for path in attempt_paths]
+            if level == "scale" and all(is_context_error(RuntimeError(payload["error"])) for payload in trace_payloads):
+                direct_context_exhausted = True
+            else:
+                raise RuntimeError(f"Hierarchy call already failed after 5 attempts for {scope_id}")
+        if not direct_context_exhausted:
+            try:
+                output = await call_structured(client, semaphore, run_root, level, scope_id, messages, HierarchyOutput, set(caption_row_ids))
+            except ContextWindowExceeded as error:
+                if level != "scale":
+                    raise RuntimeError(f"{level} hierarchy input exceeded context after 5 attempts for {scope_id}") from error
+                direct_context_exhausted = True
+        if direct_context_exhausted:
+            if len(children) == 1:
+                raise RuntimeError(f"Single-child scale input exceeded context after 5 attempts for {scope_id}")
+            midpoint = len(children) // 2
+            left, right = await asyncio.gather(process_scale_fragment(f"{scope_id}:left", children[:midpoint]), process_scale_fragment(f"{scope_id}:right", children[midpoint:]))
+            fragment_children = [left, right]
+            child_inputs = [{"level": child["level"], "scope_id": child["scope_id"], "start_s": child["start_s"], "end_s": child["end_s"], "output": child["output"]} for child in fragment_children]
+            messages = [{"role": "system", "content": hierarchy_system}, {"role": "user", "content": json.dumps({"target_level": level, "scope_id": scope_id, "children": child_inputs}, ensure_ascii=False)}]
+            try:
+                output = await call_structured(client, semaphore, run_root, "scale_layered", scope_id, messages, HierarchyOutput, set(caption_row_ids))
+            except ContextWindowExceeded as error:
+                raise RuntimeError(f"Layered scale input exceeded context after 5 attempts for {scope_id}") from error
         source_group_id = None if level == "scale" else children[0]["source_group_id"]
         payload = {"level": level, "scope_id": scope_id, "video_id": children[0]["video_id"], "source_group_id": source_group_id, "start_s": children[0]["start_s"], "end_s": children[-1]["end_s"], "caption_row_ids": caption_row_ids, "output": output.model_dump(mode="json")}
         output_path.parent.mkdir(parents=True, exist_ok=True)
