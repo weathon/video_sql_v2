@@ -62,8 +62,8 @@ class DenseCaption(BaseModel):
     def validate_complete_paragraph(cls, text: str) -> str:
         text = text.strip()
         sentence_endings = re.findall(r"[.!?。！？]", text)
-        if len(sentence_endings) < 2 or re.search(r"[.!?。！？]$", text) is None:
-            raise ValueError("Dense caption must contain at least two sentence endings and end with sentence punctuation")
+        if len(sentence_endings) < 2 or re.search(r"[.!?。！？][\"'”’）)]*$", text) is None:
+            raise ValueError("Dense caption must contain at least two sentence endings and end with sentence punctuation, optionally followed by closing quotes or parentheses")
         return text
 
 
