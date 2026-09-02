@@ -179,8 +179,7 @@ async def run_reflection_once(runtime: PilotHarness, input_payload: object, meta
                 usage[key] += segment_usage[key]
             if used_turns >= reflection_max_turns:
                 raise MaxTurnsExceeded(f"Reflection exceeded {reflection_max_turns} total turns") from error
-            last_response = result.raw_responses[-1]
-            remaining = runtime.context_limit - last_response.usage.input_tokens - last_response.usage.output_tokens
+            remaining = runtime.context_limit - error.failed_input_tokens - error.failed_output_tokens
             if tools_enabled and remaining <= 50_000:
                 active_agent = agent.clone(tools=[])
                 tools_enabled = False

@@ -32,10 +32,12 @@ class AgentRaised(RuntimeError):
 
 
 class StreamModelBehaviorError(ModelBehaviorError):
-    def __init__(self, error: ModelBehaviorError, result: RunResultStreaming, failed_output_items: list[dict[str, Any]]):
+    def __init__(self, error: ModelBehaviorError, result: RunResultStreaming, failed_output_items: list[dict[str, Any]], failed_input_tokens: int, failed_output_tokens: int):
         super().__init__(str(error))
         self.result = result
         self.failed_output_items = failed_output_items
+        self.failed_input_tokens = failed_input_tokens
+        self.failed_output_tokens = failed_output_tokens
 
 
 class ClipAnswer(BaseModel):
@@ -116,14 +118,17 @@ async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], co
     events = []
     compact_required = False
     failed_output_items = None
+    failed_response_usage = None
     try:
         async for event in result.stream_events():
             if event.type == "raw_response_event":
                 events.append(json_sanitize(event.data.model_dump(mode="json", exclude_none=True)))
                 if event.data.type == "response.created":
                     failed_output_items = None
+                    failed_response_usage = None
                 elif event.data.type == "response.completed":
                     failed_output_items = [json_sanitize(item.model_dump(mode="json", exclude_none=True)) for item in event.data.response.output]
+                    failed_response_usage = (event.data.response.usage.input_tokens, event.data.response.usage.output_tokens)
                 if allow_compaction and not compact_required and event.data.type == "response.completed":
                     response = event.data.response
                     remaining = context_limit - response.usage.input_tokens - response.usage.output_tokens
@@ -132,9 +137,9 @@ async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], co
                         result.cancel(mode="after_turn")
                         compact_required = True
     except ModelBehaviorError as error:
-        if failed_output_items is None:
+        if failed_output_items is None or failed_response_usage is None:
             raise
-        raise StreamModelBehaviorError(error, result, failed_output_items) from error
+        raise StreamModelBehaviorError(error, result, failed_output_items, *failed_response_usage) from error
     finally:
         write_trace(result, events, trace_path)
     return result, compact_required
