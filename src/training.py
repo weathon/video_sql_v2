@@ -179,7 +179,15 @@ async def run_reflection_once(runtime: PilotHarness, input_payload: object, meta
                 usage[key] += segment_usage[key]
             if used_turns >= reflection_max_turns:
                 raise MaxTurnsExceeded(f"Reflection exceeded {reflection_max_turns} total turns") from error
-            input_items = result.to_input_list() + error.failed_output_items + [{"role": "user", "content": f"Your output could not be parsed as ReflectionResult JSON: {error}. Continue evidence checking if needed. When ready, return exactly the required structured output with reflection and meta_reflection."}]
+            last_response = result.raw_responses[-1]
+            remaining = runtime.context_limit - last_response.usage.input_tokens - last_response.usage.output_tokens
+            if tools_enabled and remaining <= 50_000:
+                active_agent = agent.clone(tools=[])
+                tools_enabled = False
+                correction = f"The context limit is near. Do not call tools. Your output could not be parsed as ReflectionResult JSON: {error}. Return exactly the required structured output with reflection and meta_reflection."
+            else:
+                correction = f"Your output could not be parsed as ReflectionResult JSON: {error}. Continue evidence checking if needed. When ready, return exactly the required structured output with reflection and meta_reflection."
+            input_items = result.to_input_list() + error.failed_output_items + [{"role": "user", "content": correction}]
             segment += 1
             continue
         used_turns += result.current_turn
