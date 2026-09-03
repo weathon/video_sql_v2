@@ -246,7 +246,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 5. 一个 batch 的全部 rollout 都失败时跳过该 batch 的 updater；连续两个 batch 的全部 rollout 都失败时终止训练。
 6. 保留 OpenAI SDK 内部重试，并将 `max_retries` 设为 3。
 7. 正式训练 client 使用 `docker/training/Dockerfile` 构建的派生镜像，并安装 `ffmpeg`；原因是 `sample_video` 会调用 `ffmpeg`。
-8. 按 vLLM Encoder Disaggregation 方案，将 vision encoder producer 独立运行在 GPU 1、端口 8001，并通过共享 EC storage 向 PD consumer 提供 encoder cache；`infra/responses_epd_proxy.py` 在端口 8000 保持 `/v1/responses` 请求和 SSE 输出原样，只先把其中的 `input_image` 发送到 encoder producer，encoder 失败时不把请求发送给 PD；共享 cache 放在 `/raid`，并在活跃 Responses 请求数归零后清空。原因是 v18 在 47 个纯文本 running 请求时四张 PD GPU 为 100% SM，但进入多模态阶段后仍有 21 running、0 waiting 时 SM 多数降到 14–35%，且同一采样窗口出现新的 encoder cache miss；EPD 用于消除 vision encoder 与 prefill/decode 的共置干扰，同时避免无淘汰的 `ECExampleConnector` 填满根盘。
+8. 按 vLLM Encoder Disaggregation 方案，将 vision encoder producer 独立运行在 GPU 1、端口 8001，并通过共享 EC storage 向 PD consumer 提供 encoder cache；`ECExampleConnector` consumer 使用当前 TP worker 的 CUDA device 加载 cache；`infra/responses_epd_proxy.py` 在端口 8000 保持 `/v1/responses` 请求和 SSE 输出原样，只先把其中的 `input_image` 发送到 encoder producer，encoder 失败时不把请求发送给 PD；共享 cache 放在 `/raid`，并在活跃 Responses 请求数归零后清空。原因是 v18 在 47 个纯文本 running 请求时四张 PD GPU 为 100% SM，但进入多模态阶段后仍有 21 running、0 waiting 时 SM 多数降到 14–35%，且同一采样窗口出现新的 encoder cache miss；EPD 用于消除 vision encoder 与 prefill/decode 的共置干扰，同时避免无淘汰的 `ECExampleConnector` 填满根盘；当前 device 避免 safetensors 将每个 TP worker 的 `cuda` 都解析为逻辑 `cuda:0`。
 
 ### SKILL 目录
 1. SKILL 不再是单个 Markdown 文件，而是一个包含多个 Markdown 文件的目录；每个文件对应一种特殊情况，包含 YAML frontmatter（`name`、`description`，description 即“何时使用”）、Introduction、When to use、Main content；SQL 示例直接写在 Markdown 中，不单独保存脚本文件。结构参考 Anthropic 官方 skill-creator。
