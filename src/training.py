@@ -560,6 +560,7 @@ async def train(args: argparse.Namespace) -> None:
     runtime = PilotHarness(args.database, args.index_root, args.clip_root, args.model_base_url, args.model_name, args.embedding_base_url, args.context_limit)
     global_batch = 0
     expected_commit = None
+    consecutive_failed_batches = 0
     try:
         for epoch in range(args.epochs):
             for batch_start in range(0, len(items), args.questions_per_batch):
@@ -567,7 +568,11 @@ async def train(args: argparse.Namespace) -> None:
                 batch_dir = args.run_dir / "train" / f"epoch-{epoch:03d}" / f"batch-{global_batch:06d}"
                 completed_path = batch_dir / "completed.json"
                 if completed_path.exists():
+                    saved_completed = json.loads(completed_path.read_text())
                     expected_commit = json.loads((batch_dir / "skills-after.json").read_text())["commit"]
+                    consecutive_failed_batches = consecutive_failed_batches + 1 if saved_completed["completed_rollouts"] == 0 else 0
+                    if consecutive_failed_batches >= 2:
+                        raise RuntimeError("Two consecutive batches had no successful rollouts")
                     global_batch += 1
                     continue
                 batch_dir.mkdir(parents=True, exist_ok=True)
@@ -594,28 +599,34 @@ async def train(args: argparse.Namespace) -> None:
                             rollout_dir = batch_dir / "questions" / f"question-{int(item['index']):06d}" / f"rollout-{rollout_index:02d}"
                             rollout_tasks.append(rollout_group.create_task(run_training_rollout(runtime, item, rollout_index, skills_dir, rollout_dir, args.attempts, args.mode)))
                 results = [task.result() for task in rollout_tasks]
-                async with asyncio.TaskGroup() as summary_group:
-                    summary_jobs = []
-                    for item in batch_items:
-                        question_results = [result for result in results if result["question_index"] == item["index"] and result["status"] != "failed"]
-                        reflections = [{"rollout_id": f"epoch-{epoch:03d}/batch-{global_batch:06d}/question-{int(result['question_index']):06d}/rollout-{int(result['rollout_index']):02d}/attempt-{int(result['attempt']):02d}", **result["reflection"]} for result in question_results]
-                        if reflections:
-                            summary_dir = batch_dir / "question-summaries" / f"question-{int(item['index']):06d}"
-                            summary_jobs.append((item, reflections, summary_group.create_task(summarize_question(runtime, reflections, summary_dir, args.attempts, args.mode, skills_dir))))
-                summaries = [{"question_index": item["index"], "rollout_ids": [reflection["rollout_id"] for reflection in reflections], **task.result().model_dump(mode="json")} for item, reflections, task in summary_jobs]
-                rollout_ids = [rollout_id for summary in summaries for rollout_id in summary["rollout_ids"]]
-                update = await update_skills(runtime, summaries, rollout_ids, f"epoch {epoch} batch {global_batch}", batch_dir / "updater", args.attempts, args.mode, skills_dir, batch_skills_commit)
+                completed_rollouts = sum(result["status"] != "failed" for result in results)
+                failed_rollouts = len(results) - completed_rollouts
+                if completed_rollouts == 0:
+                    update = SkillUpdate(commit=batch_skills_commit, changed_files=[], rollout_ids=[], reason="Skipped because every rollout in the batch failed")
+                else:
+                    async with asyncio.TaskGroup() as summary_group:
+                        summary_jobs = []
+                        for item in batch_items:
+                            question_results = [result for result in results if result["question_index"] == item["index"] and result["status"] != "failed"]
+                            reflections = [{"rollout_id": f"epoch-{epoch:03d}/batch-{global_batch:06d}/question-{int(result['question_index']):06d}/rollout-{int(result['rollout_index']):02d}/attempt-{int(result['attempt']):02d}", **result["reflection"]} for result in question_results]
+                            if reflections:
+                                summary_dir = batch_dir / "question-summaries" / f"question-{int(item['index']):06d}"
+                                summary_jobs.append((item, reflections, summary_group.create_task(summarize_question(runtime, reflections, summary_dir, args.attempts, args.mode, skills_dir))))
+                    summaries = [{"question_index": item["index"], "rollout_ids": [reflection["rollout_id"] for reflection in reflections], **task.result().model_dump(mode="json")} for item, reflections, task in summary_jobs]
+                    rollout_ids = [rollout_id for summary in summaries for rollout_id in summary["rollout_ids"]]
+                    update = await update_skills(runtime, summaries, rollout_ids, f"epoch {epoch} batch {global_batch}", batch_dir / "updater", args.attempts, args.mode, skills_dir, batch_skills_commit)
                 write_json(batch_dir / "skills-after.json", update.model_dump(mode="json"))
                 expected_commit = update.commit
                 scores = [int(result["score"]) for result in results]
-                completed_rollouts = sum(result["status"] != "failed" for result in results)
-                failed_rollouts = len(results) - completed_rollouts
                 completed = {"epoch": epoch, "global_batch": global_batch, "question_indices": [item["index"] for item in batch_items], "completed_rollouts": completed_rollouts, "failed_rollouts": failed_rollouts, "scores": scores, "skills_commit": update.commit, "changed_skill_files": update.changed_files}
                 metrics = {"train/epoch": epoch, "train/completed_rollouts": completed_rollouts, "train/failed_rollouts": failed_rollouts, "train/mean_score": sum(scores) / len(scores)}
                 wandb_run.log(metrics, step=global_batch)
                 write_json(completed_path, completed)
                 milestone(args.run_dir, {"event": "batch_completed", **completed, "mean_score": sum(scores) / len(scores)})
                 global_batch += 1
+                consecutive_failed_batches = consecutive_failed_batches + 1 if completed_rollouts == 0 else 0
+                if consecutive_failed_batches >= 2:
+                    raise RuntimeError("Two consecutive batches had no successful rollouts")
         milestone(args.run_dir, {"event": "training_completed", "epochs": args.epochs, "batches": global_batch})
     finally:
         await runtime.close()

@@ -242,6 +242,8 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 2. 主模型使用官方 `Qwen/Qwen3.8-27B-FP8`，启动命令原样使用 `notes/INFRA.txt` 第一条：GPU 0,2,5,7，TP=4，端口 8000，max-num-seqs 200，gpu-memory-utilization=0.95，关闭 async scheduling，MTP speculative length 为 4，default chat-template kwargs 保持 `enable_thinking=true` 和 `preserve_thinking=true`；agent reasoning effort 使用 `medium`。改用官方 FP8 是为了排除已观察到的 NVFP4 重复 reasoning 与 ModelOpt-NVFP4 路径之间的关联，同时 medium 避免长 agent 使用默认 xhigh 产生过长 reasoning。
 3. harness 的 `context_limit` 保持 262,144，并保留接近该边界时的 compaction；vLLM 后端通过模型官方 YaRN 配置启用 314,573 token 上限、factor=1.2，作为 client compaction size 之上的 20% 缓冲。
 4. 正式训练 client Docker 暴露与 vLLM 相同的 GPU 0,2,5,7，供 W&B 采集 GPU 指标。
+5. 一个 batch 的全部 rollout 都失败时跳过该 batch 的 updater；连续两个 batch 的全部 rollout 都失败时终止训练。
+6. 保留 OpenAI SDK 内部重试，并将 `max_retries` 设为 3。
 
 ### SKILL 目录
 1. SKILL 不再是单个 Markdown 文件，而是一个包含多个 Markdown 文件的目录；每个文件对应一种特殊情况，包含 YAML frontmatter（`name`、`description`，description 即“何时使用”）、Introduction、When to use、Main content；SQL 示例直接写在 Markdown 中，不单独保存脚本文件。结构参考 Anthropic 官方 skill-creator。
