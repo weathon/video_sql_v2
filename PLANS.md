@@ -240,12 +240,13 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 
 ### 训练配置
 1. 正式训练改为每 batch 5 个问题、每个问题 10 个并行 rollout；扩大到 50 个并行 rollout，用正式运行结果检查移除 `--no-async-scheduling` 后的 GPU 利用率。
-2. 主模型使用官方 `Qwen/Qwen3.8-27B-FP8`，启动命令原样使用 `notes/INFRA.txt` 第一条：GPU 0,2,5,7，TP=4，端口 8000，max-num-seqs 200，gpu-memory-utilization=0.95，移除 `--no-async-scheduling`，MTP speculative length 为 4，default chat-template kwargs 保持 `enable_thinking=true` 和 `preserve_thinking=true`；agent reasoning effort 使用 `medium`。改用官方 FP8 是为了排除已观察到的 NVFP4 重复 reasoning 与 ModelOpt-NVFP4 路径之间的关联，同时 medium 避免长 agent 使用默认 xhigh 产生过长 reasoning。
+2. 主模型使用官方 `Qwen/Qwen3.8-27B-FP8`。PD consumer 运行在 GPU 0,2,5,7，TP=4，端口 8002，max-num-seqs 200，gpu-memory-utilization=0.95，移除 `--no-async-scheduling`，MTP speculative length 为 4，default chat-template kwargs 保持 `enable_thinking=true` 和 `preserve_thinking=true`；agent reasoning effort 使用 `medium`。改用官方 FP8 是为了排除已观察到的 NVFP4 重复 reasoning 与 ModelOpt-NVFP4 路径之间的关联，同时 medium 避免长 agent 使用默认 xhigh 产生过长 reasoning。
 3. harness 的 `context_limit` 保持 262,144，并保留接近该边界时的 compaction；vLLM 后端通过模型官方 YaRN 配置启用 314,573 token 上限、factor=1.2，作为 client compaction size 之上的 20% 缓冲。
 4. 正式训练 client Docker 暴露与 vLLM 相同的 GPU 0,2,5,7，供 W&B 采集 GPU 指标。
 5. 一个 batch 的全部 rollout 都失败时跳过该 batch 的 updater；连续两个 batch 的全部 rollout 都失败时终止训练。
 6. 保留 OpenAI SDK 内部重试，并将 `max_retries` 设为 3。
 7. 正式训练 client 使用 `docker/training/Dockerfile` 构建的派生镜像，并安装 `ffmpeg`；原因是 `sample_video` 会调用 `ffmpeg`。
+8. 按 vLLM Encoder Disaggregation 方案，将 vision encoder producer 独立运行在 GPU 1、端口 8001，并通过共享 EC storage 向 PD consumer 提供 encoder cache；`infra/responses_epd_proxy.py` 在端口 8000 保持 `/v1/responses` 请求和 SSE 输出原样，只先把其中的 `input_image` 发送到 encoder producer，encoder 失败时不把请求发送给 PD。原因是 v18 在 47 个纯文本 running 请求时四张 PD GPU 为 100% SM，但进入多模态阶段后仍有 21 running、0 waiting 时 SM 多数降到 14–35%，且同一采样窗口出现新的 encoder cache miss；EPD 用于消除 vision encoder 与 prefill/decode 的共置干扰。
 
 ### SKILL 目录
 1. SKILL 不再是单个 Markdown 文件，而是一个包含多个 Markdown 文件的目录；每个文件对应一种特殊情况，包含 YAML frontmatter（`name`、`description`，description 即“何时使用”）、Introduction、When to use、Main content；SQL 示例直接写在 Markdown 中，不单独保存脚本文件。结构参考 Anthropic 官方 skill-creator。
