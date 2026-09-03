@@ -239,7 +239,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 
 ### 训练配置
 1. 正式训练改为每 batch 5 个问题、每个问题 10 个并行 rollout。
-2. 主模型改为 `Inferact/Qwen3.8-Flash-Next-NVFP4`，启动命令原样使用 `notes/INFRA.txt` 第一条（容器名 `qwen38-flash-next-nvfp4-seq200`，GPU 5,6，TP=2，端口 8000，max-num-seqs 200）。
+2. 主模型改为 `Inferact/Qwen3.8-Flash-Next-NVFP4`，启动命令原样使用 `notes/INFRA.txt` 第一条（容器名 `qwen38-flash-next-nvfp4-seq200`，GPU 5,6，TP=2，端口 8000，max-num-seqs 200，default chat-template kwargs 保持 `enable_thinking=true` 和 `preserve_thinking=true`）。
 
 ### SKILL 目录
 1. SKILL 不再是单个 Markdown 文件，而是一个包含多个 Markdown 文件的目录；每个文件对应一种特殊情况，包含 YAML frontmatter（`name`、`description`，description 即“何时使用”）、Introduction、When to use、Main content；SQL 示例直接写在 Markdown 中，不单独保存脚本文件。结构参考 Anthropic 官方 skill-creator。

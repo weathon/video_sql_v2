@@ -18,36 +18,22 @@ Counting and ordering questions fail when duplicates are counted twice or when o
 ## Main content
 
 1. Gather candidates from several sources (30sec episodes, visual clips, topic facts, event steps) using both keyword and semantic search; a single source usually misses some occurrences.
-2. Merge candidates that are close in time in the same video, because the same occurrence spans several 30 second rows.
+2. Sort candidate rows by numeric video ID and time so adjacent rows from the same possible occurrence can be inspected together. Do not assume a fixed time-gap threshold: nearby rows may be distinct events, while one event may span several summaries.
 
 ```sql
--- Group nearby 30sec hits into occurrences (gap larger than 300 s starts a new occurrence)
-WITH hits AS (
-  SELECT video_id, start_s, end_s
-  FROM episodes
-  WHERE granularity = '30sec' AND text LIKE '%blind box%'
-),
-marked AS (
-  SELECT *, CASE WHEN start_s - LAG(end_s) OVER (PARTITION BY video_id ORDER BY start_s) > 300 THEN 1 ELSE 0 END AS new_group
-  FROM hits
-),
-grouped AS (
-  SELECT *, SUM(new_group) OVER (PARTITION BY video_id ORDER BY start_s) AS occurrence
-  FROM marked
-)
-SELECT video_id, occurrence, MIN(start_s) AS start_s, MAX(end_s) AS end_s, COUNT(*) AS rows_in_group
-FROM grouped
-GROUP BY video_id, occurrence
-ORDER BY video_id, start_s;
+SELECT video_id, start_s, end_s, text
+FROM episodes
+WHERE granularity = '30sec' AND text LIKE '%blind box%'
+ORDER BY TRY_CAST(video_id AS INTEGER), video_id, start_s;
 ```
 
-3. Verify each merged occurrence by reading its full text (and `clip_qa` when the text is unclear) before including it in the count; drop occurrences that only mention the topic without the event actually happening.
-4. For ordering, rank by `video_id` first and time inside the video second, and confirm the video order from the `videos` table and surrounding episode text when the videos are parts of one trip.
+3. Merge rows only after their text and visual evidence show that they describe the same occurrence. Verify each resulting occurrence with `clip_qa` when the text is unclear before including it in the count; drop rows that only mention the topic without the event actually happening.
+4. For ordering, rank the pilot's numeric `video_id` values numerically first and time inside the video second, and confirm the video order from the `videos` table and surrounding episode text when the videos are parts of one trip.
 
 ```sql
 SELECT video_id, MIN(start_s) AS first_time
 FROM visual_clips
 WHERE text LIKE '%sunshine rainbow%'
 GROUP BY video_id
-ORDER BY video_id, first_time;
+ORDER BY TRY_CAST(video_id AS INTEGER), video_id, first_time;
 ```

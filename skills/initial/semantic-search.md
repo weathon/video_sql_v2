@@ -20,7 +20,7 @@ description: How to use semantic_search to find rows when exact keywords are unk
 1. Write the query as a short description of the scene or fact, not as a question.
 2. Start with `episodes` or `visual_clips` for scenes and `topic_facts` or `openie_triples` for facts about a named entity.
 3. Use `n` around 20 to 50; the score is only a ranking signal, so inspect the previews rather than thresholding.
-4. Take the returned `video_id` and time range and expand around it with SQL to read the full untruncated context and neighbouring rows:
+4. Take the returned `video_id` and time range and expand around it with SQL to read neighbouring rows. `run_sql` still limits every returned text cell to a 500-character preview, so do not treat a long cell as untruncated evidence:
 
 ```sql
 -- Read full context around a semantic hit at video 21, 19881-19980 s

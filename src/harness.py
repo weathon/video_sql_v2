@@ -106,20 +106,6 @@ def stop_when_submitted(context: RunContextWrapper[RolloutContext | ClipContext]
     return ToolsToFinalOutputResult(is_final_output=context.context.submission is not None, final_output=context.context.submission)
 
 
-def completion_characters(output: list[Any]) -> str:
-    parts = []
-    for item in output:
-        if item.type == "reasoning":
-            continue
-        if item.type == "message":
-            parts.append("".join(part.text for part in item.content if part.type == "output_text"))
-        elif item.type == "function_call":
-            parts.append(item.name + item.arguments)
-        else:
-            parts.append(json.dumps(item.model_dump(mode="json", exclude_none=True, exclude={"id"}), sort_keys=True))
-    return "\n".join(parts)
-
-
 def json_sanitize(value: Any) -> Any:
     if isinstance(value, str):
         return "<image_data_removed>" if value.startswith("data:image/") else value
@@ -156,7 +142,17 @@ async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], co
             if event.type == "raw_response_event":
                 events.append(json_sanitize(event.data.model_dump(mode="json", exclude_none=True)))
                 if event.data.type == "response.completed":
-                    completions.append(completion_characters(event.data.response.output))
+                    completion_parts = []
+                    for item in event.data.response.output:
+                        if item.type == "reasoning":
+                            continue
+                        if item.type == "message":
+                            completion_parts.append("".join(part.text for part in item.content if part.type == "output_text"))
+                        elif item.type == "function_call":
+                            completion_parts.append(item.name + item.arguments)
+                        else:
+                            completion_parts.append(json.dumps(item.model_dump(mode="json", exclude_none=True, exclude={"id"}), sort_keys=True))
+                    completions.append("\n".join(completion_parts))
                     if len(completions) >= 3 and completions[-1] == completions[-2] == completions[-3]:
                         repeated = True
                         result.cancel()
