@@ -6,7 +6,7 @@
 3. 使用的Harness框架: https://github.com/openai/openai-agents-python
 5. Embedding模型: Qwen/Qwen3-VL-Embedding-8B (Use VL for both visual and text-only), start it using vllm
 6. 数据库引擎: https://github.com/duckdb/duckdb
-7. 本地模型: Qwen/Qwen3.8-27B, 使用参考在INFRA.txt
+7. 本地模型: Inferact/Qwen3.8-Flash-Next-NVFP4, 使用参考在notes/INFRA.txt第一条
 8. 预构建的index(只用作试点): jiazhengli7/magic-video-artifacts
 9. notes/文件夹, 上一次失败过程积累的经验和踩坑, 可以参考, 但是不一定有用甚至可能跑偏, 冲突时以当前计划为准
 
@@ -20,7 +20,7 @@
 1. 用提前做好的index (材料 8)和原始视频(材料 1), 构建一个新的duckdb数据库, 数据库的schema完全准许材料2, 只不过我们是用SQL database而不是graph, embedding也许需要重新准备, 参考notes/VIDEO_EMBEDDING_PIPELINE.md如何构建新的embedding.
 2. 搭建我们的harness,  见Harness架构如何搭建, 使用OpenAI Agents SDK连接本地模型, 验证他保留了过往reasoning并且支持图片或视频输入
 3. 把材料8和材料1的数据集做graph分割, 按照问题和视频连接做成一个图, 分割出两个set, 大的作为训练集, 小的作为测试集
-4. 在训练集上跑我们的`"训练"过程`, 每个问题5个rollout, 一次2个问题, 一共3个epoch
+4. 在训练集上跑我们的`"训练"过程`, 每个问题10个rollout, 一次5个问题, 一共3个epoch
 5. 监控训练过程的平均打分到wandb, 结束后在测试集上测试. 
 6. 使用最开始的最简单SKILL, 在测试集跑一次, 对比准确度
 
@@ -92,7 +92,7 @@ ORDER BY day;
 - `sample_video`：接受时间、fps 和 0–1000 整数裁剪坐标；返回覆盖请求区间的 caption 和带时间标记的 4×3 contact sheet，每页 12 帧，所有帧完整分页。contact sheet 和证据截图只向模型暴露文件名，不暴露宿主机绝对路径。
 - `clip_qa` 返回 `answered|unknown`、答案和至少一个证据时间点；harness 将证据时间点转换为独立截图交给主 agent。
 - 主 agent 提供 `add_note`、`read_notes` 和 `agent_raise(reason)`；正式运行中同一 rollout 最多按原设置重试 3 次，缺少必要数据或确定性代码错误直接终止。
-- 主 agent 最大 50 turns；达到上限按整个 rollout 重试，不截断上下文或返回半成品。
+- 所有 agent loop 最大 100 turns；达到上限按整个 rollout 重试，不截断上下文或返回半成品。
 
 ### Compaction 状态机
 
@@ -142,7 +142,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 5. 保留所有非英文字符; 英文字符使用ASCII.
 6. infra benchmark使用更长的测试文本和多轮对话.
 7. `run_sql`每个单元格保留前500字符.
-8. 轮数实际设置为50; 达到50说明模型自循环, 重试整个样本.
+8. 轮数实际设置为100; 达到100说明模型自循环, 重试整个样本.
 9. 允许并行工具调用.
 10. uv cache放到/raid.
 11. home目录满了时先清理home, 删除本次产生的无用内容.
@@ -224,3 +224,35 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 11. v9 在新的增量 REVIEW.md 审查和 Claude CLI 全仓库审查均无 plain-yes 项后，以提交 `0fdc4ee` 启动，W&B run 为 `0tq672bi`；batch 000000 已有 7 个 rollout 写出结果，其中 6 个 completed、1 个 failed。question 0 rollout 00 的主 agent 最后一次响应为 input 102871、output 159273、total 262144 tokens，真实输出只有 665973 字符的 reasoning，没有 message、function call 或最终答案；旧逻辑把空字符串记为 completed，随后包含该真实 reasoning 的单段 reflection 输入超过 262144 token，首次请求返回 400 并终止 batch。提交 `192c2be` 改为主 agent 空最终答案时抛出可重试 `ModelBehaviorError`，按原方法和设置重试整个 rollout。Docker 项目测试为 15 passed；定向验证确认该错误在正式模式可重试，非空答案仍按 completed 返回。正式训练需要使用新的 run 目录重新启动。
 12. v10 以提交 `c0af586` 启动，W&B run 为 `ryyg9sha`；batch 000000 写出 5 个 rollout 结果，其中 4 个 completed、1 个在 3 次 `clip_qa` `httpx2.ReadTimeout` 后 failed。question 0 rollout 03 的一个 `clip_qa` 产生 254 个 segment：模型从第 1 段起反复输出有效 `ClipAnswer` JSON 后追加 `</parameter></function></tool_call>`，结构化解析恢复分支持续保留工具 schema；第 252 段为 input 261211、output 875，第 253 段 prompt 达到 262144 后返回 400 并终止 batch。提交 `3342eff` 让 `clip_qa` 的结构化解析错误恢复也按真实失败响应 usage 检查 50k remaining，并在该区间关闭工具继续同一对话。Docker 项目测试为 15 passed。使用原视频区间、问题和调用前 7 条 shared notes 的完整 Docker 重放返回有效 `ClipAnswer`，3 次工具调用与 3 个返回逐一配对且无错误，5 页 contact sheet 和 4 张 evidence screenshot 已实际检查；该随机重放在低 token 阶段成功。定向阈值验证记录工具数为 `[3, 0]`，确认 input 220000、output 1000 的解析失败后下一段移除全部工具并返回结构化答案。正式训练需要使用新的 run 目录重新启动。
 13. v11 的 question 1 rollout 00 中，`clip-46e519c544234f9ab66d5a764371e3c2-segment-00` 在一次 `clip_qa` 内执行了 587 次模型请求，其中 585 次调用 `add_note`；末尾反复交替写入 `Final. Conversation complete.` 和 `Final acknowledgment. Conversation complete.`。第 588 次流式响应触发 `ResponseFunctionToolCallItem.name=None`，客户端收到 incomplete chunked read；vLLM 引擎随后仍保留 1 个请求持续生成。MTP 接受率在此前为 88.3%–97.7%，从该残留请求开始连续显示 100.0%。
+
+
+
+## Harness 重新设计（v12 起）
+
+### Agent 停止与循环检测
+1. 主检索 agent、`clip_qa` 和 reflection 各自增加一个适配自身输出结构的 `submit_answer` tool；模型通过调用它提交最终答案，调用后退出对应 agent loop。不再依赖 Agents SDK 的 `output_type` 结构化最终输出来结束 loop。
+2. skill updater 不使用 `submit_answer`；它完成全部文件操作后调用专用 `stop` tool 退出。
+3. 所有 agent loop 的总轮数限制统一为 100。触发 100 视为本次运行出问题：本次 trace 作废，并按现有正式模式规则重试整个 rollout。
+4. 如果连续 3 次 agent completion 在排除 reasoning 后的 raw characters 完全一致，本次 trace 作废，并按现有正式模式规则重试整个 rollout。
+5. 所有 trace 都必须保存，包括因重复输出或达到 100 轮而作废的 trace。
+6. 现有接近 context limit 时关闭工具、强制输出的逻辑保留不变。
+
+### 训练配置
+1. 正式训练改为每 batch 5 个问题、每个问题 10 个并行 rollout。
+2. 主模型改为 `Inferact/Qwen3.8-Flash-Next-NVFP4`，启动命令原样使用 `notes/INFRA.txt` 第一条（容器名 `qwen38-flash-next-nvfp4-seq200`，GPU 5,6，TP=2，端口 8000，max-num-seqs 200）。
+
+### SKILL 目录
+1. SKILL 不再是单个 Markdown 文件，而是一个包含多个 Markdown 文件的目录；每个文件对应一种特殊情况，包含 YAML frontmatter（`name`、`description`，description 即“何时使用”）、Introduction、When to use、Main content；SQL 示例直接写在 Markdown 中，不单独保存脚本文件。结构参考 Anthropic 官方 skill-creator。
+2. Anthropic 的 skill-creator 是“如何写 SKILL”；本项目的 `META-SKILL.md` 仍然是“如何反思”。
+3. 首批文件位于 `skills/initial/`：`general-retrieval.md`、`sql-schema.md`、`semantic-search.md`、`locating-time-intervals.md`、`counting-and-ordering.md`、`visual-verification.md`，以及 `META-SKILL.md`。旧的单文件 `SKILL.md` 已删除。
+4. 每个 run 在 `<run_dir>/skills/` 内持有自己的 SKILL 独立 Git 仓库：训练启动时从 `skills/initial/` 复制并 `git init` 后做首次 commit；`META-SKILL.md` 放在该独立仓库内。val 读取指定 run 的该目录。
+
+### Rollout 读取 SKILL
+1. prompt 不再放入全部 SKILL 内容，只列出可用 SKILL 的 `name` 和 `description`。
+2. 新增 `read_skill(name)` tool，返回对应文件的完整内容。
+
+### Skill updater agent loop
+1. Reflection 汇总完成后的 SKILL 更新改为多轮 agent loop；updater 可以增加、修改和删除 SKILL Markdown 文件，也可以修改 `META-SKILL.md`。
+2. updater 可以查看 Git 历史并读取旧版本内容，参考后重新写入当前文件；不向 updater 暴露或执行直接 Git rollback。
+3. 一轮完整 update 的所有文件操作完成后只 commit 一次。
+4. updater 完成全部文件操作后调用专用 `stop` tool 退出。
