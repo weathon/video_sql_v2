@@ -50,4 +50,12 @@
 5. 完成条件是三个逻辑时间轴全部覆盖, 所有上层汇总都能追溯到真实30sec证据, DuckDB与embedding index完整写出, 正式日志到达真实结束行且进程正常退出. 完成并核查后停止, 不进入Step 2.
 
 # Step 2: 全量训练
-和试点一样, 只是这次在mmlifelong官方的完整数据的training set上进行训练, testing set上作为测试.
+和试点大部分地方一样, 但是有一部分改进, 以下面为准:
+## 修改
+1. 有些时候模型会"抽风"进入循环输出, 我们需要在harness层面做两件事情, 1. 添加一个submit_answer的tool, 这个作为最终答案提交, call这个tool后退出agent loop. 如果连续3次AGENT的输出完全一致, 本次trace作废, 进入重试. 
+2. 本次使用更大的batch, 5个问题一起, 每个问题10个rollout. 
+3. 模型改用**qwen 3.8 next flash**(不是qwen 3.8 27B, 见INFRA.txt如何运行)
+4. SKILL部分不再是一个文件, 而是多个, 如何构建SKILL参考antrophic官方的SKILL(https://github.com/anthropics/skills/tree/main/skills/skill-creator), 注意, 虽然这个也可以被理解为META-SKILL但是和我们的不一样, 我们的META SKILL是如何反思, 这个是如何写SKILL, 是在反思完成后更新skill文件用的. 这意味着, 我们的skill不再是一个单独的md文件, 而是一个目录, 这个目录包括多个markdown文件, 每个文件对应一个特殊情况(比如: 查找特定时间任务), 包含介绍, 何时使用, 以及主要内容等. 内容可以包含SQL脚本示例 (类似于SKILL中的脚本文件, 但是我们不单独存储脚本而是放在markdown里面).
+6. 为了实现5, 我们需要对harness做两点更改
+6.1 rollout时, 模型不读取所有skill文件, 而是一个list, 列出可用skill和何时使用, 然后多了一个工具就是读取SKILL, 是具体SKILL名字, 然后工具返回SKILL内容
+6.2 反思更新SKILL的时候, 模型可以增加文件, 修改文件, 和删除文件. 这个SKILL文件夹被单独的git仓库管理, 每次upadte之后(多有update, 不是单个patch), 都会commit一次, 然后反思的时候agent还可以看历史, 回滚修改 (安全问题, 不允许直接git回滚, 而是参考历史重新update). 这个是一个多轮的agent loop, 类似于直接受控操作文件系统. 
