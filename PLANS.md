@@ -6,7 +6,7 @@
 3. 使用的Harness框架: https://github.com/openai/openai-agents-python
 5. Embedding模型: Qwen/Qwen3-VL-Embedding-8B (Use VL for both visual and text-only), start it using vllm
 6. 数据库引擎: https://github.com/duckdb/duckdb
-7. 本地模型: Qwen/Qwen3.8-Flash-Next-FP8, 使用参考在notes/INFRA.txt第一条
+7. 本地模型: Qwen/Qwen3.8-27B-FP8, 使用参考在notes/INFRA.txt第一条
 8. 预构建的index(只用作试点): jiazhengli7/magic-video-artifacts
 9. notes/文件夹, 上一次失败过程积累的经验和踩坑, 可以参考, 但是不一定有用甚至可能跑偏, 冲突时以当前计划为准
 
@@ -240,7 +240,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 
 ### 训练配置
 1. 正式训练改为每 batch 4 个问题、每个问题 5 个并行 rollout，共 20 个并行 rollout；服务并发上限设为 24。
-2. 主模型使用官方 `Qwen/Qwen3.8-Flash-Next-FP8`。PD consumer 运行在 GPU 0,5，TP=2，端口 8002，max-num-seqs 24，gpu-memory-utilization=0.90，不使用 `--no-async-scheduling`，MTP speculative length 为 4，default chat-template kwargs 保持 `enable_thinking=true` 和 `preserve_thinking=true`；agent reasoning effort 使用 `medium`。切回 Next Flash 是因为此前重复 reasoning 的问题来自 NVFP4 而不是 Next，使用官方 FP8 避开该问题；0.90 为运行时动态加载 encoder cache 保留额外显存余量；TP=2 是本次正式运行指定的并行配置。
+2. 主模型使用官方 `Qwen/Qwen3.8-27B-FP8`。PD consumer 运行在 GPU 0,5，TP=2，端口 8002，max-num-seqs 24，gpu-memory-utilization=0.90，不使用 `--no-async-scheduling`，MTP speculative length 为 4，default chat-template kwargs 保持 `enable_thinking=true` 和 `preserve_thinking=true`；agent reasoning effort 使用 `medium`。改回 27B 是因为 Next Flash 在 TP=2、gpu-memory-utilization=0.90 下没有可用 KV cache；使用官方 FP8 避开此前 NVFP4 重复 reasoning 问题；0.90 为运行时动态加载 encoder cache 保留额外显存余量；TP=2 是本次正式运行指定的并行配置。
 3. harness 的 `context_limit` 保持 262,144，并保留接近该边界时的 compaction；vLLM 后端通过模型官方 YaRN 配置启用 314,573 token 上限、factor=1.2，作为 client compaction size 之上的 20% 缓冲。
 4. 正式训练 client Docker 暴露与 vLLM 相同的 GPU 0,4,5，供 W&B 采集 GPU 指标。
 5. 一个 batch 的全部 rollout 都失败时跳过该 batch 的 updater；连续两个 batch 的全部 rollout 都失败时终止训练。
