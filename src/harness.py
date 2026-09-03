@@ -227,7 +227,7 @@ def image_output(path: Path) -> ToolOutputImage:
     return ToolOutputImage(image_url="data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii"), detail="high")
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def run_sql(context: RunContextWrapper[RolloutContext], sql: str) -> str:
     """Execute one read-only DuckDB query. Returns at most 100 rows; each cell is truncated to 500 characters with its original length."""
     connection = open_database(context.context.runtime.database_path)
@@ -262,7 +262,7 @@ async def run_sql(context: RunContextWrapper[RolloutContext], sql: str) -> str:
     return json.dumps({"columns": columns, "rows": output_rows, "has_more": len(rows) > 100})
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def semantic_search(context: RunContextWrapper[RolloutContext], query: str, n: int, table: str) -> str:
     """Search one generated embedding table by exact cosine similarity."""
     runtime = context.context.runtime
@@ -299,7 +299,7 @@ async def semantic_search(context: RunContextWrapper[RolloutContext], query: str
     return json.dumps(results, ensure_ascii=False)
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def add_note(context: RunContextWrapper[RolloutContext | ClipContext], note: str) -> str:
     """Append a note that can be shared between the main retrieval agent and nested clip agents."""
     rollout = root_context(context.context)
@@ -312,7 +312,7 @@ async def add_note(context: RunContextWrapper[RolloutContext | ClipContext], not
     return json.dumps({"saved": True, "note_count": len(rollout.notes)})
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def read_notes(context: RunContextWrapper[RolloutContext | ClipContext]) -> str:
     """Read all notes shared by the current rollout."""
     rollout = root_context(context.context)
@@ -320,7 +320,7 @@ async def read_notes(context: RunContextWrapper[RolloutContext | ClipContext]) -
         return json.dumps({"notes": list(rollout.notes)}, ensure_ascii=False)
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def sample_video(context: RunContextWrapper[ClipContext], start_s: float, end_s: float, fps: float, crop_left: int, crop_top: int, crop_right: int, crop_bottom: int, include_captions: bool) -> list[ToolOutputText | ToolOutputImage]:
     """Sample the active clip interval into complete 4x3 contact-sheet pages. Crop coordinates are integers from 0 to 1000."""
     clip = context.context
@@ -335,7 +335,7 @@ async def sample_video(context: RunContextWrapper[ClipContext], start_s: float, 
     return [ToolOutputText(text=json.dumps(metadata, ensure_ascii=False)), *[image_output(path) for path in sheet_paths]]
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def read_skill(context: RunContextWrapper[RolloutContext], name: str) -> str:
     """Read the full content of one retrieval skill by its name from the skill list."""
     skills_dir = context.context.skills_dir
@@ -351,7 +351,7 @@ async def agent_raise(context: RunContextWrapper[RolloutContext], reason: str) -
     raise AgentRaised(reason)
 
 
-@function_tool(name_override="submit_answer", failure_error_function=None)
+@function_tool(name_override="submit_answer")
 async def submit_main_answer(context: RunContextWrapper[RolloutContext], answer: str) -> str:
     """Submit the final answer to the question. Calling this ends the retrieval."""
     if not answer.strip():
@@ -360,7 +360,7 @@ async def submit_main_answer(context: RunContextWrapper[RolloutContext], answer:
     return json.dumps({"submitted": True})
 
 
-@function_tool(name_override="submit_answer", failure_error_function=None)
+@function_tool(name_override="submit_answer")
 async def submit_clip_answer(context: RunContextWrapper[ClipContext], status: Literal["answered", "unknown"], answer: str, evidence_timestamps_s: list[float]) -> str:
     """Submit the final answer for the active video interval. Status answered requires at least one exact evidence timestamp inside the interval. Calling this ends the inspection."""
     clip = context.context
@@ -372,7 +372,7 @@ async def submit_clip_answer(context: RunContextWrapper[ClipContext], status: Li
     return json.dumps({"submitted": True})
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def clip_qa(context: RunContextWrapper[RolloutContext], video_id: str, start_s: float, end_s: float, question: str) -> list[ToolOutputText | ToolOutputImage]:
     """Inspect one video interval with a nested visual agent. Intervals over 10 minutes are discouraged and intervals over 20 minutes are rejected."""
     rollout = context.context

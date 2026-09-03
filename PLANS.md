@@ -86,12 +86,12 @@ ORDER BY day;
 
 ### Harness 工具
 
-- `run_sql(sql)`：只读执行，30 秒硬超时；最多向模型返回 100 行并说明是否存在更多结果；每个单元格最多返回前 500 字符及原长度。SQL 语法或数据错误返回给模型，数据库系统错误直接终止。
+- `run_sql(sql)`：只读执行，30 秒硬超时；最多向模型返回 100 行并说明是否存在更多结果；每个单元格最多返回前 500 字符及原长度。所有执行错误作为 tool result 返回给模型处理。
 - `semantic_search(query, n, table)`：只允许查询已生成 embedding 的表，返回 table、row_id、video_id、start/end、规范化文本预览及 cosine score。
 - `clip_qa(video_id, start_s, end_s, question)`：建议片段不超过 10 分钟，超过 20 分钟直接拒绝。内部 agent 可调用 `sample_video`、`add_note`、`read_notes`。
 - `sample_video`：接受时间、fps 和 0–1000 整数裁剪坐标；返回覆盖请求区间的 caption 和带时间标记的 4×3 contact sheet，每页 12 帧，所有帧完整分页。contact sheet 和证据截图只向模型暴露文件名，不暴露宿主机绝对路径。
 - `clip_qa` 返回 `answered|unknown`、答案和至少一个证据时间点；harness 将证据时间点转换为独立截图交给主 agent。
-- 主 agent 提供 `add_note`、`read_notes` 和 `agent_raise(reason)`；正式运行中同一 rollout 最多按原设置重试 3 次，缺少必要数据或确定性代码错误直接终止。
+- 主 agent 提供 `add_note`、`read_notes` 和 `agent_raise(reason)`；普通工具执行错误返回调用它的 agent 处理，`agent_raise(reason)` 保持为 agent 主动结束当前 rollout 的信号；正式运行中同一 rollout 最多按原设置重试 3 次。
 - 所有 agent loop 最大 100 turns；达到上限按整个 rollout 重试，不截断上下文或返回半成品。
 
 ### Compaction 状态机
@@ -123,7 +123,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 其他你觉得需要的文件
 
 ## 规则
-1. 不允许静默失败, 调试时显式失败, 最终运行是重试/丢弃失败样本, 工具失败可以返回给agent让agent处理, 但是如果agent call了raise, 那么就要skip/停止, 根据是调试阶段(stop)还是运行阶段(retry, if failed 3 times, skip, 对于function级别错误, 比如api错误, 重试这个function, 如果是agent造成的错误, 返回错误值让agent自己修, 如果function不能retry (比如状态已经被破坏, 一个有副作用的funtion跑了一半. 或者是rollout自己崩了), 那么retry整个rollout)
+1. 不允许静默失败。调试时显式失败；现在已进入正式运行，所有 FunctionTool 执行错误都作为 tool result 返回给调用它的 agent 处理，不直接使 rollout 或 TaskGroup crash。如果 agent 主动调用 `agent_raise`，则调试阶段停止、正式运行按原设置重试，3 次失败后跳过；agent loop 外的失败继续按对应的 retry 或 skip 规则处理。
 2. 每次开始运行前, 使用REVIEW.md审查代码
 3. 使用git做记录, 以方便回滚, 实验结果需要配对的git hash, 注意修改.gitignore防止不需要的文件进入历史. git操作时, 不要用系统默认用户名, 创建一个虚拟的name=codex email=codex@localhost来分别作者
 4. 保持代码简洁干净, 不要过度设计和抽象, 这是科研代码
@@ -202,7 +202,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 4. Reflection 接收 question、candidate answer、reference answer、score、rollout status、完整语义 trace、当前 SKILL 和 META-SKILL；它可以重新查询数据库或视频，并输出去具体内容后的可复用经验。
 5. 同一问题的多个 rollout reflection 先汇总为 question summary，再由 updater 输出完整替换的 SKILL.md 和 META-SKILL.md；下一个 batch 使用更新后的文件。
 6. 初始文件已创建为 `skills/initial/SKILL.md` 和 `skills/initial/META-SKILL.md`，baseline 使用同一个初始 SKILL，不使用空 prompt。
-7. Retryable API、模型解析、超时、max-turn 和正式模式的 `agent_raise` 错误按原方法重试；Agents SDK `UserError` 包装的 `httpx` request error、`httpx2` network error、`httpx2` timeout 或 `httpx2.RemoteProtocolError` 先取出原始原因后按同一规则分类；确定性输入、权限、认证、坏请求和代码错误直接终止，不使用替代方法。原因是正式 v16 的嵌套 `clip_qa` 收到 `httpx2.RemoteProtocolError`，但旧分类只包含 `httpx2.TimeoutException`。
+7. FunctionTool 执行错误作为 tool result 返回给调用它的 agent；agent loop 外的 retryable API、模型解析、超时、max-turn 和正式模式的 `agent_raise` 错误按原方法重试。Agents SDK `UserError` 包装的 `httpx` request error、`httpx2` network error、`httpx2` timeout 或 `httpx2.RemoteProtocolError` 先取出原始原因后按同一规则分类；agent loop 外的确定性输入、权限、认证、坏请求和代码错误直接终止，不使用替代方法。原因是正式 v16 的嵌套 `clip_qa` 收到 `httpx2.RemoteProtocolError`，但旧分类只包含 `httpx2.TimeoutException`。
 8. 进程取消会写入 `cancelled.json` 并传播，取消的 attempt 不占重试预算；恢复时创建新的物理 attempt 编号。
 9. 重试耗尽的 rollout 保存为 `status=failed`、score=0；训练和验证均把所有指定 rollout 的分数纳入均值，失败项不会从分母移除。
 10. 同一 batch 的并行 rollout 和 question summary 使用 `asyncio.TaskGroup`；一个任务异常时取消并等待同组任务完成取消，再关闭共享客户端。
@@ -236,6 +236,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 4. 如果连续 3 次 agent completion 在排除 reasoning 后的 raw characters 完全一致，本次 trace 作废，并按现有正式模式规则重试整个 rollout。
 5. 所有 trace 都必须保存，包括因重复输出或达到 100 轮而作废的 trace。
 6. 现有接近 context limit 时关闭工具、强制输出的逻辑保留不变。
+7. 正式运行中，所有普通 FunctionTool 执行错误作为 tool result 返回给调用它的 agent 处理，不再让异常直接穿透并使 rollout 或 TaskGroup crash；`agent_raise` 保持为 agent 主动结束当前 rollout 的控制信号。该规则源于 v17 的 `sample_video` 将 ffmpeg 参数错误直接传播到 TaskGroup 并终止整批运行。
 
 ### 训练配置
 1. 正式训练改为每 batch 2 个问题、每个问题 10 个并行 rollout；降低同时运行的 rollout 数量，避免 active KV cache 超出当前容量。

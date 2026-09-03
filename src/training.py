@@ -160,7 +160,7 @@ async def run_judge(runtime: PilotHarness, reference_answer: str, candidate_answ
     return await run_stage(stage_dir, JudgeResult, attempts, mode, call)
 
 
-@function_tool(name_override="submit_answer", failure_error_function=None)
+@function_tool(name_override="submit_answer")
 async def submit_reflection(context: RunContextWrapper[RolloutContext], reflection: str, meta_reflection: str) -> str:
     """Submit the final reflection for future retrieval and meta_reflection for future reflection. Calling this ends the reflection."""
     context.context.submission = ReflectionResult(reflection=reflection, meta_reflection=meta_reflection)
@@ -361,7 +361,7 @@ async def summarize_question(runtime: PilotHarness, reflections: list[dict[str, 
     return output
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def list_skills(context: RunContextWrapper[RolloutContext]) -> str:
     """List the current skill files with their descriptions, plus META-SKILL."""
     skills_dir = context.context.skills_dir
@@ -370,7 +370,7 @@ async def list_skills(context: RunContextWrapper[RolloutContext]) -> str:
     return json.dumps(entries, ensure_ascii=False)
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def read_current_skill(context: RunContextWrapper[RolloutContext], name: str) -> str:
     """Read the full current content of one skill file by name (use META-SKILL for the reflection skill)."""
     path = context.context.skills_dir / f"{name}.md"
@@ -379,7 +379,7 @@ async def read_current_skill(context: RunContextWrapper[RolloutContext], name: s
     return path.read_text()
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def write_skill(context: RunContextWrapper[RolloutContext], name: str, content: str) -> str:
     """Create or fully overwrite one skill file. Retrieval skills need YAML frontmatter and Introduction, When to use, and Main content sections. Every guidance point, or its enclosing section, needs a short **Reason:** line. META-SKILL is plain Markdown but also needs a **Reason:** line for each section."""
     skills_dir = context.context.skills_dir
@@ -417,7 +417,7 @@ async def write_skill(context: RunContextWrapper[RolloutContext], name: str, con
     return json.dumps({"written": name, "characters": len(content)})
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def delete_skill(context: RunContextWrapper[RolloutContext], name: str) -> str:
     """Delete one skill file by name. META-SKILL cannot be deleted."""
     path = context.context.skills_dir / f"{name}.md"
@@ -429,7 +429,7 @@ async def delete_skill(context: RunContextWrapper[RolloutContext], name: str) ->
     return json.dumps({"deleted": name})
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def git_history(context: RunContextWrapper[RolloutContext], name: str | None) -> str:
     """List past commits of the skill repository, newest first, optionally restricted to one skill file name."""
     arguments = ["log", "--format=commit %H%x09%ad%n%B", "--date=iso-strict", "--name-status"]
@@ -438,7 +438,7 @@ async def git_history(context: RunContextWrapper[RolloutContext], name: str | No
     return git(context.context.skills_dir, *arguments)
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def read_skill_at_commit(context: RunContextWrapper[RolloutContext], name: str, commit: str) -> str:
     """Read the full content of one skill file as it was at a past commit from git_history."""
     try:
@@ -447,7 +447,7 @@ async def read_skill_at_commit(context: RunContextWrapper[RolloutContext], name:
         return json.dumps({"error": error.stderr})
 
 
-@function_tool(failure_error_function=None)
+@function_tool
 async def stop(context: RunContextWrapper[RolloutContext], reason: str) -> str:
     """Finish the skill update after all file operations are done. Give a short overall reason for the modifications made in this update."""
     if not reason.strip():
