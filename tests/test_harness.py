@@ -13,7 +13,7 @@ from src.harness import ClipContext, RolloutContext, clip_qa, run_sql, sample_vi
 def test_write_trace_persists_input_without_image_bytes(tmp_path: Path) -> None:
     result = SimpleNamespace(raw_responses=[], new_items=[], input=[{"role": "user", "content": [{"type": "input_text", "text": "caption"}, {"type": "input_image", "image_url": "data:image/jpeg;base64,secret"}]}], is_complete=True, current_turn=1, context_wrapper=SimpleNamespace(usage={}), final_output="done")
     trace_path = tmp_path / "trace.json"
-    write_trace(result, [], trace_path)
+    write_trace(result, [], trace_path, None)
     payload = json.loads(trace_path.read_text())
     assert payload["input"] == [{"role": "user", "content": [{"type": "input_text", "text": "caption"}, {"type": "input_image", "image_url": "<image_data_removed>"}]}]
 
@@ -24,7 +24,7 @@ async def test_run_sql_limits_cells_and_blocks_external_access(tmp_path: Path) -
     connection.execute("CREATE TABLE items AS SELECT range AS item_id, repeat('x', 600) AS text FROM range(101)")
     connection.close()
     runtime = SimpleNamespace(database_path=database_path)
-    context = RunContextWrapper(RolloutContext(runtime=runtime, attempt_dir=tmp_path, clip_max_turns=10))
+    context = RunContextWrapper(RolloutContext(runtime=runtime, attempt_dir=tmp_path, skills_dir=tmp_path / "skills"))
     result = json.loads(await run_sql.__wrapped__(context, "SELECT * FROM items ORDER BY item_id"))
     assert len(result["rows"]) == 100
     assert result["has_more"] is True
@@ -39,7 +39,7 @@ async def test_run_sql_limits_cells_and_blocks_external_access(tmp_path: Path) -
 
 async def test_model_correctable_tool_rejections(tmp_path: Path) -> None:
     runtime = SimpleNamespace(indexes={})
-    rollout = RolloutContext(runtime=runtime, attempt_dir=tmp_path, clip_max_turns=10)
+    rollout = RolloutContext(runtime=runtime, attempt_dir=tmp_path, skills_dir=tmp_path / "skills")
     invalid_table = json.loads(await semantic_search.__wrapped__(RunContextWrapper(rollout), "test", 5, "missing"))
     assert "Allowed tables" in invalid_table["error"]
     clip = ClipContext(rollout=rollout, video_id="4", start_s=0.0, end_s=10.0, call_id="validation")
@@ -55,7 +55,7 @@ async def test_model_correctable_tool_rejections(tmp_path: Path) -> None:
 
 async def test_concurrent_sample_video_outputs_are_distinct_and_decodable(tmp_path: Path) -> None:
     runtime = SimpleNamespace(database_path=Path("data/pilot/pilot.duckdb"), clip_root=Path("data/pilot/clips"))
-    rollout = RolloutContext(runtime=runtime, attempt_dir=tmp_path, clip_max_turns=10)
+    rollout = RolloutContext(runtime=runtime, attempt_dir=tmp_path, skills_dir=tmp_path / "skills")
     first = ClipContext(rollout=rollout, video_id="4", start_s=0.0, end_s=2.0, call_id="first-call")
     second = ClipContext(rollout=rollout, video_id="4", start_s=0.0, end_s=2.0, call_id="second-call")
     first_output, second_output = await asyncio.gather(sample_video.__wrapped__(RunContextWrapper(first), 0.0, 2.0, 0.5, 0, 0, 1000, 1000, True), sample_video.__wrapped__(RunContextWrapper(second), 0.0, 2.0, 1.0, 100, 100, 900, 900, False))

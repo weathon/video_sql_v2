@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,8 +10,8 @@ from agents import ModelSettings, RunContextWrapper
 from agents.exceptions import ModelBehaviorError
 from agents.exceptions import UserError
 
-from src.harness import AgentRaised, ClipAnswer, RolloutContext, RolloutResult, StreamModelBehaviorError, clip_qa
-from src.training import JudgeResult, is_retryable_error, rollout_trace, run_evaluation_rollout, run_judge, run_stage
+from src.harness import SUBMIT_REMINDER, AgentRaised, ClipAnswer, RolloutContext, RolloutResult, clip_qa
+from src.training import JudgeResult, is_retryable_error, rollout_trace, run_evaluation_rollout, run_judge, run_stage, skills_digest
 
 
 async def test_run_stage_retries_and_reuses_saved_output(tmp_path: Path) -> None:
@@ -43,7 +42,7 @@ async def test_judge_input_contains_only_reference_and_candidate(tmp_path: Path,
         return JudgeResult(score=5), {"requests": 1, "input_tokens": 2, "output_tokens": 3, "total_tokens": 5}
 
     monkeypatch.setattr("src.training.run_stage", saved_stage)
-    result, _ = await run_judge(object(), "gold", "candidate", tmp_path / "judge", 3, "formal", 10)
+    result, _ = await run_judge(object(), "gold", "candidate", tmp_path / "judge", 3, "formal", tmp_path / "skills")
     assert result.score == 5
     assert json.loads((tmp_path / "judge" / "input.json").read_text()) == {"reference_answer": "gold", "candidate_answer": "candidate"}
 
@@ -51,24 +50,27 @@ async def test_judge_input_contains_only_reference_and_candidate(tmp_path: Path,
 async def test_main_rollout_input_excludes_gold_answer(tmp_path: Path, monkeypatch) -> None:
     captured = {}
 
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "general-retrieval.md").write_text("---\nname: general-retrieval\ndescription: current skill\n---\n")
+
     class Runtime:
-        async def run_rollout(self, question: str, skill: str, attempt_dir: Path, clip_max_turns: int) -> RolloutResult:
-            captured.update({"question": question, "skill": skill, "attempt_dir": attempt_dir, "clip_max_turns": clip_max_turns})
+        async def run_rollout(self, question: str, skills_dir: Path, attempt_dir: Path) -> RolloutResult:
+            captured.update({"question": question, "skills_dir": skills_dir, "attempt_dir": attempt_dir})
             return RolloutResult(status="completed", answer="candidate", turns=2, compactions=0, usage={"requests": 2, "input_tokens": 3, "output_tokens": 4, "total_tokens": 7})
 
-    async def judge(runtime, reference_answer: str, candidate_answer: str, stage_dir: Path, attempts: int, mode: str, clip_max_turns: int):
+    async def judge(runtime, reference_answer: str, candidate_answer: str, stage_dir: Path, attempts: int, mode: str, skills_dir: Path):
         assert reference_answer == "secret gold"
         assert candidate_answer == "candidate"
         return JudgeResult(score=5), {"requests": 1, "input_tokens": 2, "output_tokens": 3, "total_tokens": 5}
 
     monkeypatch.setattr("src.training.run_judge", judge)
     item = {"index": 9, "question": "question only", "answer": "secret gold"}
-    result = await run_evaluation_rollout(Runtime(), item, 0, "current skill", tmp_path / "rollout", 3, "formal", 12)
+    result = await run_evaluation_rollout(Runtime(), item, 0, skills_dir, tmp_path / "rollout", 3, "formal")
     assert result["score"] == 5
     assert captured["question"] == "question only"
-    assert captured["skill"] == "current skill"
-    assert captured["clip_max_turns"] == 12
-    assert json.loads((tmp_path / "rollout" / "input.json").read_text()) == {"question_index": 9, "question": "question only", "rollout_index": 0, "skill_sha256": hashlib.sha256(b"current skill").hexdigest()}
+    assert captured["skills_dir"] == skills_dir
+    assert json.loads((tmp_path / "rollout" / "input.json").read_text()) == {"question_index": 9, "question": "question only", "rollout_index": 0, "skills_sha256": skills_digest(skills_dir)}
 
 
 def test_agent_raise_retries_only_in_formal_mode() -> None:
@@ -105,45 +107,43 @@ async def test_exhausted_evaluation_rollout_is_zero_scored(tmp_path: Path) -> No
     rollout_dir = tmp_path / "rollout"
     (rollout_dir / "attempt-01").mkdir(parents=True)
     item = {"index": 9, "question": "question only", "answer": "secret gold"}
-    result = await run_evaluation_rollout(object(), item, 0, "current skill", rollout_dir, 1, "formal", 12)
+    (tmp_path / "skills").mkdir()
+    result = await run_evaluation_rollout(object(), item, 0, tmp_path / "skills", rollout_dir, 1, "formal")
     assert result["status"] == "failed"
     assert result["score"] == 0
 
 
-async def test_clip_qa_continues_after_structured_output_error(tmp_path: Path, monkeypatch) -> None:
+async def test_clip_qa_reminds_after_unsubmitted_message(tmp_path: Path, monkeypatch) -> None:
     database_path = tmp_path / "clip.duckdb"
     connection = duckdb.connect(str(database_path))
     connection.execute("CREATE TABLE videos (video_id VARCHAR, duration_s DOUBLE)")
     connection.execute("INSERT INTO videos VALUES ('4', 10.0)")
     connection.close()
     runtime = SimpleNamespace(database_path=database_path, model="test-model", model_settings=ModelSettings(), run_config=object(), context_limit=262144)
-    rollout = RolloutContext(runtime=runtime, attempt_dir=tmp_path / "attempt", clip_max_turns=10)
+    rollout = RolloutContext(runtime=runtime, attempt_dir=tmp_path / "attempt", skills_dir=tmp_path / "skills")
     inputs = []
 
-    class InvalidResult:
+    class PlainMessageResult:
         current_turn = 3
 
         def to_input_list(self):
-            return [{"role": "user", "content": "original question"}]
+            return [{"role": "user", "content": "original question"}, {"role": "assistant", "type": "message", "content": [{"type": "output_text", "text": "plain text"}]}]
 
-    class ValidResult:
+    class SubmittedResult:
         current_turn = 1
 
-        def final_output_as(self, output_type, raise_if_incorrect_type: bool):
-            return ClipAnswer(status="unknown", answer="insufficient evidence", evidence_timestamps_s=[])
-
-    async def fake_stream_agent(agent, input_items, context, max_turns: int, run_config, trace_path: Path, context_limit: int, allow_compaction: bool):
+    async def fake_stream_agent(agent, input_items, context, max_turns: int, run_config, trace_path: Path, context_limit: int, allow_compaction: bool, completions: list[str]):
         inputs.append(input_items)
         if len(inputs) == 1:
-            failed_output = [{"role": "assistant", "type": "message", "content": [{"type": "output_text", "text": "plain text"}]}]
-            raise StreamModelBehaviorError(ModelBehaviorError("Invalid JSON when parsing model output"), InvalidResult(), failed_output, 1000, 100)
-        return ValidResult(), False
+            return PlainMessageResult(), False
+        context.submission = ClipAnswer(status="unknown", answer="insufficient evidence", evidence_timestamps_s=[])
+        return SubmittedResult(), False
 
     monkeypatch.setattr("src.harness.stream_agent", fake_stream_agent)
     output = await clip_qa.__wrapped__(RunContextWrapper(rollout), "4", 0.0, 2.0, "What is visible?")
     assert json.loads(output[0].text) == {"status": "unknown", "answer": "insufficient evidence", "evidence_timestamps_s": [], "evidence_files": []}
     assert inputs[1][-2] == {"role": "assistant", "type": "message", "content": [{"type": "output_text", "text": "plain text"}]}
-    assert "Invalid JSON when parsing model output" in inputs[1][-1]["content"]
+    assert inputs[1][-1] == {"role": "user", "content": SUBMIT_REMINDER}
 
 
 def test_reflection_trace_excludes_duplicate_representations(tmp_path: Path) -> None:

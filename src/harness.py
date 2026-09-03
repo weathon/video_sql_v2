@@ -13,7 +13,8 @@ from typing import Any, Literal
 import duckdb
 import httpx
 import numpy as np
-from agents import Agent, ModelSettings, OpenAIResponsesModel, RunConfig, RunContextWrapper, Runner, ToolOutputImage, ToolOutputText, function_tool
+import yaml
+from agents import Agent, FunctionToolResult, ModelSettings, OpenAIResponsesModel, RunConfig, RunContextWrapper, Runner, ToolOutputImage, ToolOutputText, ToolsToFinalOutputResult, function_tool
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
 from agents.result import RunResultStreaming
 from openai import AsyncOpenAI
@@ -25,9 +26,16 @@ from pydantic import BaseModel
 DATABASE_CONFIG = {"enable_external_access": "false"}
 QUERY_ERRORS = (duckdb.BinderException, duckdb.CatalogException, duckdb.ConstraintException, duckdb.ConversionException, duckdb.InvalidInputException, duckdb.InvalidTypeException, duckdb.NotImplementedException, duckdb.OutOfRangeException, duckdb.ParserException, duckdb.PermissionException, duckdb.SequenceException, duckdb.SyntaxException, duckdb.TransactionException, duckdb.TypeMismatchException)
 COMPACTION_INSTRUCTION = "Stop calling tools. Produce a trusted handoff for a fresh continuation of this same retrieval task. Preserve the exact question, all useful evidence with video IDs and timestamps, SQL findings, unresolved uncertainty, notes, and the next retrieval actions. Do not answer the question unless the evidence already supports the answer."
+SUBMIT_REMINDER = "Your last response did not call submit_answer. Continue working if needed, then call submit_answer with your final answer."
+MAX_TURNS = 100
+META_SKILL_NAME = "META-SKILL"
 
 
 class AgentRaised(RuntimeError):
+    pass
+
+
+class RepeatedCompletionError(ModelBehaviorError):
     pass
 
 
@@ -65,9 +73,10 @@ class RolloutResult:
 class RolloutContext:
     runtime: "PilotHarness"
     attempt_dir: Path
-    clip_max_turns: int
+    skills_dir: Path
     notes: list[str] = field(default_factory=list)
     note_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    submission: Any = None
 
 
 @dataclass
@@ -77,6 +86,7 @@ class ClipContext:
     start_s: float
     end_s: float
     call_id: str
+    submission: ClipAnswer | None = None
 
 
 def open_database(database_path: Path) -> duckdb.DuckDBPyConnection:
@@ -85,6 +95,42 @@ def open_database(database_path: Path) -> duckdb.DuckDBPyConnection:
 
 def root_context(value: RolloutContext | ClipContext) -> RolloutContext:
     return value.rollout if isinstance(value, ClipContext) else value
+
+
+def skill_frontmatter(path: Path) -> dict[str, str]:
+    text = path.read_text()
+    if not text.startswith("---\n"):
+        raise ValueError(f"{path.name} must start with YAML frontmatter")
+    header = yaml.safe_load(text[4:].split("\n---\n", 1)[0])
+    if header["name"] != path.stem:
+        raise ValueError(f"{path.name} frontmatter name {header['name']!r} must equal the file name {path.stem!r}")
+    return {"name": header["name"], "description": header["description"]}
+
+
+def list_skill_files(skills_dir: Path) -> list[Path]:
+    return sorted(path for path in skills_dir.glob("*.md") if path.stem != META_SKILL_NAME)
+
+
+def skill_catalog(skills_dir: Path) -> str:
+    return "\n".join(f"- {entry['name']}: {entry['description']}" for entry in map(skill_frontmatter, list_skill_files(skills_dir)))
+
+
+def stop_when_submitted(context: RunContextWrapper[RolloutContext | ClipContext], tool_results: list[FunctionToolResult]) -> ToolsToFinalOutputResult:
+    return ToolsToFinalOutputResult(is_final_output=context.context.submission is not None, final_output=context.context.submission)
+
+
+def completion_characters(output: list[Any]) -> str:
+    parts = []
+    for item in output:
+        if item.type == "reasoning":
+            continue
+        if item.type == "message":
+            parts.append("".join(part.text for part in item.content if part.type == "output_text"))
+        elif item.type == "function_call":
+            parts.append(item.name + item.arguments)
+        else:
+            parts.append(json.dumps(item.model_dump(mode="json", exclude_none=True, exclude={"id"}), sort_keys=True))
+    return "\n".join(parts)
 
 
 def json_sanitize(value: Any) -> Any:
@@ -105,18 +151,19 @@ def json_sanitize(value: Any) -> Any:
     return value
 
 
-def write_trace(result: RunResultStreaming, events: list[Any], trace_path: Path) -> None:
+def write_trace(result: RunResultStreaming, events: list[Any], trace_path: Path, abort: str | None) -> None:
     responses = [{"response_id": response.response_id, "request_id": response.request_id, "usage": json_sanitize(response.usage), "output": json_sanitize(response.output)} for response in result.raw_responses]
     items = [json_sanitize(item.to_input_item()) for item in result.new_items]
-    payload = {"input": json_sanitize(result.input), "is_complete": result.is_complete, "current_turn": result.current_turn, "responses": responses, "items": items, "events": events, "usage": json_sanitize(result.context_wrapper.usage), "final_output": json_sanitize(result.final_output)}
+    payload = {"input": json_sanitize(result.input), "is_complete": result.is_complete, "current_turn": result.current_turn, "responses": responses, "items": items, "events": events, "usage": json_sanitize(result.context_wrapper.usage), "final_output": json_sanitize(result.final_output), "abort": abort}
     trace_path.parent.mkdir(parents=True, exist_ok=True)
     trace_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
-async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], context: RolloutContext | ClipContext, max_turns: int, run_config: RunConfig, trace_path: Path, context_limit: int, allow_compaction: bool) -> tuple[RunResultStreaming, bool]:
+async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], context: RolloutContext | ClipContext, max_turns: int, run_config: RunConfig, trace_path: Path, context_limit: int, allow_compaction: bool, completions: list[str]) -> tuple[RunResultStreaming, bool]:
     result = Runner.run_streamed(agent, input_items, context=context, max_turns=max_turns, run_config=run_config)
     events = []
     compact_required = False
+    repeated = False
     failed_output_items = None
     failed_response_usage = None
     try:
@@ -129,6 +176,10 @@ async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], co
                 elif event.data.type == "response.completed":
                     failed_output_items = [json_sanitize(item.model_dump(mode="json", exclude_none=True)) for item in event.data.response.output]
                     failed_response_usage = (event.data.response.usage.input_tokens, event.data.response.usage.output_tokens)
+                    completions.append(completion_characters(event.data.response.output))
+                    if len(completions) >= 3 and completions[-1] == completions[-2] == completions[-3]:
+                        repeated = True
+                        result.cancel()
                 if allow_compaction and not compact_required and event.data.type == "response.completed":
                     response = event.data.response
                     remaining = context_limit - response.usage.input_tokens - response.usage.output_tokens
@@ -136,12 +187,14 @@ async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], co
                     if remaining <= 50000 and has_tool_calls:
                         result.cancel(mode="after_turn")
                         compact_required = True
+        if repeated:
+            raise RepeatedCompletionError("Three consecutive identical completions after excluding reasoning")
     except ModelBehaviorError as error:
-        if failed_output_items is None or failed_response_usage is None:
+        if repeated or failed_output_items is None or failed_response_usage is None:
             raise
         raise StreamModelBehaviorError(error, result, failed_output_items, *failed_response_usage) from error
     finally:
-        write_trace(result, events, trace_path)
+        write_trace(result, events, trace_path, "repeated_completion" if repeated else None)
     return result, compact_required
 
 
@@ -312,9 +365,40 @@ async def sample_video(context: RunContextWrapper[ClipContext], start_s: float, 
 
 
 @function_tool(failure_error_function=None)
+async def read_skill(context: RunContextWrapper[RolloutContext], name: str) -> str:
+    """Read the full content of one retrieval skill by its name from the skill list."""
+    skills_dir = context.context.skills_dir
+    names = [path.stem for path in list_skill_files(skills_dir)]
+    if name not in names:
+        return json.dumps({"error": f"Unknown skill {name!r}. Available skills: {names}"})
+    return (skills_dir / f"{name}.md").read_text()
+
+
+@function_tool(failure_error_function=None)
 async def agent_raise(context: RunContextWrapper[RolloutContext], reason: str) -> str:
     """Stop the current rollout because required data is missing or a system condition makes a valid answer impossible."""
     raise AgentRaised(reason)
+
+
+@function_tool(name_override="submit_answer", failure_error_function=None)
+async def submit_main_answer(context: RunContextWrapper[RolloutContext], answer: str) -> str:
+    """Submit the final answer to the question. Calling this ends the retrieval."""
+    if not answer.strip():
+        return json.dumps({"error": "answer must not be empty"})
+    context.context.submission = answer
+    return json.dumps({"submitted": True})
+
+
+@function_tool(name_override="submit_answer", failure_error_function=None)
+async def submit_clip_answer(context: RunContextWrapper[ClipContext], status: Literal["answered", "unknown"], answer: str, evidence_timestamps_s: list[float]) -> str:
+    """Submit the final answer for the active video interval. Status answered requires at least one exact evidence timestamp inside the interval. Calling this ends the inspection."""
+    clip = context.context
+    if status == "answered" and not evidence_timestamps_s:
+        return json.dumps({"error": "status answered requires at least one evidence timestamp"})
+    if any(not math.isfinite(timestamp_s) or timestamp_s < clip.start_s or timestamp_s > clip.end_s for timestamp_s in evidence_timestamps_s):
+        return json.dumps({"error": f"every evidence timestamp must be finite and within [{clip.start_s}, {clip.end_s}]"})
+    clip.submission = ClipAnswer(status=status, answer=answer, evidence_timestamps_s=evidence_timestamps_s)
+    return json.dumps({"submitted": True})
 
 
 @function_tool(failure_error_function=None)
@@ -334,53 +418,30 @@ async def clip_qa(context: RunContextWrapper[RolloutContext], video_id: str, sta
         return [ToolOutputText(text=json.dumps({"error": f"end_s exceeds video duration {video[0]}"}))]
     call_id = uuid.uuid4().hex
     clip_context = ClipContext(rollout=rollout, video_id=video_id, start_s=start_s, end_s=end_s, call_id=call_id)
-    instructions = "Answer the visual question only from the active video interval. Use sample_video to inspect the frames and captions. You may use shared notes. Return status answered only when the answer is supported and include at least one exact evidence timestamp; otherwise return unknown."
-    clip_agent = Agent(name="clip_qa", instructions=instructions, tools=[sample_video, add_note, read_notes], model=rollout.runtime.model, model_settings=rollout.runtime.model_settings, output_type=ClipAnswer)
+    instructions = "Answer the visual question only from the active video interval. Use sample_video to inspect the frames and captions. You may use shared notes. When done, call submit_answer with status answered only when the answer is supported and include at least one exact evidence timestamp; otherwise submit status unknown."
+    clip_agent = Agent(name="clip_qa", instructions=instructions, tools=[sample_video, add_note, read_notes, submit_clip_answer], model=rollout.runtime.model, model_settings=rollout.runtime.model_settings, tool_use_behavior=stop_when_submitted)
     active_agent = clip_agent
     input_items: str | list[dict[str, Any]] = f"Video {video_id}, interval {start_s} to {end_s} seconds. Question: {question}"
     used_turns = 0
     segment = 0
     tools_enabled = True
+    completions: list[str] = []
     while True:
-        if used_turns >= rollout.clip_max_turns:
-            raise MaxTurnsExceeded(f"clip_qa exceeded {rollout.clip_max_turns} total turns")
+        if used_turns >= MAX_TURNS:
+            raise MaxTurnsExceeded(f"clip_qa exceeded {MAX_TURNS} total turns")
         trace_path = rollout.attempt_dir / "traces" / f"clip-{call_id}-segment-{segment:02d}.json"
-        try:
-            result, final_required = await stream_agent(active_agent, input_items, clip_context, rollout.clip_max_turns - used_turns, rollout.runtime.run_config, trace_path, rollout.runtime.context_limit, tools_enabled)
-        except StreamModelBehaviorError as error:
-            result = error.result
-            used_turns += result.current_turn
-            if used_turns >= rollout.clip_max_turns:
-                raise MaxTurnsExceeded(f"clip_qa exceeded {rollout.clip_max_turns} total turns") from error
-            remaining = rollout.runtime.context_limit - error.failed_input_tokens - error.failed_output_tokens
-            if tools_enabled and remaining <= 50_000:
-                active_agent = clip_agent.clone(tools=[])
-                tools_enabled = False
-                correction = f"The context limit is near. Do not call tools. Your output could not be parsed as ClipAnswer JSON: {error}. Return exactly the required structured output with status, answer, and evidence_timestamps_s."
-            else:
-                correction = f"Your output could not be parsed as ClipAnswer JSON: {error}. Continue using tools if evidence is still needed. When ready, return exactly the required structured output with status, answer, and evidence_timestamps_s."
-            input_items = result.to_input_list() + error.failed_output_items + [{"role": "user", "content": correction}]
-            segment += 1
-            continue
+        result, final_required = await stream_agent(active_agent, input_items, clip_context, MAX_TURNS - used_turns, rollout.runtime.run_config, trace_path, rollout.runtime.context_limit, tools_enabled, completions)
         used_turns += result.current_turn
-        if final_required:
-            if used_turns >= rollout.clip_max_turns:
-                raise MaxTurnsExceeded(f"clip_qa reached {rollout.clip_max_turns} turns before its forced final response")
-            active_agent = clip_agent.clone(tools=[])
-            tools_enabled = False
-            input_items = result.to_input_list() + [{"role": "user", "content": "The context limit is near. Do not call tools. Return the required ClipAnswer with status, answer, and evidence_timestamps_s now."}]
-            segment += 1
-            continue
-        answer = result.final_output_as(ClipAnswer, raise_if_incorrect_type=True)
-        validation_error = None
-        if answer.status == "answered" and not answer.evidence_timestamps_s:
-            validation_error = "Rejected clip answer: status answered requires at least one evidence timestamp."
-        elif any(not math.isfinite(timestamp_s) or timestamp_s < start_s or timestamp_s > end_s for timestamp_s in answer.evidence_timestamps_s):
-            validation_error = f"Rejected clip answer: every evidence timestamp must be finite and within [{start_s}, {end_s}]."
-        if validation_error is None:
+        if clip_context.submission is not None:
             break
-        input_items = result.to_input_list() + [{"role": "user", "content": validation_error}]
+        if final_required:
+            active_agent = clip_agent.clone(tools=[submit_clip_answer])
+            tools_enabled = False
+            input_items = result.to_input_list() + [{"role": "user", "content": "The context limit is near. Do not call other tools. Call submit_answer with status, answer, and evidence_timestamps_s now."}]
+        else:
+            input_items = result.to_input_list() + [{"role": "user", "content": SUBMIT_REMINDER}]
         segment += 1
+    answer = clip_context.submission
     evidence_paths = []
     for timestamp_s in answer.evidence_timestamps_s:
         evidence_path = rollout.attempt_dir / "media" / f"evidence-{video_id}-{timestamp_s:.3f}-{call_id}-{uuid.uuid4().hex}.jpg"
@@ -427,35 +488,37 @@ class PilotHarness:
         await self.embedding_client.aclose()
         await self.model_client.close()
 
-    async def run_rollout(self, question: str, skill_text: str, attempt_dir: Path, clip_max_turns: int) -> RolloutResult:
-        context = RolloutContext(runtime=self, attempt_dir=attempt_dir, clip_max_turns=clip_max_turns)
-        instructions = f"You answer questions about a video memory using the available read-only tools. Return only the final answer when ready.\n\nDatabase schema:\n{self.schema}\n\nCurrent retrieval skill:\n{skill_text}"
-        main_agent = Agent(name="video_memory_retrieval", instructions=instructions, tools=[run_sql, semantic_search, clip_qa, add_note, read_notes, agent_raise], model=self.model, model_settings=self.model_settings)
+    async def run_rollout(self, question: str, skills_dir: Path, attempt_dir: Path) -> RolloutResult:
+        context = RolloutContext(runtime=self, attempt_dir=attempt_dir, skills_dir=skills_dir)
+        instructions = f"You answer questions about a video memory using the available read-only tools. Read a skill with read_skill when its description matches the current situation. When ready, call submit_answer with only the final answer.\n\nDatabase schema:\n{self.schema}\n\nAvailable retrieval skills:\n{skill_catalog(skills_dir)}"
+        main_agent = Agent(name="video_memory_retrieval", instructions=instructions, tools=[run_sql, semantic_search, clip_qa, add_note, read_notes, read_skill, agent_raise, submit_main_answer], model=self.model, model_settings=self.model_settings, tool_use_behavior=stop_when_submitted)
         input_items: str | list[dict[str, Any]] = question
         total_turns = 0
         compactions = 0
         usage = {"requests": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         segment = 0
+        completions: list[str] = []
         while True:
-            if total_turns >= 50:
-                raise MaxTurnsExceeded("Main retrieval agent exceeded 50 total turns")
-            result, compact_required = await stream_agent(main_agent, input_items, context, 50 - total_turns, self.run_config, attempt_dir / "traces" / f"main-segment-{segment:02d}.json", self.context_limit, True)
+            if total_turns >= MAX_TURNS:
+                raise MaxTurnsExceeded(f"Main retrieval agent exceeded {MAX_TURNS} total turns")
+            result, compact_required = await stream_agent(main_agent, input_items, context, MAX_TURNS - total_turns, self.run_config, attempt_dir / "traces" / f"main-segment-{segment:02d}.json", self.context_limit, True, completions)
             total_turns += len(result.raw_responses)
             for response in result.raw_responses:
                 usage["requests"] += response.usage.requests
                 usage["input_tokens"] += response.usage.input_tokens
                 usage["output_tokens"] += response.usage.output_tokens
                 usage["total_tokens"] += response.usage.total_tokens
+            if context.submission is not None:
+                return RolloutResult(status="completed", answer=context.submission, turns=total_turns, compactions=compactions, usage=usage)
             if not compact_required:
-                answer = str(result.final_output)
-                if not answer.strip():
-                    raise ModelBehaviorError("Main retrieval agent returned no final answer")
-                return RolloutResult(status="completed", answer=answer, turns=total_turns, compactions=compactions, usage=usage)
-            if total_turns >= 50:
-                raise MaxTurnsExceeded("Main retrieval agent reached 50 turns before compaction")
+                input_items = result.to_input_list() + [{"role": "user", "content": SUBMIT_REMINDER}]
+                segment += 1
+                continue
+            if total_turns >= MAX_TURNS:
+                raise MaxTurnsExceeded(f"Main retrieval agent reached {MAX_TURNS} turns before compaction")
             compact_agent = main_agent.clone(tools=[])
             compact_input = result.to_input_list() + [{"role": "user", "content": COMPACTION_INSTRUCTION}]
-            compact_result, _ = await stream_agent(compact_agent, compact_input, context, 50 - total_turns, self.run_config, attempt_dir / "traces" / f"compaction-{compactions + 1:02d}.json", self.context_limit, False)
+            compact_result, _ = await stream_agent(compact_agent, compact_input, context, MAX_TURNS - total_turns, self.run_config, attempt_dir / "traces" / f"compaction-{compactions + 1:02d}.json", self.context_limit, False, completions)
             total_turns += len(compact_result.raw_responses)
             for response in compact_result.raw_responses:
                 usage["requests"] += response.usage.requests
