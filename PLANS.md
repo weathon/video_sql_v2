@@ -255,7 +255,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 ### Rollout 读取 SKILL
 1. prompt 不再放入全部 SKILL 内容，只列出可用 SKILL 的 `name` 和 `description`。
 2. 新增 `read_skill(name)` tool，返回对应文件的完整内容。
-3. Reflection trace 保留 `read_skill` 返回的原始 Markdown，不对该返回执行 JSON 解码；原因是正式 v15 的真实 `read_skill` 返回触发了 `JSONDecodeError`。
+3. Reflection trace 保留 `read_skill` 成功返回的原始 Markdown，只对该工具的 error JSON 返回执行 JSON 解码；原因是正式 v15 的真实 Markdown 返回触发了 `JSONDecodeError`。
 
 ### Skill updater agent loop
 1. Reflection 汇总完成后的 SKILL 更新改为多轮 agent loop；updater 可以增加、修改和删除 SKILL Markdown 文件，也可以修改 `META-SKILL.md`。

@@ -224,6 +224,8 @@ def rollout_trace(attempt_dir: Path) -> list[dict[str, object]]:
             item["arguments"] = json.loads(item["arguments"])
         elif item["type"] == "function_call_output":
             if item["call_id"] in read_skill_call_ids:
+                if item["output"].startswith('{"error":'):
+                    item["output"] = json.loads(item["output"])
                 continue
             elif isinstance(item["output"], str):
                 item["output"] = json.loads(item["output"])
