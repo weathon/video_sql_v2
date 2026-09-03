@@ -49,6 +49,134 @@
 4. 对Day、Week和Month各人工检查至少一个完整trace: 源30sec视频与音频、Whisper输入输出、Qwen视频和文本输入、结构化返回、3min拼接、30min checkpoint、1h/6h/视频/尺度汇总、DuckDB真实行、object state关联以及最终embedding检索结果.
 5. 完成条件是三个逻辑时间轴全部覆盖, 所有上层汇总都能追溯到真实30sec证据, DuckDB与embedding index完整写出, 正式日志到达真实结束行且进程正常退出. 完成并核查后停止, 不进入Step 2.
 
+## Handoff: 使用当前全量index
+
+### 唯一运行时入口
+
+1. 另一个agent应直接使用现用数据库`data/pilot/stage2/index.duckdb`和现用索引目录`data/pilot/stage2/embedding_index`. 这两个位置已经包含重新生成并替换后的Week结果.
+2. `data/pilot/stage2/week_regen`保存本次Week重生成的checkpoint、trace、组合数据库和替换前验证产物, 只用于审计, 不是下游运行入口. 不要把它与现用路径混用.
+3. DuckDB必须以只读方式打开. 不要重新生成、覆盖或重排现有NPY; `*.row_ids.npy`的位置与同表`*.vectors.npy`第一维严格一一对应.
+4. 所有文本和视频向量都是`Qwen/Qwen3-VL-Embedding-8B`生成的4096维`float32`单位向量. 文本查询必须调用同一模型, served model name为`qwen3-vl-embedding-8b`.
+
+### 可搜索表与文件
+
+| DuckDB表 | 检索文本 | row ID文件 | 向量文件 | 当前行数 |
+|---|---|---|---|---:|
+| `episodes` | `text` | `episodes.row_ids.npy` | `episodes.vectors.npy` | 25700 |
+| `entities` | `name` | `entities.row_ids.npy` | `entities.vectors.npy` | 4530 |
+| `semantic_triples` | `text` | `semantic_triples.row_ids.npy` | `semantic_triples.vectors.npy` | 10159 |
+| `topic_facts` | `fact` | `topic_facts.row_ids.npy` | `topic_facts.vectors.npy` | 30662 |
+| `event_steps` | `description` | `event_steps.row_ids.npy` | `event_steps.vectors.npy` | 33327 |
+| `object_states` | `text` | `object_states.row_ids.npy` | `object_states.vectors.npy` | 6234 |
+| `visual_clips` | 30sec视频 | `visual_clips.row_ids.npy` | `visual_clips.vectors.npy` | 21782 |
+
+`topic_chains`和`event_chains`本身没有单独的向量文件. 先检索`topic_facts`或`event_steps`, 再通过`chain_row_id`回到对应chain. `visual_clips`是复用的原视频embedding; 其row ID和向量文件在Week数据库替换时没有修改.
+
+### 加载索引
+
+```python
+from pathlib import Path
+
+import duckdb
+import numpy as np
+
+stage2_root = Path("data/pilot/stage2")
+connection = duckdb.connect(str(stage2_root / "index.duckdb"), read_only=True)
+
+table = "episodes"
+row_ids = np.load(
+    stage2_root / "embedding_index" / f"{table}.row_ids.npy",
+    mmap_mode="r",
+    allow_pickle=False,
+)
+vectors = np.load(
+    stage2_root / "embedding_index" / f"{table}.vectors.npy",
+    mmap_mode="r",
+    allow_pickle=False,
+)
+assert vectors.shape == (len(row_ids), 4096)
+assert vectors.dtype == np.float32
+```
+
+不要根据DuckDB返回顺序猜测向量位置. 命中位置`i`的数据库主键必须取自`row_ids[i]`, 再用该主键查询DuckDB.
+
+### 生成查询向量并检索
+
+当前共享embedding容器为`egolife-qwen3-vl-embedding-8b`, 宿主端口为8013, 使用GPU 4. 运行前先核对真实服务:
+
+```bash
+docker ps --filter name=egolife-qwen3-vl-embedding-8b
+curl -sS http://127.0.0.1:8013/v1/models
+```
+
+如果该服务不在运行, 按`INFRA.txt`启动同一个模型和served model name; 不要换模型或复用其他LLM服务. 从宿主或`--network host`的Docker客户端调用:
+
+```python
+import httpx
+import numpy as np
+
+query = "拿着紫色屏幕的手机走遍卧室并扫描房间物体"
+payload = {"model": "qwen3-vl-embedding-8b", "input": [query]}
+response = httpx.post(
+    "http://127.0.0.1:8013/v1/embeddings",
+    json=payload,
+    timeout=None,
+)
+response.raise_for_status()
+data = response.json()["data"]
+assert len(data) == 1 and data[0]["index"] == 0
+query_vector = np.asarray(data[0]["embedding"], dtype=np.float32)
+assert query_vector.shape == (4096,) and np.isfinite(query_vector).all()
+
+scores = vectors @ query_vector
+top_positions = np.argsort(-scores)[:20]
+hits = [(str(row_ids[i]), float(scores[i])) for i in top_positions]
+```
+
+需要限定逻辑时间轴或episode粒度时, 先从DuckDB取得允许的row ID, 再只对这些NPY位置计算分数. 定位原始片段时使用`episodes.granularity='30sec'`或直接检索`visual_clips`; 获取外层时间上下文时使用`3min`、`1h`、`6h`、`video`或`scale`.
+
+命中后按主键读取实际内容, 例如:
+
+```python
+row_id, score = hits[0]
+row = connection.execute(
+    "SELECT row_id, video_id, start_s, end_s, granularity, text "
+    "FROM episodes WHERE row_id = ?",
+    [row_id],
+).fetchone()
+```
+
+### 3min外层join和30sec精确证据
+
+`object_states.episode_3min_row_id`是外层上下文join key, `object_states.caption_30sec_row_id`是状态真实出现位置. 不得只保留3min关联而丢掉30sec证据. 通过`co_clip`边可以继续回到实际视频文件:
+
+```sql
+SELECT
+    s.row_id,
+    s.object,
+    s.status,
+    s.text,
+    e3.row_id AS episode_3min_row_id,
+    e3.text AS context_3min,
+    e30.row_id AS caption_30sec_row_id,
+    e30.text AS evidence_30sec,
+    v.row_id AS visual_clip_row_id,
+    v.filename
+FROM object_states AS s
+JOIN episodes AS e3
+  ON e3.row_id = s.episode_3min_row_id
+JOIN episodes AS e30
+  ON e30.row_id = s.caption_30sec_row_id
+LEFT JOIN graph_edges AS g
+  ON g.src_row_id = s.caption_30sec_row_id
+ AND g.edge_type = 'co_clip'
+LEFT JOIN visual_clips AS v
+  ON v.row_id = g.dst_row_id
+WHERE s.row_id = ?;
+```
+
+`topic_fact_evidence`和`event_step_evidence`同样保存到30sec episode的真实证据关联. 下游agent应沿这些关联读取视频和文本, 不从chain摘要反推不存在的证据.
+
 # Step 2: 全量训练
 和试点大部分地方一样, 但是有一部分改进, 以下面为准:
 ## 修改
