@@ -105,8 +105,8 @@ async def run_stage(stage_dir: Path, output_type: type[OutputModel], attempts: i
         if (prior_attempt / "output.json").exists():
             output = output_type.model_validate_json((prior_attempt / "output.json").read_text())
             usage = json.loads((prior_attempt / "usage.json").read_text())
-            write_json(output_path, output.model_dump(mode="json"))
             write_json(usage_path, usage)
+            write_json(output_path, output.model_dump(mode="json"))
             return output, usage
     prior_attempts = [path for path in all_attempts if not (path / "cancelled.json").exists()]
     if len(prior_attempts) >= attempts:
@@ -120,10 +120,10 @@ async def run_stage(stage_dir: Path, output_type: type[OutputModel], attempts: i
         write_json(attempt_dir / "started.json", {"attempt": attempt_number})
         try:
             output, usage = await call(attempt_dir)
-            write_json(attempt_dir / "output.json", output.model_dump(mode="json"))
             write_json(attempt_dir / "usage.json", usage)
-            write_json(output_path, output.model_dump(mode="json"))
+            write_json(attempt_dir / "output.json", output.model_dump(mode="json"))
             write_json(usage_path, usage)
+            write_json(output_path, output.model_dump(mode="json"))
             return output, usage
         except asyncio.CancelledError:
             write_json(attempt_dir / "cancelled.json", {"attempt": attempt_number})
@@ -465,8 +465,8 @@ async def update_skills_once(runtime: PilotHarness, summaries: list[dict[str, st
         segment += 1
     git(skills_dir, "add", "-A")
     changed_files = git(skills_dir, "diff", "--cached", "--name-only").split()
-    git(skills_dir, "commit", "-q", "--allow-empty", "-m", f"Skill update after {batch_label}")
-    commit = git(skills_dir, "rev-parse", "HEAD").strip()
+    tree = git(skills_dir, "write-tree").strip()
+    commit = git(skills_dir, "commit-tree", tree, "-p", expected_commit, "-m", f"Skill update after {batch_label}").strip()
     return SkillUpdate(commit=commit, changed_files=changed_files), usage
 
 
@@ -478,6 +478,11 @@ async def update_skills(runtime: PilotHarness, summaries: list[dict[str, str]], 
         return await update_skills_once(runtime, summaries, batch_label, input_payload["skills_commit"], attempt_dir, skills_dir)
 
     output, _ = await run_stage(stage_dir, SkillUpdate, attempts, mode, call)
+    head = git(skills_dir, "rev-parse", "HEAD").strip()
+    if head == expected_commit:
+        git(skills_dir, "update-ref", "-m", f"Skill update after {batch_label}", "HEAD", output.commit, expected_commit)
+    elif head != output.commit:
+        raise RuntimeError(f"Skills repository HEAD {head} differs from both updater input {expected_commit} and output {output.commit}")
     return output
 
 
