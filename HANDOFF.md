@@ -7,8 +7,11 @@
 ## 新 harness 规格
 
 1. Agent 停止与循环检测：
-   - 增加 `submit_answer` tool；模型通过调用它提交最终答案，调用后退出 agent loop。
-   - 如果连续 3 次 agent 输出完全一致，本次 trace 作废，并按现有正式模式重试整个 rollout。
+   - 主 retrieval agent、`clip_qa` 和 reflection 分别增加适配自身输出的 `submit_answer` tool；模型通过调用它提交最终答案，调用后退出对应 agent loop。
+   - skill updater 不使用 `submit_answer`；它完成连续文件操作后调用专用 `stop` tool 退出。
+   - 所有 agent loop 的总轮数限制为 100。100 足够所有正常完成结果；触发 100 证明本次运行出问题，本次 trace 作废并按现有正式模式重试整个 rollout。
+   - 如果连续 3 次 agent completion 在排除 reasoning 后的 raw characters 完全一致，本次 trace 作废，并按现有正式模式重试整个 rollout。
+   - 所有 trace 都必须保存，包括因重复输出或达到 100 轮而作废的 trace，以便 debug。
    - 这条需求源于真实 `clip_qa` trace 中模型反复声称要停止、但仍调用 `add_note` 的循环。
 2. 正式训练改为每 batch 5 个问题、每个问题 10 个并行 rollout。
 3. 主模型改为 **Qwen 3.8 Next Flash**，不是 Qwen 3.8 27B。模型名称和启动方式必须读取仓库 `INFRA.txt` 后确定，不要凭记忆填写。
@@ -27,15 +30,13 @@
    - 一轮完整 update 的所有文件操作完成后只 commit 一次，不是每个 patch 各 commit 一次。
    - updater 可以查看历史并参考旧版本重新写入当前文件。
    - 不允许向 updater 暴露或执行直接 Git rollback；所谓“回滚”必须是读取历史内容后重新 update，再形成新 commit。
+   - updater 完成全部文件操作后调用专用 `stop` tool 退出，不使用 `submit_answer`。
 
 ## 开始实现前必须向用户确认的设计点
 
-当前需求仍有几个会改变实验语义的未决点；受 `AGENTS.md` 的“每个有意义决定都询问用户”约束，新对话必须先确认，不能自行选择：
+当前需求仍有一个会改变实验语义的未决点；受 `AGENTS.md` 的“每个有意义决定都询问用户”约束，新对话必须先确认，不能自行选择：
 
-1. `submit_answer` 的适用范围：只用于主 retrieval agent，还是主 agent、`clip_qa`、reflection 和 skill updater 的每个 agent loop 都使用各自的 submit tool。
-2. “连续 3 次输出完全一致”的比较对象：建议比较去除 response ID、call ID、usage 等易变元数据后的模型语义输出，包括 reasoning、message、tool name 和 tool arguments；但必须由用户确认。
-3. 新 SKILL 独立仓库的路径、首批文件如何从现有 `skills/initial/SKILL.md` 拆分，以及 `META-SKILL.md` 放在外层主仓库还是 SKILL 独立仓库中。
-4. 循环 trace 作废后是否保留其磁盘 trace 作为失败证据。现有系统通常保留失败 attempt；不要自行删除。
+1. 新 SKILL 独立仓库的路径、首批文件如何从现有 `skills/initial/SKILL.md` 拆分，以及 `META-SKILL.md` 放在外层主仓库还是 SKILL 独立仓库中。
 
 ## 已核验的循环事件
 
@@ -65,7 +66,7 @@
 - reasoning item policy 为 `preserve`；服务端 thinking/preserve_thinking 均开启。
 - 当前 `clip_qa` 使用 `Agent(..., tools=[sample_video, add_note, read_notes], output_type=ClipAnswer)`。
 - Agents SDK 当前默认 `tool_use_behavior="run_llm_again"`。只要 response 内仍有工具调用，即使同轮还有 message，Runner 也会执行工具并进入下一轮；这是 585 次 `add_note` 循环得以持续的直接机制。
-- 当前主 agent 最大 50 turns；`clip_qa` 和 reflection 使用 `TURN_SAFETY_LIMIT=1000` 作为高位死循环保护。
+- 当前主 agent 最大 50 turns；`clip_qa` 和 reflection 使用 `TURN_SAFETY_LIMIT=1000`。新设计要求所有 agent loop 的总轮数统一限制为 100。
 - 当前代码已有接近 context limit 时关闭工具、强制结构化结果的逻辑；新设计不应误删这部分，除非用户明确改变。
 - 当前正式配置仍是 2 questions/batch、5 rollouts/question；需要按新规格改为 5 和 10。
 - 相关代码主要在：
@@ -106,11 +107,10 @@
 
 1. 先读取当前 `AGENTS.md`、本文件、`PLANS.md` 的相关末段和 `INFRA.txt`；不要一次读取多份大型源码。此前一次批量读取三个源码文件的命令被审批器拒绝，拒绝后本对话已停止，没有绕过。
 2. 阅读 Anthropic 官方 skill-creator 的实际内容，而不只看仓库目录名。
-3. 向用户确认上面的四个未决设计点。
+3. 向用户确认上面的一个未决设计点。
 4. 把用户确认后的新 harness 设计写入 `PLANS.md`，只改相关内容并提交。
-5. 实现 submit tool、三次相同输出检测、batch/rollout 配置、Flash 模型配置、SKILL 目录读取工具，以及独立 Git skill updater agent loop。
+5. 为主 agent、`clip_qa` 和 reflection 实现 submit tool，为 skill updater 实现 stop tool；实现排除 reasoning 后连续三次 completion raw characters 完全一致的检测、统一 100 轮限制、失败 trace 保留、batch/rollout 配置、Flash 模型配置、SKILL 目录读取工具，以及独立 Git skill updater agent loop。
 6. 不新增测试，除非用户明确要求；可以运行已有测试。严禁运行 syntax check。
 7. 中等改动完成后，按 `REVIEW.md` 由一个新的 subagent 审查 diff；主 agent 不读取 `REVIEW.md`。
 8. 正式 Pilot 前按规则执行一次 Claude CLI 全仓库审查；小型后续修复只需新的 subagent diff review。
 9. 正式运行必须使用 Docker、W&B、前台 unified exec session，不传 OpenAI key。稳定后按 `AGENTS.md` 使用一小时监控间隔。
-
