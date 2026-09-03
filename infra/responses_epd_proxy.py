@@ -31,8 +31,6 @@ def collect_images(value: object, images: list[dict[str, object]], seen: set[str
         return
     if value.get("type") == "input_image":
         image_url = value["image_url"]
-        if not isinstance(image_url, str):
-            raise TypeError("input_image.image_url must be a string")
         if image_url not in seen:
             seen.add(image_url)
             images.append(value)
@@ -81,7 +79,7 @@ async def finish_request(request_id: str) -> None:
 @app.post("/v1/responses")
 async def responses(request: Request) -> Response:
     body = await request.json()
-    request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
+    request_id = str(uuid.uuid4())
     global active_requests
     async with active_requests_lock:
         active_requests += 1

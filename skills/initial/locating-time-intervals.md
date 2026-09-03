@@ -25,20 +25,20 @@ Every table stores positions in seconds within one `video_id`. Locating a moment
 2. Zoom in using the episode granularity ladder: `1h` and `10min` rows for orientation, `3min` for context, `30sec` for exact positions.
 
 ```sql
--- Coarse-to-fine: all 3min summaries covering a candidate hour in video 14
+-- Coarse-to-fine: replace the candidate video and hour bounds
 SELECT start_s, end_s, text
 FROM episodes
-WHERE video_id = '14' AND granularity = '3min' AND start_s >= 2400 AND end_s <= 6000
+WHERE video_id = 'candidate_video_id' AND granularity = '3min' AND start_s >= 0 AND end_s <= 3600
 ORDER BY start_s;
 ```
 
 ```sql
--- Exact position: 30sec summaries and visual clip descriptions around 2685 s
+-- Exact position: replace the candidate video and center time
 SELECT 'episode' AS source, start_s, end_s, text FROM episodes
-WHERE video_id = '14' AND granularity = '30sec' AND end_s >= 2685 - 180 AND start_s <= 2685 + 180
+WHERE video_id = 'candidate_video_id' AND granularity = '30sec' AND end_s >= 0 - 180 AND start_s <= 0 + 180
 UNION ALL
 SELECT 'clip', start_s, end_s, text FROM visual_clips
-WHERE video_id = '14' AND end_s >= 2685 - 180 AND start_s <= 2685 + 180
+WHERE video_id = 'candidate_video_id' AND end_s >= 0 - 180 AND start_s <= 0 + 180
 ORDER BY start_s, source;
 ```
 
@@ -47,7 +47,7 @@ ORDER BY start_s, source;
 ```sql
 SELECT name, first_seen_s, last_seen_s, frequency
 FROM entities
-WHERE video_id = '14' AND normalized_name LIKE '%basketball%'
+WHERE video_id = 'candidate_video_id' AND normalized_name LIKE '%target entity%'
 ORDER BY first_seen_s;
 ```
 

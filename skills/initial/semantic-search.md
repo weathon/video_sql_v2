@@ -27,10 +27,10 @@ description: How to use semantic_search to find rows when exact keywords are unk
 4. Take the returned `video_id` and time range and expand around it with SQL to read neighbouring rows. `run_sql` still limits every returned text cell to a 500-character preview, so do not treat a long cell as untruncated evidence:
 
 ```sql
--- Read full context around a semantic hit at video 21, 19881-19980 s
+-- Replace these candidate values with one semantic-search hit
 SELECT granularity, start_s, end_s, text
 FROM episodes
-WHERE video_id = '21' AND end_s >= 19881 - 120 AND start_s <= 19980 + 120
+WHERE video_id = 'candidate_video_id' AND end_s >= 0 - 120 AND start_s <= 60 + 120
 ORDER BY granularity, start_s;
 ```
 

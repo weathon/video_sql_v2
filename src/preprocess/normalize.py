@@ -6,7 +6,7 @@ from anyascii import anyascii
 
 def normalize_text(text: str) -> str:
     converted = []
-    for character in str(text):
+    for character in text:
         if ord(character) < 128:
             converted.append(character)
             continue

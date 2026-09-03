@@ -43,7 +43,7 @@ SELECT video_id, filename, duration_s FROM videos ORDER BY video_id;
 -- Exact keyword lookup in short summaries, ordered by time
 SELECT video_id, start_s, end_s, text
 FROM episodes
-WHERE granularity = '30sec' AND text LIKE '%milk tea%'
+WHERE granularity = '30sec' AND text LIKE '%target activity%'
 ORDER BY video_id, start_s;
 ```
 
@@ -51,14 +51,14 @@ ORDER BY video_id, start_s;
 -- Everything known about one entity in one video
 SELECT e.name, e.first_seen_s, e.last_seen_s, e.frequency
 FROM entities e
-WHERE e.video_id = '18' AND e.normalized_name LIKE '%barber%';
+WHERE e.normalized_name LIKE '%target entity%';
 ```
 
 ```sql
 -- Join a text hit to the visual clips that overlap it
 SELECT v.video_id, v.start_s, v.end_s, v.text
 FROM visual_clips v
-WHERE v.video_id = '18' AND v.end_s >= 8666 AND v.start_s <= 8708
+WHERE v.video_id = 'candidate_video_id' AND v.end_s >= 0 AND v.start_s <= 60
 ORDER BY v.start_s;
 ```
 
@@ -66,7 +66,7 @@ ORDER BY v.start_s;
 -- Steps of every event chain whose name mentions a keyword
 SELECT c.video_id, c.name, s.step_index, s.start_s, s.end_s, s.description
 FROM event_chains c JOIN event_steps s ON s.chain_row_id = c.row_id
-WHERE c.name LIKE '%haircut%'
+WHERE c.name LIKE '%target event%'
 ORDER BY c.video_id, c.name, s.step_index;
 ```
 

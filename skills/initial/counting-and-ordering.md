@@ -27,7 +27,7 @@ Counting and ordering questions fail when duplicates are counted twice or when o
 ```sql
 SELECT video_id, start_s, end_s, text
 FROM episodes
-WHERE granularity = '30sec' AND text LIKE '%blind box%'
+WHERE granularity = '30sec' AND text LIKE '%target event%'
 ORDER BY TRY_CAST(video_id AS INTEGER), video_id, start_s;
 ```
 
@@ -37,7 +37,7 @@ ORDER BY TRY_CAST(video_id AS INTEGER), video_id, start_s;
 ```sql
 SELECT video_id, MIN(start_s) AS first_time
 FROM visual_clips
-WHERE text LIKE '%sunshine rainbow%'
+WHERE text LIKE '%target scene%'
 GROUP BY video_id
 ORDER BY TRY_CAST(video_id AS INTEGER), video_id, first_time;
 ```
