@@ -256,3 +256,4 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 2. updater 可以查看 Git 历史并读取旧版本内容，参考后重新写入当前文件；不向 updater 暴露或执行直接 Git rollback。
 3. 一轮完整 update 的所有文件操作完成后只 commit 一次。
 4. updater 完成全部文件操作后调用专用 `stop` tool 退出。
+5. Git commit history 必须包含 rollout ID 和修改原因；保存的 SKILL 也必须简单记录保存原因，便于以后推翻或修改之前的方案以及 debug 追溯。
