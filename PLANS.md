@@ -242,7 +242,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 1. 正式训练改为每 batch 5 个问题、每个问题 10 个并行 rollout；扩大到 50 个并行 rollout，用正式运行结果检查移除 `--no-async-scheduling` 后的 GPU 利用率。
 2. 主模型使用官方 `Qwen/Qwen3.8-27B-FP8`。PD consumer 运行在 GPU 0,2,5,7，TP=4，端口 8002，max-num-seqs 200，gpu-memory-utilization=0.95，移除 `--no-async-scheduling`，MTP speculative length 为 4，default chat-template kwargs 保持 `enable_thinking=true` 和 `preserve_thinking=true`；agent reasoning effort 使用 `medium`。改用官方 FP8 是为了排除已观察到的 NVFP4 重复 reasoning 与 ModelOpt-NVFP4 路径之间的关联，同时 medium 避免长 agent 使用默认 xhigh 产生过长 reasoning。
 3. harness 的 `context_limit` 保持 262,144，并保留接近该边界时的 compaction；vLLM 后端通过模型官方 YaRN 配置启用 314,573 token 上限、factor=1.2，作为 client compaction size 之上的 20% 缓冲。
-4. 正式训练 client Docker 暴露与 vLLM 相同的 GPU 0,2,5,7，供 W&B 采集 GPU 指标。
+4. 正式训练 client Docker 暴露与 vLLM 相同的 GPU 0,1,2,5,7，供 W&B 采集 GPU 指标。
 5. 一个 batch 的全部 rollout 都失败时跳过该 batch 的 updater；连续两个 batch 的全部 rollout 都失败时终止训练。
 6. 保留 OpenAI SDK 内部重试，并将 `max_retries` 设为 3。
 7. 正式训练 client 使用 `docker/training/Dockerfile` 构建的派生镜像，并安装 `ffmpeg`；原因是 `sample_video` 会调用 `ffmpeg`。

@@ -6,7 +6,7 @@ Build the formal training client image with ffmpeg because sample_video invokes 
 
 docker build -f docker/training/Dockerfile -t video-sql-training:7c6221d13f9f-0.3.0-ffmpeg docker/training
 
-Formal training client Docker must include `--gpus all -e CUDA_VISIBLE_DEVICES=0,2,5,7` so W&B can monitor the same GPUs exposed to vLLM.
+Formal training client Docker must include `--gpus all -e CUDA_VISIBLE_DEVICES=0,1,2,5,7` so W&B can monitor the same GPUs exposed to vLLM.
 
 Responses API EPD formal topology uses GPU 1 for the encoder producer, the existing GPU 0,2,5,7 TP=4 server as the PD consumer on port 8002, and `infra/responses_epd_proxy.py` on port 8000. All three containers mount `/raid/wg25r/video_sql_v2/formal_runs/pilot_v19_epd_shared` at `/epd_shared`; vLLM shares `/epd_shared/cache`, and the proxy clears only that encoder cache after the active Responses request count reaches zero:
 
