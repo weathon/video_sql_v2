@@ -391,12 +391,18 @@ async def write_skill(context: RunContextWrapper[RolloutContext], name: str, con
             missing_sections = [section for section in sections if section not in lines]
             if missing_sections:
                 raise ValueError(f"missing required sections: {missing_sections}")
-            section_starts = [lines.index(section) for section in sections]
-            sections_without_reasons = [sections[index] for index, start in enumerate(section_starts) if not any(line.startswith("**Reason:** ") for line in lines[start + 1:section_starts[index + 1] if index + 1 < len(section_starts) else len(lines)])]
+            section_starts = [index for index, line in enumerate(lines) if line.startswith("## ")]
+            sections_without_reasons = [lines[start] for index, start in enumerate(section_starts) if not any(line.startswith("**Reason:** ") and line.removeprefix("**Reason:** ").strip() for line in lines[start + 1:section_starts[index + 1] if index + 1 < len(section_starts) else len(lines)])]
             if sections_without_reasons:
                 raise ValueError(f"sections missing a reason: {sections_without_reasons}")
-        elif not any(line.startswith("**Reason:** ") for line in lines):
-            raise ValueError("META-SKILL needs a reason")
+        else:
+            section_starts = [index for index, line in enumerate(lines) if line.startswith("## ")]
+            if section_starts:
+                sections_without_reasons = [lines[start] for index, start in enumerate(section_starts) if not any(line.startswith("**Reason:** ") and line.removeprefix("**Reason:** ").strip() for line in lines[start + 1:section_starts[index + 1] if index + 1 < len(section_starts) else len(lines)])]
+                if sections_without_reasons:
+                    raise ValueError(f"sections missing a reason: {sections_without_reasons}")
+            elif not any(line.startswith("**Reason:** ") and line.removeprefix("**Reason:** ").strip() for line in lines):
+                raise ValueError("META-SKILL needs a reason")
     except (ValueError, KeyError, TypeError, yaml.YAMLError) as error:
         if previous is None:
             path.unlink()
@@ -450,10 +456,12 @@ async def update_skills_once(runtime: PilotHarness, summaries: list[dict[str, ob
     if head != expected_commit:
         raise RuntimeError(f"Skills repository HEAD {head} differs from the updater input commit {expected_commit}")
     context = RolloutContext(runtime=runtime, attempt_dir=attempt_dir, skills_dir=skills_dir)
-    instructions = "Update the retrieval skill files and META-SKILL from the question summaries. Incorporate only reusable lessons supported by the summaries. Add a skill file for a new recurring situation, rewrite files whose guidance is weak, and delete files that are redundant, conflicting, obsolete, or overly specific. Each retrieval skill is <name>.md with YAML frontmatter (name equal to the file name, description stating when to use it) followed by Introduction, When to use, and Main content sections; put SQL examples inline in the Markdown. Every guidance point must be immediately followed by a short `**Reason:** ...` explanation; when one reason covers a whole section, one `**Reason:** ...` line at the end of that section is enough. Apply the same reason format to every META-SKILL section. Use git_history and read_skill_at_commit to consult earlier versions and their recorded reasons, then rewrite current files when guidance should be reversed or changed. Do not leak dataset-specific names, dates, answers, or private details. Call stop with a short overall modification reason when all file operations are complete."
+    unfinished_status = git(skills_dir, "status", "--short")
+    unfinished_diff = git(skills_dir, "diff", "HEAD", "--", ".")
+    instructions = "Update the retrieval skill files and META-SKILL from the question summaries. Incorporate only reusable lessons supported by the summaries. Add a skill file for a new recurring situation, rewrite files whose guidance is weak, and delete files that are redundant, conflicting, obsolete, or overly specific. Each retrieval skill is <name>.md with YAML frontmatter (name equal to the file name, description stating when to use it) followed by Introduction, When to use, and Main content sections; put SQL examples inline in the Markdown. Every guidance point must be immediately followed by a short `**Reason:** ...` explanation; when one reason covers a whole section, one `**Reason:** ...` line at the end of that section is enough. Apply the same reason format to every META-SKILL section. If the input contains unfinished status or diff from a failed or cancelled attempt, inspect every listed file and decide whether its direct edits should be kept, rewritten, or deleted as part of this same update; the final reason must cover the complete resulting diff. Use git_history and read_skill_at_commit to consult earlier versions and their recorded reasons, then rewrite current files when guidance should be reversed or changed. Do not leak dataset-specific names, dates, answers, or private details. Call stop with a short overall modification reason when all file operations are complete."
     agent = Agent(name="skill_updater", instructions=instructions, tools=[list_skills, read_current_skill, write_skill, delete_skill, git_history, read_skill_at_commit, stop], model=runtime.model, model_settings=runtime.model_settings, tool_use_behavior=stop_when_submitted)
     active_agent = agent
-    input_items: str | list[dict[str, object]] = json.dumps({"rollout_ids": rollout_ids, "question_summaries": summaries}, ensure_ascii=False)
+    input_items: str | list[dict[str, object]] = json.dumps({"rollout_ids": rollout_ids, "question_summaries": summaries, "unfinished_worktree_status": unfinished_status, "unfinished_diff": unfinished_diff}, ensure_ascii=False)
     used_turns = 0
     segment = 0
     tools_enabled = True
