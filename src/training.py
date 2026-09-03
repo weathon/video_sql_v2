@@ -218,11 +218,14 @@ def rollout_trace(attempt_dir: Path) -> list[dict[str, object]]:
     trace_path = sorted((attempt_dir / "traces").glob("main-segment-*.json"))[-1]
     trace = json.loads(trace_path.read_text())
     trace = {key: trace[key] for key in ("input", "is_complete", "current_turn", "items")}
+    read_skill_call_ids = {item["call_id"] for item in trace["items"] if item["type"] == "function_call" and item["name"] == "read_skill"}
     for item in trace["items"]:
         if item["type"] == "function_call":
             item["arguments"] = json.loads(item["arguments"])
         elif item["type"] == "function_call_output":
-            if isinstance(item["output"], str):
+            if item["call_id"] in read_skill_call_ids:
+                continue
+            elif isinstance(item["output"], str):
                 item["output"] = json.loads(item["output"])
             else:
                 assert isinstance(item["output"], list)
