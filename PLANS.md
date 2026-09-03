@@ -202,7 +202,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 4. Reflection 接收 question、candidate answer、reference answer、score、rollout status、完整语义 trace、当前 SKILL 和 META-SKILL；它可以重新查询数据库或视频，并输出去具体内容后的可复用经验。
 5. 同一问题的多个 rollout reflection 先汇总为 question summary，再由 updater 输出完整替换的 SKILL.md 和 META-SKILL.md；下一个 batch 使用更新后的文件。
 6. 初始文件已创建为 `skills/initial/SKILL.md` 和 `skills/initial/META-SKILL.md`，baseline 使用同一个初始 SKILL，不使用空 prompt。
-7. Retryable API、模型解析、超时、max-turn 和正式模式的 `agent_raise` 错误按原方法重试；Agents SDK `UserError` 包装的 `httpx` request error、`httpx2` timeout 或 `httpx2.RemoteProtocolError` 先取出原始原因后按同一规则分类；确定性输入、权限、认证、坏请求和代码错误直接终止，不使用替代方法。原因是正式 v16 的嵌套 `clip_qa` 收到 `httpx2.RemoteProtocolError`，但旧分类只包含 `httpx2.TimeoutException`。
+7. Retryable API、模型解析、超时、max-turn 和正式模式的 `agent_raise` 错误按原方法重试；Agents SDK `UserError` 包装的 `httpx` request error、`httpx2` network error、`httpx2` timeout 或 `httpx2.RemoteProtocolError` 先取出原始原因后按同一规则分类；确定性输入、权限、认证、坏请求和代码错误直接终止，不使用替代方法。原因是正式 v16 的嵌套 `clip_qa` 收到 `httpx2.RemoteProtocolError`，但旧分类只包含 `httpx2.TimeoutException`。
 8. 进程取消会写入 `cancelled.json` 并传播，取消的 attempt 不占重试预算；恢复时创建新的物理 attempt 编号。
 9. 重试耗尽的 rollout 保存为 `status=failed`、score=0；训练和验证均把所有指定 rollout 的分数纳入均值，失败项不会从分母移除。
 10. 同一 batch 的并行 rollout 和 question summary 使用 `asyncio.TaskGroup`；一个任务异常时取消并等待同组任务完成取消，再关闭共享客户端。
