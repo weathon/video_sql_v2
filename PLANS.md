@@ -6,7 +6,7 @@
 3. 使用的Harness框架: https://github.com/openai/openai-agents-python
 5. Embedding模型: Qwen/Qwen3-VL-Embedding-8B (Use VL for both visual and text-only), start it using vllm
 6. 数据库引擎: https://github.com/duckdb/duckdb
-7. 本地模型: Inferact/Qwen3.8-Flash-Next-NVFP4, 使用参考在notes/INFRA.txt第一条
+7. 本地模型: Qwen/Qwen3.8-Flash-Next-FP8, 使用参考在notes/INFRA.txt第一条
 8. 预构建的index(只用作试点): jiazhengli7/magic-video-artifacts
 9. notes/文件夹, 上一次失败过程积累的经验和踩坑, 可以参考, 但是不一定有用甚至可能跑偏, 冲突时以当前计划为准
 
@@ -20,7 +20,7 @@
 1. 用提前做好的index (材料 8)和原始视频(材料 1), 构建一个新的duckdb数据库, 数据库的schema完全准许材料2, 只不过我们是用SQL database而不是graph, embedding也许需要重新准备, 参考notes/VIDEO_EMBEDDING_PIPELINE.md如何构建新的embedding.
 2. 搭建我们的harness,  见Harness架构如何搭建, 使用OpenAI Agents SDK连接本地模型, 验证他保留了过往reasoning并且支持图片或视频输入
 3. 把材料8和材料1的数据集做graph分割, 按照问题和视频连接做成一个图, 分割出两个set, 大的作为训练集, 小的作为测试集
-4. 在训练集上跑我们的`"训练"过程`, 每个问题10个rollout, 一次5个问题, 一共3个epoch
+4. 在训练集上跑我们的`"训练"过程`, 每个问题5个rollout, 一次4个问题, 一共3个epoch
 5. 监控训练过程的平均打分到wandb, 结束后在测试集上测试. 
 6. 使用最开始的最简单SKILL, 在测试集跑一次, 对比准确度
 
@@ -104,7 +104,7 @@ ORDER BY day;
 - Reflection 永不 compaction；当其 remaining 小于等于 50k 时，禁止继续调用工具并强制输出最终 reflection 和 meta-reflection。
 
 #### "训练"过程:
-1. 我们定义batch size代表n个问题和每个问题m个平行rollout. 把SKILL.md放入prompt对于一整个batch做平行rollout, 得到25个结果, 这是用用一个额外的judge call来判断模型答案正确性(打分/5), 这个分数记作s. wandb log这个s. 这个s也是qwen 3.8 27b产生. 
+1. 我们定义batch size代表n个问题和每个问题m个平行rollout. 把SKILL.md放入prompt对于一整个batch做平行rollout, 得到20个结果, 这是用用一个额外的judge call来判断模型答案正确性(打分/5), 这个分数记作s. wandb log这个s. 这个s也是Qwen3.8 Flash Next FP8产生. 
 2. 把正确答案和s(而不只是s)都给每一个rollout, 然后告诉他这是正确答案和你的分数, 同时插入META-SKILL.md (META-SKILL.md不是最开始放进去的), 你现在要做的就是去重新复盘这个结果, 包括重新回顾自己的trace和重新对数据库检索和探索, 找到你为什么对/为什么错的原因, 把这个原因总结出来, 记错relection, 同时这个反思过程有什么经验(帮助下一次反思), 记错meta-relection. 两个反思都要去掉具体内容变得抽象化 可以辅助任何问题而不是本次情况. 本次情况可以作为案例, 但是要去掉敏感信息防止数据泄露(比如具体某天中午午饭内容). 注意要模型不光总结新的经验, 还要让她注意什么时候要更新/替换/修改旧的经验. 不然经验会越变越大而且出现重复/冲突/相似的内容.
 3. 每一个问题的m个rollout的反思被另一个call总结起来, 然后模型生成一个新的SKILL.md和META-SKILL.md, 同上, 但是注意不要一味的添加, 也要值得去除/替换. 不然会冲突和越变越大. 
 4. 下一个batch带着新的SKILL.md和META-SKILL.md继续. 
@@ -239,14 +239,14 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 7. 正式运行中，所有普通 FunctionTool 执行错误以 `{"error": "..."}` tool result 返回给调用它的 agent 处理，不再让异常直接穿透并使 rollout 或 TaskGroup crash；`agent_raise` 保持为 agent 主动结束当前 rollout 的控制信号。统一使用 JSON 是因为 v18 已将 SDK 默认错误文本返回给 agent，但 reflection 的 rollout trace 会将普通工具返回解码为 JSON，默认文本导致 `JSONDecodeError` 并终止整批运行。
 
 ### 训练配置
-1. 正式训练改为每 batch 5 个问题、每个问题 10 个并行 rollout；扩大到 50 个并行 rollout，用正式运行结果检查移除 `--no-async-scheduling` 后的 GPU 利用率。
-2. 主模型使用官方 `Qwen/Qwen3.8-27B-FP8`。PD consumer 运行在 GPU 0,5，TP=2，端口 8002，max-num-seqs 200，gpu-memory-utilization=0.90，移除 `--no-async-scheduling`，MTP speculative length 为 4，default chat-template kwargs 保持 `enable_thinking=true` 和 `preserve_thinking=true`；agent reasoning effort 使用 `medium`。改用官方 FP8 是为了排除已观察到的 NVFP4 重复 reasoning 与 ModelOpt-NVFP4 路径之间的关联，同时 medium 避免长 agent 使用默认 xhigh 产生过长 reasoning；0.90 为运行时动态加载 encoder cache 保留额外显存余量；TP=2 使用当前可启动正式 PD 的 GPU 0、5。
+1. 正式训练改为每 batch 4 个问题、每个问题 5 个并行 rollout，共 20 个并行 rollout；服务并发上限设为 24。
+2. 主模型使用官方 `Qwen/Qwen3.8-Flash-Next-FP8`。PD consumer 运行在 GPU 0,5，TP=2，端口 8002，max-num-seqs 24，gpu-memory-utilization=0.90，不使用 `--no-async-scheduling`，MTP speculative length 为 4，default chat-template kwargs 保持 `enable_thinking=true` 和 `preserve_thinking=true`；agent reasoning effort 使用 `medium`。切回 Next Flash 是因为此前重复 reasoning 的问题来自 NVFP4 而不是 Next，使用官方 FP8 避开该问题；0.90 为运行时动态加载 encoder cache 保留额外显存余量；TP=2 使用 GPU 0、5。
 3. harness 的 `context_limit` 保持 262,144，并保留接近该边界时的 compaction；vLLM 后端通过模型官方 YaRN 配置启用 314,573 token 上限、factor=1.2，作为 client compaction size 之上的 20% 缓冲。
 4. 正式训练 client Docker 暴露与 vLLM 相同的 GPU 0,4,5，供 W&B 采集 GPU 指标。
 5. 一个 batch 的全部 rollout 都失败时跳过该 batch 的 updater；连续两个 batch 的全部 rollout 都失败时终止训练。
 6. 保留 OpenAI SDK 内部重试，并将 `max_retries` 设为 3。
 7. 正式训练 client 使用 `docker/training/Dockerfile` 构建的派生镜像，并安装 `ffmpeg`；原因是 `sample_video` 会调用 `ffmpeg`。
-8. 按 vLLM Encoder Disaggregation 方案，将 vision encoder producer 与 embedding 服务共同运行在 GPU 4、各使用 gpu-memory-utilization=0.45，encoder 端口为 8001，并通过共享 EC storage 向 PD consumer 提供 encoder cache；`ECExampleConnector` consumer 使用当前 TP worker 的 CUDA device 加载 cache；`infra/responses_epd_proxy.py` 在端口 8000 保持 `/v1/responses` 请求和 SSE 输出原样，只先把其中的 `input_image` 发送到 encoder producer，encoder 失败时不把请求发送给 PD；共享 cache 放在 `/raid`，并在活跃 Responses 请求数归零后清空。原因是 v18 在 47 个纯文本 running 请求时四张 PD GPU 为 100% SM，但进入多模态阶段后仍有 21 running、0 waiting 时 SM 多数降到 14–35%，且同一采样窗口出现新的 encoder cache miss；EPD 用于消除 vision encoder 与 prefill/decode 的共置干扰，同时避免无淘汰的 `ECExampleConnector` 填满根盘；当前 device 避免 safetensors 将每个 TP worker 的 `cuda` 都解析为逻辑 `cuda:0`；GPU 4 共置避免 encoder 占用 PD GPU。
+8. 按 vLLM Encoder Disaggregation 方案，将 vision encoder producer 与 embedding 服务共同运行在 GPU 4、各使用 gpu-memory-utilization=0.45，encoder 端口为 8001、max-num-seqs 为 24，并与 PD consumer 并行运行，通过共享 EC storage 向 PD consumer 提供 encoder cache；`ECExampleConnector` consumer 使用当前 TP worker 的 CUDA device 加载 cache；`infra/responses_epd_proxy.py` 在端口 8000 保持 `/v1/responses` 请求和 SSE 输出原样，只先把其中的 `input_image` 发送到 encoder producer，encoder 失败时不把请求发送给 PD；共享 cache 放在 `/raid`，并在活跃 Responses 请求数归零后清空。原因是 v18 在 47 个纯文本 running 请求时四张 PD GPU 为 100% SM，但进入多模态阶段后仍有 21 running、0 waiting 时 SM 多数降到 14–35%，且同一采样窗口出现新的 encoder cache miss；EPD 用于消除 vision encoder 与 prefill/decode 的共置干扰，同时避免无淘汰的 `ECExampleConnector` 填满根盘；当前 device 避免 safetensors 将每个 TP worker 的 `cuda` 都解析为逻辑 `cuda:0`；GPU 4 共置避免 encoder 占用 PD GPU。
 
 ### SKILL 目录
 1. SKILL 不再是单个 Markdown 文件，而是一个包含多个 Markdown 文件的目录；每个文件对应一种特殊情况，包含 YAML frontmatter（`name`、`description`，description 即“何时使用”）、Introduction、When to use、Main content；SQL 示例直接写在 Markdown 中，不单独保存脚本文件。结构参考 Anthropic 官方 skill-creator。
