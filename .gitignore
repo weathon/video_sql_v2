@@ -20,6 +20,7 @@ data/video_clips/
 data/pilot/
 media/
 runs/
+formal_runs/
 infra_test/*_checkpoints/
 infra/curl_sgl*.err
 infra/bench_*.json
