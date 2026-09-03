@@ -557,8 +557,8 @@ async def train(args: argparse.Namespace) -> None:
                     batch_skills_commit = json.loads(skills_before_path.read_text())["commit"]
                     if updater_output_path.exists():
                         updater_commit = json.loads(updater_output_path.read_text())["commit"]
-                        if head != updater_commit:
-                            raise RuntimeError(f"Skills repository HEAD {head} differs from the saved updater commit {updater_commit}")
+                        if head not in (batch_skills_commit, updater_commit):
+                            raise RuntimeError(f"Skills repository HEAD {head} differs from both this batch's starting commit {batch_skills_commit} and saved updater commit {updater_commit}")
                     elif head != batch_skills_commit:
                         raise RuntimeError(f"Skills repository HEAD {head} differs from this batch's starting commit {batch_skills_commit}")
                 else:
