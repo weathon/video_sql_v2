@@ -43,6 +43,8 @@ def collect_images(value: object, images: list[dict[str, object]], seen: set[str
 @app.on_event("startup")
 async def startup() -> None:
     global encoder_session, pd_session
+    if CACHE_PATH.exists():
+        shutil.rmtree(CACHE_PATH)
     CACHE_PATH.mkdir(parents=True, exist_ok=True)
     timeout = aiohttp.ClientTimeout(total=None)
     encoder_session = aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(limit=0))
@@ -89,7 +91,10 @@ async def responses(request: Request) -> Response:
         collect_images(body["input"], images, set())
         if images:
             print(json.dumps({"event": "epd_encoder_prime", "request_id": request_id, "images": len(images)}))
-            await asyncio.gather(*(prime_image(body["model"], image, f"{request_id}:encoder:{index}", headers) for index, image in enumerate(images)))
+            prime_results = await asyncio.gather(*(prime_image(body["model"], image, f"{request_id}:encoder:{index}", headers) for index, image in enumerate(images)), return_exceptions=True)
+            for prime_result in prime_results:
+                if isinstance(prime_result, BaseException):
+                    raise prime_result
 
         upstream = await pd_session.post(f"{PD_URL}/v1/responses", json=body, headers={**headers, "x-request-id": request_id})
         if upstream.status < 200 or upstream.status >= 300:
