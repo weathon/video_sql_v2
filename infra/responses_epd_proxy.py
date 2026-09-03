@@ -96,11 +96,11 @@ async def responses(request: Request) -> Response:
             response_body = await upstream.read()
             print(json.dumps({"event": "epd_pd_error", "request_id": request_id, "status": upstream.status, "body": response_body.decode(errors="replace")}))
             upstream.release()
-            return Response(content=response_body, status_code=upstream.status, headers={"content-type": upstream.headers.get("content-type", "application/json")})
+            return Response(content=response_body, status_code=upstream.status, headers={"content-type": upstream.headers["content-type"]})
         if not body.get("stream", False):
             response_body = await upstream.read()
             upstream.release()
-            return Response(content=response_body, status_code=upstream.status, headers={"content-type": upstream.headers.get("content-type", "application/json")})
+            return Response(content=response_body, status_code=upstream.status, headers={"content-type": upstream.headers["content-type"]})
 
         async def stream() -> AsyncIterator[bytes]:
             try:
@@ -108,14 +108,14 @@ async def responses(request: Request) -> Response:
                     yield chunk
             finally:
                 upstream.release()
-                await finish_request(request_id)
+                await asyncio.shield(finish_request(request_id))
 
-        response = StreamingResponse(stream(), status_code=upstream.status, headers={"content-type": upstream.headers.get("content-type", "text/event-stream")})
+        response = StreamingResponse(stream(), status_code=upstream.status, headers={"content-type": upstream.headers["content-type"]})
         streaming = True
         return response
     finally:
         if not streaming:
-            await finish_request(request_id)
+            await asyncio.shield(finish_request(request_id))
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST"])
@@ -123,7 +123,7 @@ async def passthrough(path: str, request: Request) -> Response:
     headers = {key: value for key, value in request.headers.items() if key.lower() not in {"host", "content-length", "transfer-encoding", "connection"}}
     async with pd_session.request(request.method, f"{PD_URL}/{path}", data=await request.body(), headers=headers) as upstream:
         response_body = await upstream.read()
-        return Response(content=response_body, status_code=upstream.status, headers={"content-type": upstream.headers.get("content-type", "application/json")})
+        return Response(content=response_body, status_code=upstream.status, headers={"content-type": upstream.headers["content-type"]})
 
 
 if __name__ == "__main__":
