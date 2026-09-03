@@ -244,7 +244,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 4. 正式训练 client Docker 暴露与 vLLM 相同的 GPU 0,2,5,7，供 W&B 采集 GPU 指标。
 5. 一个 batch 的全部 rollout 都失败时跳过该 batch 的 updater；连续两个 batch 的全部 rollout 都失败时终止训练。
 6. 保留 OpenAI SDK 内部重试，并将 `max_retries` 设为 3。
-7. 正式训练 client 使用 `Dockerfile.training` 构建的派生镜像，并安装 `ffmpeg`；原因是 `sample_video` 会调用 `ffmpeg`。
+7. 正式训练 client 使用 `docker/training/Dockerfile` 构建的派生镜像，并安装 `ffmpeg`；原因是 `sample_video` 会调用 `ffmpeg`。
 
 ### SKILL 目录
 1. SKILL 不再是单个 Markdown 文件，而是一个包含多个 Markdown 文件的目录；每个文件对应一种特殊情况，包含 YAML frontmatter（`name`、`description`，description 即“何时使用”）、Introduction、When to use、Main content；SQL 示例直接写在 Markdown 中，不单独保存脚本文件。结构参考 Anthropic 官方 skill-creator。

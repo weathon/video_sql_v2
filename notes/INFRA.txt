@@ -4,7 +4,7 @@ docker run --rm --name qwen38-27b-fp8-seq200 --gpus all --privileged --ipc=host 
 
 Build the formal training client image with ffmpeg because sample_video invokes it:
 
-docker build -f Dockerfile.training -t video-sql-training:7c6221d13f9f-0.3.0-ffmpeg .
+docker build -f docker/training/Dockerfile -t video-sql-training:7c6221d13f9f-0.3.0-ffmpeg docker/training
 
 Formal training client Docker must include `--gpus all -e CUDA_VISIBLE_DEVICES=0,2,5,7` so W&B can monitor the same GPUs exposed to vLLM.
 
