@@ -9,6 +9,7 @@ from pathlib import Path
 import aiohttp
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 
 ENCODER_URL = os.environ["EPD_ENCODER_URL"].rstrip("/")
@@ -107,15 +108,24 @@ async def responses(request: Request) -> Response:
             upstream.release()
             return Response(content=response_body, status_code=upstream.status, headers={"content-type": upstream.headers["content-type"]})
 
+        stream_finished = False
+
+        async def finish_stream() -> None:
+            nonlocal stream_finished
+            if stream_finished:
+                return
+            stream_finished = True
+            upstream.release()
+            await asyncio.shield(finish_request(request_id))
+
         async def stream() -> AsyncIterator[bytes]:
             try:
                 async for chunk in upstream.content.iter_any():
                     yield chunk
             finally:
-                upstream.release()
-                await asyncio.shield(finish_request(request_id))
+                await finish_stream()
 
-        response = StreamingResponse(stream(), status_code=upstream.status, headers={"content-type": upstream.headers["content-type"]})
+        response = StreamingResponse(stream(), status_code=upstream.status, headers={"content-type": upstream.headers["content-type"]}, background=BackgroundTask(finish_stream))
         streaming = True
         return response
     finally:
