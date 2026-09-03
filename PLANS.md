@@ -238,8 +238,9 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 6. 现有接近 context limit 时关闭工具、强制输出的逻辑保留不变。
 
 ### 训练配置
-1. 正式训练改为每 batch 5 个问题、每个问题 10 个并行 rollout。
-2. 主模型改为 `Inferact/Qwen3.8-Flash-Next-NVFP4`，启动命令原样使用 `notes/INFRA.txt` 第一条（容器名 `qwen38-flash-next-nvfp4-seq200`，GPU 5,6，TP=2，端口 8000，max-num-seqs 200，default chat-template kwargs 保持 `enable_thinking=true` 和 `preserve_thinking=true`）。
+1. 正式训练改为每 batch 2 个问题、每个问题 10 个并行 rollout；降低同时运行的 rollout 数量，避免 active KV cache 超出当前容量。
+2. 主模型使用 `Inferact/Qwen3.8-Flash-Next-NVFP4`，启动命令原样使用 `notes/INFRA.txt` 第一条：GPU 0,2,5,7，TP=4，端口 8000，max-num-seqs 200，关闭 async scheduling，MTP speculative length 为 4，default chat-template kwargs 保持 `enable_thinking=true` 和 `preserve_thinking=true`；关闭 async scheduling 用于避开当前 MTP、prefix caching 与 async scheduling 组合的重复输出问题。
+3. vLLM 后端通过模型官方 YaRN 配置启用 1,000,000 token 上限，但 harness 的 `context_limit` 仍为 262,144，并保留接近该边界时的 compaction；1M 只作为 compaction 请求的后端缓冲，因为超过 256K 后性能会显著下降，当前内存也不支持按 1M 上下文维持所需并发。
 
 ### SKILL 目录
 1. SKILL 不再是单个 Markdown 文件，而是一个包含多个 Markdown 文件的目录；每个文件对应一种特殊情况，包含 YAML frontmatter（`name`、`description`，description 即“何时使用”）、Introduction、When to use、Main content；SQL 示例直接写在 Markdown 中，不单独保存脚本文件。结构参考 Anthropic 官方 skill-creator。

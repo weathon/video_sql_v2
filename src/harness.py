@@ -159,8 +159,7 @@ async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], co
                 if allow_compaction and not compact_required and event.data.type == "response.completed":
                     response = event.data.response
                     remaining = context_limit - response.usage.input_tokens - response.usage.output_tokens
-                    has_tool_calls = any(item.type == "function_call" for item in response.output)
-                    if remaining <= 50000 and has_tool_calls:
+                    if remaining <= 50000:
                         result.cancel(mode="after_turn")
                         compact_required = True
         if repeated:
