@@ -14,7 +14,7 @@
    - 所有 trace 都必须保存，包括因重复输出或达到 100 轮而作废的 trace，以便 debug。
    - 这条需求源于真实 `clip_qa` trace 中模型反复声称要停止、但仍调用 `add_note` 的循环。
 2. 正式训练改为每 batch 2 个问题、每个问题 10 个并行 rollout。
-3. 主模型改为 **Qwen 3.8 Next Flash**，不是 Qwen 3.8 27B。模型名称和启动方式必须读取仓库 `INFRA.txt` 后确定，不要凭记忆填写。
+3. 主模型改为官方 `Qwen/Qwen3.8-27B-FP8`；TP=4、MTP=4、`--no-async-scheduling`、`--gpu-memory-utilization 0.95`，agent reasoning effort 为 `medium`。模型启动方式读取 `notes/INFRA.txt` 第一条；正式训练 client Docker 也暴露 GPU 0,2,5,7，供 W&B 监控 GPU。
 4. SKILL 不再是单个 Markdown 文件，而是一个包含多个 Markdown 文件的目录：
    - 每个文件对应一种特殊情况，例如“查找特定时间任务”。
    - 每个文件包含介绍、何时使用、主要内容等。
