@@ -236,7 +236,7 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 4. 如果连续 3 次 agent completion 在排除 reasoning 后的 raw characters 完全一致，本次 trace 作废，并按现有正式模式规则重试整个 rollout。
 5. 所有 trace 都必须保存，包括因重复输出或达到 100 轮而作废的 trace。
 6. 现有接近 context limit 时关闭工具、强制输出的逻辑保留不变。
-7. 正式运行中，所有普通 FunctionTool 执行错误作为 tool result 返回给调用它的 agent 处理，不再让异常直接穿透并使 rollout 或 TaskGroup crash；`agent_raise` 保持为 agent 主动结束当前 rollout 的控制信号。该规则源于 v17 的 `sample_video` 将 ffmpeg 参数错误直接传播到 TaskGroup 并终止整批运行。
+7. 正式运行中，所有普通 FunctionTool 执行错误以 `{"error": "..."}` tool result 返回给调用它的 agent 处理，不再让异常直接穿透并使 rollout 或 TaskGroup crash；`agent_raise` 保持为 agent 主动结束当前 rollout 的控制信号。统一使用 JSON 是因为 v18 已将 SDK 默认错误文本返回给 agent，但 reflection 的 rollout trace 会将普通工具返回解码为 JSON，默认文本导致 `JSONDecodeError` 并终止整批运行。
 
 ### 训练配置
 1. 正式训练改为每 batch 5 个问题、每个问题 10 个并行 rollout；扩大到 50 个并行 rollout，用正式运行结果检查移除 `--no-async-scheduling` 后的 GPU 利用率。
