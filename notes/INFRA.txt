@@ -6,7 +6,7 @@ Build the formal training client image with ffmpeg because sample_video invokes 
 
 docker build -f docker/training/Dockerfile -t video-sql-training:7c6221d13f9f-0.3.0-ffmpeg docker/training
 
-Formal training client Docker must include `--gpus all -e CUDA_VISIBLE_DEVICES=0,4,5 -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/raid/wg25r/video_sql_v2` so W&B can monitor the same GPUs exposed to vLLM and root can read the mounted repository state.
+Formal training client Docker must include `--gpus all -e CUDA_VISIBLE_DEVICES=0,4,5 -e HOME=/root -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/raid/wg25r/video_sql_v2` so W&B can monitor the same GPUs exposed to vLLM, read `/root/.netrc`, and let root read the mounted repository state.
 
 Build the EPD vLLM image so each TP worker loads encoder cache onto its current CUDA device:
 
