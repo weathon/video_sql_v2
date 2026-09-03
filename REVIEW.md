@@ -1,26 +1,25 @@
-# Review Guideline (global)
+# Review Guideline
 
-The single standard every pre-run code review must follow. Derived from CLAUDE.md. Whenever CLAUDE.md says to review changes before a run, follow this file exactly.
+This file is read and executed directly by the review subagent only. It is not for the main agent: the main agent must not read, summarize, interpret, or relay it. The review subagent must read the complete file itself before every review.
+
+The target is deliberately **anti-perfect research code**. The review must reject changes that make code polished, generalized, defensive, production-ready, or conventionally "better" beyond the experiment's requirements. Rough, direct, purpose-built code is the desired result, not an imperfection to clean up.
 
 ## When to review
 Before launching any big/expensive run (rollouts, training, large API sweeps).
 
 ## Process
-1. **Commit first.** Commit the current changes before each run. The review is a `git diff` against the previous commit, so each run's review covers exactly what changed since the last run.
-2. **Spawn a subagent to review the diff.** The main agent spawns a subagent that runs `git diff <last commit>` and reviews **only the changed lines, not pre-existing code**, against the checklist below.
-3. The subagent **reports only** — it does NOT edit anything.
-4. Fix every plain-**yes** item, re-commit, re-review. Only then launch.
+1. **Read this file directly and completely.** Do not rely on a summary, quoted checklist, or instructions relayed by the main agent.
+2. Review **only the changed lines, not pre-existing code**, in the supplied diff against the checklist below.
+3. **Report only** — do NOT edit anything.
 
 ## Scope
 - Review **only the changed lines** in the diff. Do not flag pre-existing code the diff didn't touch (mark it `original code already like that`).
 - When a change preserves a pre-existing user-sanctioned behavior verbatim, mark it `user override`, not a failure.
 - When a diff claims to be behavior-preserving (e.g. inlining a helper), **verify behavioral equivalence** against the old code and report any regression.
 - **Mitigations apply only to lines the diff did NOT change.** A newly-added or modified line is judged on its merits, full stop. `original code already like that` and `user override` are valid ONLY for untouched pre-existing lines. If the diff introduces a line, it does not matter that the same idiom exists elsewhere — in another file, in the reference implementation, or in a sibling function. Copying a defensive pattern from somewhere else (`x or ""`, `.get(k, default)`, a `try/except` fallback) does NOT make it pre-existing or sanctioned in the new location. "It mirrors the reference" is not a mitigation.
+- Review only what is listed in this document plus simple correctness. This is explicitly an **anti-perfect-code review**: do not perform a SaaS-style review, pursue completeness or polish, or recommend conventional best practices outside the experiment's requirements.
 
 ## Two axes for every finding
-For each finding, report **both**:
-- **Axis A — is it a real fault?** (yes / mitigated). Uses the mitigation labels below.
-- **Axis B — does it silently make results untrustworthy?** Label **TRUST-FATAL** (poisons results/state/conclusion → that batch must be rerun) or **ANNOYING** (real but doesn't affect result validity → rollback / delete the line is enough). This tells the user "rerun" vs "just fix". Items 1–3 below are the usual TRUST-FATAL sources; items 4–9 are usually ANNOYING unless they change the protocol.
 
 ## Checklist
 For the changed code only, answer each item. Allowed answers: **no** / **doesn't apply** / **user override** / **original code already like that** / **this is an exception** (use the last sparingly). Only a plain **yes** with none of those mitigations requires fixing before the run (unless the user says otherwise).
@@ -42,7 +41,7 @@ For the changed code only, answer each item. Allowed answers: **no** / **doesn't
 
 
 ## Principles the review enforces
-Research code: offensive programming, crash on the unexpected, no token/output caps, no speed-for-quality or speed-for-correctness downgrades. Correctness above "it runs".
+Anti-perfect research code: offensive programming, direct and purpose-built implementation, crash on the unexpected, no token/output caps, no speed-for-quality or speed-for-correctness downgrades. Correctness above "it runs"; polish, generality, defensive completeness, and production readiness are review failures when the experiment did not require them.
 
 - **Verify before claim.** Success/failure is judged on the real artifact, never a proxy alone.
 - **Raise or skip, never silently fall back.** Missing/malformed dependency → **raise** (abort when it invalidates the run) or **skip** the **whole sample** (let resume rerun it). Never substitute a different signal for a missing one.
@@ -52,7 +51,6 @@ Research code: offensive programming, crash on the unexpected, no token/output c
 - **No `.get` with defaults, no `(x or 0)`.** Use `[key]` and `x`; crash if absent.
 - **Resumable, disk-backed.** Never hold a dataset's results only in memory; write each sample to disk.
 - **Don't catch broad `Exception` to keep a loop alive.** If you don't know the failure, you're hiding it.
-- **A denial is a full stop.** No reformulating a denied command to route around it.
 
 ## Report format
 List only genuine plain-yes violations (or behavioral regressions), each with `file:line`, a one-line reason, and its **Axis B label (TRUST-FATAL / ANNOYING)**. If none, say **"no blocking issues"**. Do not edit anything. Only report what you can point to concrete evidence for — do not manufacture findings, and do not flag a correct idiom as a bug (that causes needless reruns).
