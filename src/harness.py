@@ -39,15 +39,6 @@ class RepeatedCompletionError(ModelBehaviorError):
     pass
 
 
-class StreamModelBehaviorError(ModelBehaviorError):
-    def __init__(self, error: ModelBehaviorError, result: RunResultStreaming, failed_output_items: list[dict[str, Any]], failed_input_tokens: int, failed_output_tokens: int):
-        super().__init__(str(error))
-        self.result = result
-        self.failed_output_items = failed_output_items
-        self.failed_input_tokens = failed_input_tokens
-        self.failed_output_tokens = failed_output_tokens
-
-
 class ClipAnswer(BaseModel):
     status: Literal["answered", "unknown"]
     answer: str
@@ -111,10 +102,6 @@ def list_skill_files(skills_dir: Path) -> list[Path]:
     return sorted(path for path in skills_dir.glob("*.md") if path.stem != META_SKILL_NAME)
 
 
-def skill_catalog(skills_dir: Path) -> str:
-    return "\n".join(f"- {entry['name']}: {entry['description']}" for entry in map(skill_frontmatter, list_skill_files(skills_dir)))
-
-
 def stop_when_submitted(context: RunContextWrapper[RolloutContext | ClipContext], tool_results: list[FunctionToolResult]) -> ToolsToFinalOutputResult:
     return ToolsToFinalOutputResult(is_final_output=context.context.submission is not None, final_output=context.context.submission)
 
@@ -164,18 +151,11 @@ async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], co
     events = []
     compact_required = False
     repeated = False
-    failed_output_items = None
-    failed_response_usage = None
     try:
         async for event in result.stream_events():
             if event.type == "raw_response_event":
                 events.append(json_sanitize(event.data.model_dump(mode="json", exclude_none=True)))
-                if event.data.type == "response.created":
-                    failed_output_items = None
-                    failed_response_usage = None
-                elif event.data.type == "response.completed":
-                    failed_output_items = [json_sanitize(item.model_dump(mode="json", exclude_none=True)) for item in event.data.response.output]
-                    failed_response_usage = (event.data.response.usage.input_tokens, event.data.response.usage.output_tokens)
+                if event.data.type == "response.completed":
                     completions.append(completion_characters(event.data.response.output))
                     if len(completions) >= 3 and completions[-1] == completions[-2] == completions[-3]:
                         repeated = True
@@ -189,10 +169,6 @@ async def stream_agent(agent: Agent, input_items: str | list[dict[str, Any]], co
                         compact_required = True
         if repeated:
             raise RepeatedCompletionError("Three consecutive identical completions after excluding reasoning")
-    except ModelBehaviorError as error:
-        if repeated or failed_output_items is None or failed_response_usage is None:
-            raise
-        raise StreamModelBehaviorError(error, result, failed_output_items, *failed_response_usage) from error
     finally:
         write_trace(result, events, trace_path, "repeated_completion" if repeated else None)
     return result, compact_required
@@ -490,7 +466,7 @@ class PilotHarness:
 
     async def run_rollout(self, question: str, skills_dir: Path, attempt_dir: Path) -> RolloutResult:
         context = RolloutContext(runtime=self, attempt_dir=attempt_dir, skills_dir=skills_dir)
-        instructions = f"You answer questions about a video memory using the available read-only tools. Read a skill with read_skill when its description matches the current situation. When ready, call submit_answer with only the final answer.\n\nDatabase schema:\n{self.schema}\n\nAvailable retrieval skills:\n{skill_catalog(skills_dir)}"
+        instructions = f"You answer questions about a video memory using the available read-only tools. Read a skill with read_skill when its description matches the current situation. When ready, call submit_answer with only the final answer.\n\nDatabase schema:\n{self.schema}\n\nAvailable retrieval skills:\n" + "\n".join(f"- {entry['name']}: {entry['description']}" for entry in map(skill_frontmatter, list_skill_files(skills_dir)))
         main_agent = Agent(name="video_memory_retrieval", instructions=instructions, tools=[run_sql, semantic_search, clip_qa, add_note, read_notes, read_skill, agent_raise, submit_main_answer], model=self.model, model_settings=self.model_settings, tool_use_behavior=stop_when_submitted)
         input_items: str | list[dict[str, Any]] = question
         total_turns = 0
