@@ -9,9 +9,13 @@ description: Tables and columns available to run_sql, with example queries for e
 
 `run_sql` executes one read-only DuckDB query, returns at most 100 rows and truncates each cell to 500 characters while reporting the original length. Every content table has `video_id` plus a time position, so results from different tables can be joined on `video_id` and overlapping time.
 
+**Reason:** Knowing the query limits and shared location columns prevents false assumptions about returned evidence.
+
 ## When to use
 
 Before writing any SQL, and whenever a query returns nothing and you need to check whether you picked the right table or column.
+
+**Reason:** Schema consultation avoids invalid queries and searches against the wrong evidence source.
 
 ## Main content
 
@@ -65,3 +69,5 @@ FROM event_chains c JOIN event_steps s ON s.chain_row_id = c.row_id
 WHERE c.name LIKE '%haircut%'
 ORDER BY c.video_id, c.name, s.step_index;
 ```
+
+**Reason:** The table inventory and executable examples show how to locate, filter, join, and order the available evidence correctly.

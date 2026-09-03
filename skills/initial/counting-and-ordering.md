@@ -9,11 +9,15 @@ description: Answering "how many times", "in which places" and "what is the corr
 
 Counting and ordering questions fail when duplicates are counted twice or when occurrences in different videos are ordered by time within the video instead of by the video order. Collect every candidate occurrence with its `video_id` and time, deduplicate, then count or sort.
 
+**Reason:** Counts and sequences are only reliable when occurrence identity and cross-video chronology are explicit.
+
 ## When to use
 
 - "How many times did X happen?"
 - "In which N places did X happen?"
 - "What is the correct order of these scenes?"
+
+**Reason:** Each question form requires reasoning across multiple candidate occurrences rather than returning one retrieved row.
 
 ## Main content
 
@@ -37,3 +41,5 @@ WHERE text LIKE '%sunshine rainbow%'
 GROUP BY video_id
 ORDER BY TRY_CAST(video_id AS INTEGER), video_id, first_time;
 ```
+
+**Reason:** Evidence-based deduplication avoids arbitrary merge thresholds, while numeric video ordering matches the pilot's actual IDs.

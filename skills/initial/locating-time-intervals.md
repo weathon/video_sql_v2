@@ -9,11 +9,15 @@ description: Finding the exact video and time interval where a specific activity
 
 Every table stores positions in seconds within one `video_id`. Locating a moment means narrowing from a whole video to a range of a few minutes that can be read in full or inspected visually.
 
+**Reason:** Video inspection becomes tractable only after retrieval evidence is converted into a bounded interval.
+
 ## When to use
 
 - The question names a place, activity or object and asks what happened there.
 - You have a rough hit and need precise start and end times.
 - You need to look at the surroundings of a moment (what led to it, what followed).
+
+**Reason:** These tasks depend on precise temporal context rather than an isolated keyword hit.
 
 ## Main content
 
@@ -48,3 +52,5 @@ ORDER BY first_seen_s;
 ```
 
 4. Once the interval is under about 10 minutes, hand it to `clip_qa` with a focused question if visual confirmation is needed. Intervals over 20 minutes are rejected, so split long ranges.
+
+**Reason:** Coarse-to-fine narrowing preserves context while keeping visual inspection within the tool's real interval limits.

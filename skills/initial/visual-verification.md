@@ -9,12 +9,16 @@ description: Using clip_qa to inspect a video interval when the answer depends o
 
 `clip_qa(video_id, start_s, end_s, question)` runs a nested visual agent that samples frames from the interval and answers one focused question, returning `answered` or `unknown` with evidence timestamps and screenshots. It shares notes with the main agent through `add_note` and `read_notes`.
 
+**Reason:** This explains what visual evidence the tool returns and how it connects to the surrounding retrieval trace.
+
 ## When to use
 
 - Attribute questions (colours, clothing, haircut result, what someone is holding).
 - Checking whether a described event really happened versus was only talked about.
 - Comparing two scenes (differences between the people or objects in each).
 - Hallucination checks: confirming a statement before answering.
+
+**Reason:** These cases cannot be resolved reliably from text indexes alone.
 
 ## Main content
 
@@ -23,3 +27,5 @@ description: Using clip_qa to inspect a video interval when the answer depends o
 3. Before calling, write what you already know into `add_note` so the clip agent can focus on the missing detail.
 4. If the result is `unknown`, narrow the interval using the 30sec episodes and visual clip descriptions, or try the neighbouring interval, rather than repeating the same call.
 5. Combine the visual answer with the text evidence; when they disagree, prefer what was actually seen in the frames and note the disagreement.
+
+**Reason:** Focused intervals and timestamped screenshots make visual conclusions inspectable instead of relying on unverified summaries.

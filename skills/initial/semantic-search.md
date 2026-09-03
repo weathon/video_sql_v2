@@ -9,11 +9,15 @@ description: How to use semantic_search to find rows when exact keywords are unk
 
 `semantic_search(query, n, table)` embeds the query with the same model used to build the index and returns the top `n` rows by exact cosine similarity, each with `row_id`, `video_id`, `start_s`, `end_s`, a 500 character text preview and the score. Available tables: `episodes`, `entities`, `semantic_triples`, `openie_triples`, `topic_facts`, `event_steps`, `visual_clips`. The `visual_clips` index was built from the video frames themselves, so a text query against it finds visually similar moments even when the clip description does not mention the words.
 
+**Reason:** This distinguishes semantic ranking from exact evidence and explains which index can locate visual scenes.
+
 ## When to use
 
 - The question paraphrases an event ("became displeased with fans", "opened blind boxes") and keyword SQL finds too little.
 - You need candidate videos and time ranges before narrowing with SQL.
 - You want visual matches for a described scene without knowing where it happens.
+
+**Reason:** These are the cases where approximate semantic retrieval adds information that exact SQL matching may miss.
 
 ## Main content
 
@@ -31,3 +35,5 @@ ORDER BY granularity, start_s;
 ```
 
 5. Repeat with reworded queries when the first results are off topic; different phrasings retrieve different rows.
+
+**Reason:** Ranking candidates first and verifying them with exact surrounding rows prevents similarity scores from being treated as answers.

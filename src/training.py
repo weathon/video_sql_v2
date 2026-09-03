@@ -13,7 +13,7 @@ import httpx
 import httpx2
 import wandb
 import yaml
-from agents import Agent, RunContextWrapper, StopAtTools, function_tool
+from agents import Agent, RunContextWrapper, function_tool
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError, ModelTimeoutError, UserError
 from openai import APIConnectionError, APIError, APIResponseValidationError, APITimeoutError, AuthenticationError, BadRequestError, ConflictError, InternalServerError, NotFoundError, PermissionDeniedError, RateLimitError, UnprocessableEntityError
 from pydantic import BaseModel, Field
@@ -39,6 +39,8 @@ class QuestionReflectionSummary(BaseModel):
 class SkillUpdate(BaseModel):
     commit: str
     changed_files: list[str]
+    rollout_ids: list[str]
+    reason: str
 
 
 class StageAttemptsExhausted(RuntimeError):
@@ -374,25 +376,33 @@ async def read_current_skill(context: RunContextWrapper[RolloutContext], name: s
 
 @function_tool(failure_error_function=None)
 async def write_skill(context: RunContextWrapper[RolloutContext], name: str, content: str) -> str:
-    """Create or fully overwrite one skill file. Skill files need YAML frontmatter with name equal to the file name and a description saying when to use it; META-SKILL is plain Markdown."""
+    """Create or fully overwrite one skill file. Retrieval skills need YAML frontmatter and Introduction, When to use, and Main content sections. Every guidance point, or its enclosing section, needs a short **Reason:** line. META-SKILL is plain Markdown but also needs a **Reason:** line for each section."""
     skills_dir = context.context.skills_dir
     if "/" in name or name.startswith(".") or not name:
         return json.dumps({"error": "name must be a plain file name without extension"})
     path = skills_dir / f"{name}.md"
     previous = path.read_text() if path.is_file() else None
     path.write_text(content)
-    if name != META_SKILL_NAME:
-        try:
+    try:
+        lines = content.splitlines()
+        if name != META_SKILL_NAME:
             skill_frontmatter(path)
-            missing_sections = [section for section in ("## Introduction", "## When to use", "## Main content") if section not in content.splitlines()]
+            sections = ("## Introduction", "## When to use", "## Main content")
+            missing_sections = [section for section in sections if section not in lines]
             if missing_sections:
                 raise ValueError(f"missing required sections: {missing_sections}")
-        except (ValueError, KeyError, TypeError, yaml.YAMLError) as error:
-            if previous is None:
-                path.unlink()
-            else:
-                path.write_text(previous)
-            return json.dumps({"error": f"Invalid skill frontmatter, file not written: {error}"})
+            section_starts = [lines.index(section) for section in sections]
+            sections_without_reasons = [sections[index] for index, start in enumerate(section_starts) if not any(line.startswith("**Reason:** ") for line in lines[start + 1:section_starts[index + 1] if index + 1 < len(section_starts) else len(lines)])]
+            if sections_without_reasons:
+                raise ValueError(f"sections missing a reason: {sections_without_reasons}")
+        elif not any(line.startswith("**Reason:** ") for line in lines):
+            raise ValueError("META-SKILL needs a reason")
+    except (ValueError, KeyError, TypeError, yaml.YAMLError) as error:
+        if previous is None:
+            path.unlink()
+        else:
+            path.write_text(previous)
+        return json.dumps({"error": f"Invalid skill file, file not written: {error}"})
     return json.dumps({"written": name, "characters": len(content)})
 
 
@@ -411,7 +421,7 @@ async def delete_skill(context: RunContextWrapper[RolloutContext], name: str) ->
 @function_tool(failure_error_function=None)
 async def git_history(context: RunContextWrapper[RolloutContext], name: str | None) -> str:
     """List past commits of the skill repository, newest first, optionally restricted to one skill file name."""
-    arguments = ["log", "--format=%H%x09%ad%x09%s", "--date=iso-strict", "--name-status"]
+    arguments = ["log", "--format=commit %H%x09%ad%n%B", "--date=iso-strict", "--name-status"]
     if name is not None:
         arguments += ["--", f"{name}.md"]
     return git(context.context.skills_dir, *arguments)
@@ -427,20 +437,23 @@ async def read_skill_at_commit(context: RunContextWrapper[RolloutContext], name:
 
 
 @function_tool(failure_error_function=None)
-async def stop(context: RunContextWrapper[RolloutContext]) -> str:
-    """Finish the skill update after all file operations are done."""
-    return json.dumps({"stopped": True})
+async def stop(context: RunContextWrapper[RolloutContext], reason: str) -> str:
+    """Finish the skill update after all file operations are done. Give a short overall reason for the modifications made in this update."""
+    if not reason.strip():
+        return json.dumps({"error": "reason must not be empty"})
+    context.context.submission = reason.strip()
+    return json.dumps({"stopped": True, "reason": context.context.submission})
 
 
-async def update_skills_once(runtime: PilotHarness, summaries: list[dict[str, str]], batch_label: str, expected_commit: str, attempt_dir: Path, skills_dir: Path) -> tuple[SkillUpdate, dict[str, int]]:
+async def update_skills_once(runtime: PilotHarness, summaries: list[dict[str, object]], rollout_ids: list[str], batch_label: str, expected_commit: str, attempt_dir: Path, skills_dir: Path) -> tuple[SkillUpdate, dict[str, int]]:
     head = git(skills_dir, "rev-parse", "HEAD").strip()
     if head != expected_commit:
         raise RuntimeError(f"Skills repository HEAD {head} differs from the updater input commit {expected_commit}")
     context = RolloutContext(runtime=runtime, attempt_dir=attempt_dir, skills_dir=skills_dir)
-    instructions = "Update the retrieval skill files and META-SKILL from the question summaries. Incorporate only reusable lessons supported by the summaries. Add a skill file for a new recurring situation, rewrite files whose guidance is weak, and delete files that are redundant, conflicting, obsolete, or overly specific. Each skill file is <name>.md with YAML frontmatter (name equal to the file name, description stating when to use it) followed by Introduction, When to use, and Main content sections; put SQL examples inline in the Markdown. Use git_history and read_skill_at_commit to consult earlier versions and rewrite from them when a change should be reverted. Do not leak dataset-specific names, dates, answers, or private details. Call stop when all file operations are complete."
-    agent = Agent(name="skill_updater", instructions=instructions, tools=[list_skills, read_current_skill, write_skill, delete_skill, git_history, read_skill_at_commit, stop], model=runtime.model, model_settings=runtime.model_settings, tool_use_behavior=StopAtTools(stop_at_tool_names=["stop"]))
+    instructions = "Update the retrieval skill files and META-SKILL from the question summaries. Incorporate only reusable lessons supported by the summaries. Add a skill file for a new recurring situation, rewrite files whose guidance is weak, and delete files that are redundant, conflicting, obsolete, or overly specific. Each retrieval skill is <name>.md with YAML frontmatter (name equal to the file name, description stating when to use it) followed by Introduction, When to use, and Main content sections; put SQL examples inline in the Markdown. Every guidance point must be immediately followed by a short `**Reason:** ...` explanation; when one reason covers a whole section, one `**Reason:** ...` line at the end of that section is enough. Apply the same reason format to every META-SKILL section. Use git_history and read_skill_at_commit to consult earlier versions and their recorded reasons, then rewrite current files when guidance should be reversed or changed. Do not leak dataset-specific names, dates, answers, or private details. Call stop with a short overall modification reason when all file operations are complete."
+    agent = Agent(name="skill_updater", instructions=instructions, tools=[list_skills, read_current_skill, write_skill, delete_skill, git_history, read_skill_at_commit, stop], model=runtime.model, model_settings=runtime.model_settings, tool_use_behavior=stop_when_submitted)
     active_agent = agent
-    input_items: str | list[dict[str, object]] = json.dumps({"question_summaries": summaries}, ensure_ascii=False)
+    input_items: str | list[dict[str, object]] = json.dumps({"rollout_ids": rollout_ids, "question_summaries": summaries}, ensure_ascii=False)
     used_turns = 0
     segment = 0
     tools_enabled = True
@@ -454,28 +467,28 @@ async def update_skills_once(runtime: PilotHarness, summaries: list[dict[str, st
         segment_usage = usage_payload(result)
         for key in usage:
             usage[key] += segment_usage[key]
-        if any(item.type == "tool_call_item" and item.raw_item.name == "stop" for item in result.new_items):
+        if context.submission is not None:
             break
         if final_required:
             active_agent = agent.clone(tools=[stop])
             tools_enabled = False
-            input_items = result.to_input_list() + [{"role": "user", "content": "The context limit is near. Do not call other tools. Call stop now."}]
+            input_items = result.to_input_list() + [{"role": "user", "content": "The context limit is near. Do not call other tools. Call stop with the overall modification reason now."}]
         else:
-            input_items = result.to_input_list() + [{"role": "user", "content": "Your last response did not call stop. Continue the file operations if needed, then call stop."}]
+            input_items = result.to_input_list() + [{"role": "user", "content": "Your last response did not call stop. Continue the file operations if needed, then call stop with the overall modification reason."}]
         segment += 1
     git(skills_dir, "add", "-A")
     changed_files = git(skills_dir, "diff", "--cached", "--name-only").split()
     tree = git(skills_dir, "write-tree").strip()
-    commit = git(skills_dir, "commit-tree", tree, "-p", expected_commit, "-m", f"Skill update after {batch_label}").strip()
-    return SkillUpdate(commit=commit, changed_files=changed_files), usage
+    commit = git(skills_dir, "commit-tree", tree, "-p", expected_commit, "-m", f"Skill update after {batch_label}", "-m", "Rollout IDs:\n" + "\n".join(rollout_ids), "-m", "Reason:\n" + context.submission).strip()
+    return SkillUpdate(commit=commit, changed_files=changed_files, rollout_ids=rollout_ids, reason=context.submission), usage
 
 
-async def update_skills(runtime: PilotHarness, summaries: list[dict[str, str]], batch_label: str, stage_dir: Path, attempts: int, mode: Literal["debug", "formal"], skills_dir: Path, expected_commit: str) -> SkillUpdate:
-    input_payload = {"skills_commit": expected_commit, "question_summaries": summaries}
+async def update_skills(runtime: PilotHarness, summaries: list[dict[str, object]], rollout_ids: list[str], batch_label: str, stage_dir: Path, attempts: int, mode: Literal["debug", "formal"], skills_dir: Path, expected_commit: str) -> SkillUpdate:
+    input_payload = {"skills_commit": expected_commit, "rollout_ids": rollout_ids, "question_summaries": summaries}
     lock_stage_input(stage_dir / "input.json", input_payload)
 
     async def call(attempt_dir: Path) -> tuple[SkillUpdate, dict[str, int]]:
-        return await update_skills_once(runtime, summaries, batch_label, input_payload["skills_commit"], attempt_dir, skills_dir)
+        return await update_skills_once(runtime, summaries, rollout_ids, batch_label, input_payload["skills_commit"], attempt_dir, skills_dir)
 
     output, _ = await run_stage(stage_dir, SkillUpdate, attempts, mode, call)
     head = git(skills_dir, "rev-parse", "HEAD").strip()
@@ -574,15 +587,16 @@ async def train(args: argparse.Namespace) -> None:
                             rollout_tasks.append(rollout_group.create_task(run_training_rollout(runtime, item, rollout_index, skills_dir, rollout_dir, args.attempts, args.mode)))
                 results = [task.result() for task in rollout_tasks]
                 async with asyncio.TaskGroup() as summary_group:
-                    summary_tasks = []
+                    summary_jobs = []
                     for item in batch_items:
                         question_results = [result for result in results if result["question_index"] == item["index"] and result["status"] != "failed"]
-                        reflections = [result["reflection"] for result in question_results]
+                        reflections = [{"rollout_id": f"epoch-{epoch:03d}/batch-{global_batch:06d}/question-{int(result['question_index']):06d}/rollout-{int(result['rollout_index']):02d}/attempt-{int(result['attempt']):02d}", **result["reflection"]} for result in question_results]
                         if reflections:
                             summary_dir = batch_dir / "question-summaries" / f"question-{int(item['index']):06d}"
-                            summary_tasks.append(summary_group.create_task(summarize_question(runtime, reflections, summary_dir, args.attempts, args.mode, skills_dir)))
-                summaries = [task.result() for task in summary_tasks]
-                update = await update_skills(runtime, [summary.model_dump(mode="json") for summary in summaries], f"epoch {epoch} batch {global_batch}", batch_dir / "updater", args.attempts, args.mode, skills_dir, batch_skills_commit)
+                            summary_jobs.append((item, reflections, summary_group.create_task(summarize_question(runtime, reflections, summary_dir, args.attempts, args.mode, skills_dir))))
+                summaries = [{"question_index": item["index"], "rollout_ids": [reflection["rollout_id"] for reflection in reflections], **task.result().model_dump(mode="json")} for item, reflections, task in summary_jobs]
+                rollout_ids = [rollout_id for summary in summaries for rollout_id in summary["rollout_ids"]]
+                update = await update_skills(runtime, summaries, rollout_ids, f"epoch {epoch} batch {global_batch}", batch_dir / "updater", args.attempts, args.mode, skills_dir, batch_skills_commit)
                 write_json(batch_dir / "skills-after.json", update.model_dump(mode="json"))
                 expected_commit = update.commit
                 scores = [int(result["score"]) for result in results]
