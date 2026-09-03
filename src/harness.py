@@ -228,6 +228,8 @@ def image_output(path: Path) -> ToolOutputImage:
 
 
 def tool_error(context: RunContextWrapper[Any], error: Exception) -> str:
+    if isinstance(error, (MaxTurnsExceeded, RepeatedCompletionError)):
+        raise error
     return json.dumps({"error": str(error)})
 
 

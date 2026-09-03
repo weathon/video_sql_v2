@@ -1,8 +1,10 @@
 import asyncio
 import json
 import os
+import shutil
 import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import aiohttp
 from fastapi import FastAPI, HTTPException, Request
@@ -11,9 +13,12 @@ from fastapi.responses import Response, StreamingResponse
 
 ENCODER_URL = os.environ["EPD_ENCODER_URL"].rstrip("/")
 PD_URL = os.environ["EPD_PD_URL"].rstrip("/")
+CACHE_PATH = Path(os.environ["EPD_CACHE_PATH"])
 app = FastAPI()
 encoder_session: aiohttp.ClientSession
 pd_session: aiohttp.ClientSession
+active_requests = 0
+active_requests_lock = asyncio.Lock()
 
 
 def collect_images(value: object, images: list[dict[str, object]], seen: set[str]) -> None:
@@ -38,6 +43,7 @@ def collect_images(value: object, images: list[dict[str, object]], seen: set[str
 @app.on_event("startup")
 async def startup() -> None:
     global encoder_session, pd_session
+    CACHE_PATH.mkdir(parents=True, exist_ok=True)
     timeout = aiohttp.ClientTimeout(total=None)
     encoder_session = aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(limit=0))
     pd_session = aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(limit=0))
@@ -58,36 +64,58 @@ async def prime_image(model: str, image: dict[str, object], request_id: str, hea
             raise HTTPException(status_code=502, detail="EPD encoder request failed")
 
 
+async def finish_request(request_id: str) -> None:
+    global active_requests
+    async with active_requests_lock:
+        active_requests -= 1
+        if active_requests:
+            return
+        await asyncio.to_thread(shutil.rmtree, CACHE_PATH)
+        CACHE_PATH.mkdir()
+        print(json.dumps({"event": "epd_cache_cleared", "request_id": request_id}))
+
+
 @app.post("/v1/responses")
 async def responses(request: Request) -> Response:
     body = await request.json()
     request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
-    headers = {key: value for key, value in request.headers.items() if key.lower() not in {"host", "content-length", "transfer-encoding", "connection"}}
-    images: list[dict[str, object]] = []
-    collect_images(body["input"], images, set())
-    if images:
-        print(json.dumps({"event": "epd_encoder_prime", "request_id": request_id, "images": len(images)}))
-        await asyncio.gather(*(prime_image(body["model"], image, f"{request_id}:encoder:{index}", headers) for index, image in enumerate(images)))
+    global active_requests
+    async with active_requests_lock:
+        active_requests += 1
+    streaming = False
+    try:
+        headers = {key: value for key, value in request.headers.items() if key.lower() not in {"host", "content-length", "transfer-encoding", "connection"}}
+        images: list[dict[str, object]] = []
+        collect_images(body["input"], images, set())
+        if images:
+            print(json.dumps({"event": "epd_encoder_prime", "request_id": request_id, "images": len(images)}))
+            await asyncio.gather(*(prime_image(body["model"], image, f"{request_id}:encoder:{index}", headers) for index, image in enumerate(images)))
 
-    upstream = await pd_session.post(f"{PD_URL}/v1/responses", json=body, headers={**headers, "x-request-id": request_id})
-    if upstream.status < 200 or upstream.status >= 300:
-        response_body = await upstream.read()
-        print(json.dumps({"event": "epd_pd_error", "request_id": request_id, "status": upstream.status, "body": response_body.decode(errors="replace")}))
-        upstream.release()
-        return Response(content=response_body, status_code=upstream.status, headers={"content-type": upstream.headers.get("content-type", "application/json")})
-    if not body.get("stream", False):
-        response_body = await upstream.read()
-        upstream.release()
-        return Response(content=response_body, status_code=upstream.status, headers={"content-type": upstream.headers.get("content-type", "application/json")})
-
-    async def stream() -> AsyncIterator[bytes]:
-        try:
-            async for chunk in upstream.content.iter_any():
-                yield chunk
-        finally:
+        upstream = await pd_session.post(f"{PD_URL}/v1/responses", json=body, headers={**headers, "x-request-id": request_id})
+        if upstream.status < 200 or upstream.status >= 300:
+            response_body = await upstream.read()
+            print(json.dumps({"event": "epd_pd_error", "request_id": request_id, "status": upstream.status, "body": response_body.decode(errors="replace")}))
             upstream.release()
+            return Response(content=response_body, status_code=upstream.status, headers={"content-type": upstream.headers.get("content-type", "application/json")})
+        if not body.get("stream", False):
+            response_body = await upstream.read()
+            upstream.release()
+            return Response(content=response_body, status_code=upstream.status, headers={"content-type": upstream.headers.get("content-type", "application/json")})
 
-    return StreamingResponse(stream(), status_code=upstream.status, headers={"content-type": upstream.headers.get("content-type", "text/event-stream")})
+        async def stream() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in upstream.content.iter_any():
+                    yield chunk
+            finally:
+                upstream.release()
+                await finish_request(request_id)
+
+        response = StreamingResponse(stream(), status_code=upstream.status, headers={"content-type": upstream.headers.get("content-type", "text/event-stream")})
+        streaming = True
+        return response
+    finally:
+        if not streaming:
+            await finish_request(request_id)
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST"])
