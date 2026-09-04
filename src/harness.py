@@ -147,8 +147,10 @@ def save_response_trace(path: Path, response: Any) -> None:
 
 
 def response_message_text(model_response: Any) -> str:
-    response = getattr(model_response, "response", None)
-    output = getattr(response, "output", []) if response is not None else []
+    output = getattr(model_response, "output", None)
+    if output is None:
+        response = getattr(model_response, "response", None)
+        output = getattr(response, "output", []) if response is not None else []
     parts: list[str] = []
     for item in output:
         if getattr(item, "type", None) != "message":
