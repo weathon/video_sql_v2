@@ -472,7 +472,8 @@ async def update_skills(
             instructions=(
                 "Update the skill directory from the supplied abstract summaries. Use the file "
                 "tools across as many turns as needed, then call stop. You may add, replace, or "
-                "delete ordinary skills and may edit META-SKILL.md, but never delete "
+                "delete ordinary skills. Read current skills only with read_skill_file; read_skill "
+                "does not exist. You may edit META-SKILL.md, but never delete "
                 "META-SKILL.md. Ordinary skills require YAML frontmatter with name and "
                 "description plus Introduction, When to use, and Main content. Keep the set "
                 "concise by replacing duplicated, conflicting, obsolete, or similar guidance. "
