@@ -2,4 +2,5 @@ FROM scitra/0037-codex:7c6221d13f9f-0.3.0
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg
+COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uv /uvx /usr/local/bin/
 USER scitra
