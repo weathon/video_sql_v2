@@ -53,7 +53,9 @@ class AgentRaised(RuntimeError):
 
 
 class CompactionLimit(RuntimeError):
-    pass
+    def __init__(self, message: str, history: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.history = history
 
 
 class MainAnswer(BaseModel):
@@ -202,6 +204,7 @@ async def stream_agent(
     bundle: ModelBundle,
     trace_path: Path,
     compact_main: bool = False,
+    allow_forced_submit: bool = True,
 ) -> tuple[Any, list[dict[str, Any]], bool]:
     result = Runner.run_streamed(
         agent,
@@ -212,6 +215,7 @@ async def stream_agent(
     )
     completions: list[str] = []
     compacted = False
+    force_submit = False
     try:
         async for event in result.stream_events():
             if event.type == "run_item_stream_event" and event.name == "message_output_created":
@@ -221,19 +225,55 @@ async def stream_agent(
                 if len(completions) >= 3 and completions[-3:] == [text, text, text]:
                     result.cancel()
                     raise InvalidTrace("three consecutive non-reasoning completions were identical")
-            if compact_main and event.type == "raw_response_event":
+            if event.type == "raw_response_event":
                 response = getattr(event.data, "response", None)
                 usage = getattr(response, "usage", None)
                 if usage is not None:
                     remaining = CONTEXT_LIMIT - usage.input_tokens - usage.output_tokens
-                    if remaining <= COMPACTION_THRESHOLD and not compacted:
+                    if compact_main and remaining <= COMPACTION_THRESHOLD and not compacted:
                         result.cancel(mode="after_turn")
                         compacted = True
+                    if (
+                        not compact_main
+                        and allow_forced_submit
+                        and remaining <= COMPACTION_THRESHOLD
+                        and not force_submit
+                    ):
+                        result.cancel(mode="after_turn")
+                        force_submit = True
         save_trace(trace_path, result)
     except Exception as error:
         save_trace(trace_path, result, str(error))
         raise
-    return result.final_output, result.to_input_list(), compacted
+    items = result.to_input_list()
+    if force_submit:
+        original_tools = agent.tools
+        submit_tools = [
+            tool
+            for tool in original_tools
+            if getattr(tool, "name", "") in {"submit_answer", "submit_reflection", "submit_score", "submit_summary", "stop"}
+        ]
+        if not submit_tools:
+            raise InvalidTrace("context threshold reached without a submission tool")
+        agent.tools = submit_tools
+        try:
+            return await stream_agent(
+                agent,
+                items
+                + [
+                    {
+                        "role": "user",
+                        "content": "Context is nearly full. Do not call exploratory tools. Submit the best final output now.",
+                    }
+                ],
+                context,
+                bundle,
+                trace_path.with_name(trace_path.stem + "-forced" + trace_path.suffix),
+                allow_forced_submit=False,
+            )
+        finally:
+            agent.tools = original_tools
+    return result.final_output, items, compacted
 
 
 def resolve_source_rows(context: RolloutContext, start_s: float, end_s: float) -> list[tuple[Any, ...]]:
@@ -707,7 +747,16 @@ async def run_main_with_compaction(
         agent.tools = original_tools
         compactions += 1
         if compactions >= 3:
-            raise CompactionLimit("third compaction generated")
+            trusted_history = [
+                {
+                    "role": "user",
+                    "content": (
+                        "The answer attempt reached the third compaction limit. Reflect from this trusted "
+                        "handoff and focus on why the search loop failed to converge.\n\n" + str(summary_result)
+                    ),
+                }
+            ]
+            raise CompactionLimit("third compaction generated", trusted_history)
         handoff = str(summary_result)
         if not handoff.strip():
             handoff = ItemHelpers.text_message_outputs(
