@@ -17,6 +17,14 @@ docker volume create \
     --opt device=tmpfs \
     video-sql-ec-cache
 
+Build the EPD image whose ExampleConnector loads cache tensors on each TP
+worker's current CUDA device:
+
+docker build \
+    -f infra/Dockerfile.vllm-epd \
+    -t video-sql-vllm-epd:ec-tp-device \
+    infra
+
 Inferact/Qwen3.8-27B-NVFP4 encoder service:
 
 docker run --name qwen38-27b-nvfp4-epd-encoder \
@@ -26,7 +34,7 @@ docker run --name qwen38-27b-nvfp4-epd-encoder \
     -e HF_HOME=/hf_cache \
     -v /raid/huggingface:/hf_cache \
     -v video-sql-ec-cache:/epd_shared/cache \
-    vllm/vllm-openai:qwen38-flash-next \
+    video-sql-vllm-epd:ec-tp-device \
     Inferact/Qwen3.8-27B-NVFP4 \
     --host 0.0.0.0 \
     --port 8000 \
@@ -49,7 +57,7 @@ docker run --name qwen38-27b-nvfp4-epd-pd \
     -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
     -v /raid/huggingface:/hf_cache \
     -v video-sql-ec-cache:/epd_shared/cache \
-    vllm/vllm-openai:qwen38-flash-next \
+    video-sql-vllm-epd:ec-tp-device \
     Inferact/Qwen3.8-27B-NVFP4 \
     --host 0.0.0.0 \
     --port 8000 \

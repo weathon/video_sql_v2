@@ -1,0 +1,3 @@
+FROM vllm/vllm-openai:qwen38-flash-next
+
+RUN python3 -c 'from pathlib import Path; path = Path("/usr/local/lib/python3.12/dist-packages/vllm/distributed/ec_transfer/ec_connector/example_connector.py"); source = path.read_text(); old = "device=current_platform.device_type"; new = "device=f\"{current_platform.device_type}:{torch.cuda.current_device()}\""; assert source.count(old) == 1; path.write_text(source.replace(old, new))'
