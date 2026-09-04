@@ -1,22 +1,17 @@
 ---
 name: semantic-search
-description: Use this when exact keywords may miss relevant moments, when translating a natural-language clue into candidate rows, or when broad recall is needed before SQL verification.
+description: Use when exact SQL terms are unknown or a concept must be located from meaning.
 ---
 
-# Semantic Search
+# Introduction
 
-## Introduction
+Semantic search retrieves rows whose embedded meaning resembles a query.
 
-`semantic_search` embeds the query with Qwen3-VL and searches one indexed table. It returns row IDs and scores; use SQL afterward to inspect exact content.
+# When to use
 
-## When to use
+Use it for paraphrases, uncertain names, visual descriptions, actions, and broad candidate discovery.
 
-Use semantic search for visual descriptions, paraphrases, activities, object states, or uncertain wording.
+# Main content
 
-## Main content
-
-1. Query the table that matches the evidence type: `episodes` for captions, `event_steps` for actions, `topic_facts` for summarized facts, `object_states` for object/status pairs, and `visual_clips` for video similarity. **Reason:** each table embeds a different unit of memory.
-2. Search in rank windows when broad results are needed: after checking top 10, ask for ranks 10 to 20 instead of repeating top 20. **Reason:** non-overlapping windows save context and avoid rereading the same candidates.
-3. Apply `video_id` when the question names `day`, `week`, or `month`. **Reason:** the three logical timelines are independent.
-4. Treat scores as candidate ranking, not proof. Read the actual row text and, for visual claims, call `clip_qa`. **Reason:** a high score can come from similar wording without the needed fact.
+Choose the table whose searchable field best matches the question: episodes.text, entities.name, semantic_triples.text, topic_facts.fact, event_steps.description, object_states.text, or visual_clips.text. Search with a compact description of one clue at a time. Inspect the returned row content and time, then use SQL to recover nearby context and exact relationships. A cosine score ranks candidates but is not evidence of correctness. If the top range is unhelpful, request a later rank range or reformulate the semantic clue; do not repeatedly request an overlapping range without a reason.
 

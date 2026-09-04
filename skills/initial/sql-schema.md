@@ -1,33 +1,32 @@
 ---
 name: sql-schema
-description: Use this whenever writing SQL, joining evidence tables, tracing rows to videos, or checking which Stage 2 table contains a fact.
+description: Use when writing SQL or joining memory tables and evidence links.
 ---
 
-# SQL Schema
+# Introduction
 
-## Introduction
+The database contains normalized textual memory, hierarchical chains, visual-clip descriptions, and evidence links.
 
-The system prompt contains the live DuckDB schema. Use this skill to choose tables and joins.
+# When to use
 
-## When to use
+Read this skill before complex joins, aggregations, or evidence tracing.
 
-Use it before nontrivial SQL, when a query returns unexpected rows, or when you need 30 second evidence for a chain or object state.
+# Main content
 
-## Main content
+Available tables and columns:
 
-1. Use `episodes` for text at `30sec`, `3min`, `30min`, `1h`, `6h`, `video`, and `scale` granularities. Filter `granularity` explicitly when the level matters. **Reason:** summary levels can answer context questions but only 30 second rows are direct evidence.
-2. Use `visual_clips` for actual clip filenames and source offsets. Do not invent paths from row IDs. **Reason:** regenerated Week rows and existing video embeddings are tied by stored filenames.
-3. For object state questions, join `object_states.caption_30sec_row_id` to `episodes.row_id` for the exact evidence and `episode_3min_row_id` for surrounding context. **Reason:** the 3 minute row is context, not the exact state occurrence.
-4. For topic or event chain evidence, search `topic_facts` or `event_steps`, then follow `topic_fact_evidence` or `event_step_evidence` back to 30 second episodes. **Reason:** chain summaries can hide which moment actually supports the answer.
-5. Keep SQL read-only. Prefer explicit selected columns: row IDs, video IDs, start/end seconds, granularity, and text. **Reason:** those fields make later visual verification possible.
+- episodes(row_id, start_s, end_s, granularity, text); granularities include 30sec, 3min, 1h, 6h, video, and scale.
+- entities(row_id, name, normalized_name, first_seen_s, last_seen_s, frequency).
+- semantic_triples(row_id, caption_30sec_row_id, snapshot_s, subject, predicate, object, text).
+- topic_chains(row_id, entity, has_lifecycle, level, scope_id, start_s, end_s, summary).
+- topic_facts(row_id, chain_row_id, caption_30sec_row_id, time_s, fact).
+- event_chains(row_id, name, chain_type, level, scope_id, start_s, end_s, summary).
+- event_steps(row_id, chain_row_id, caption_start_row_id, caption_end_row_id, step_index, start_s, end_s, description).
+- visual_clips(row_id, start_s, end_s, text).
+- object_states(row_id, episode_3min_row_id, caption_30sec_row_id, start_s, end_s, object, status, text).
+- graph_edges(row_id, src_row_id, dst_row_id, edge_type, weight).
+- topic_fact_evidence(row_id, fact_row_id, caption_30sec_row_id).
+- event_step_evidence(row_id, step_row_id, caption_30sec_row_id).
 
-```sql
-SELECT e.row_id, e.video_id, e.start_s, e.end_s, e.granularity, e.text
-FROM episodes AS e
-WHERE e.video_id = 'month'
-  AND e.granularity = '30sec'
-  AND e.text LIKE '%phone%'
-ORDER BY e.start_s
-LIMIT 20;
-```
+Join facts and steps to their chains through chain_row_id. Join precise evidence to episodes.row_id through caption row IDs. For object states, episode_3min_row_id gives surrounding context and caption_30sec_row_id gives the precise evidence interval. Times are seconds on one continuous logical clock.
 
