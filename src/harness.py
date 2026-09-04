@@ -120,13 +120,15 @@ def normalize_text(text: str) -> str:
 def jsonable(value: Any, seen: set[int] | None = None) -> Any:
     if seen is None:
         seen = set()
+    if isinstance(value, bytes | bytearray):
+        return f"<bytes:{len(value)}>"
     if isinstance(value, dict | list | tuple) or hasattr(value, "__dict__") or hasattr(value, "model_dump"):
         value_id = id(value)
         if value_id in seen:
             return f"<recursive:{type(value).__name__}>"
         seen.add(value_id)
     if hasattr(value, "model_dump"):
-        return sanitize_trace(value.model_dump(mode="json", exclude_none=True))
+        return sanitize_trace(jsonable(value.model_dump(mode="json", exclude_none=True), seen))
     if isinstance(value, dict):
         return {str(k): jsonable(v, seen) for k, v in value.items()}
     if isinstance(value, list | tuple):
