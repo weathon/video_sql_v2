@@ -1,20 +1,22 @@
 ---
 name: semantic-search
-description: Use when exact SQL terms are unknown and semantic candidates must be found before relational verification.
+description: Use this when exact keywords may miss relevant moments, when translating a natural-language clue into candidate rows, or when broad recall is needed before SQL verification.
 ---
 
-# Introduction
+# Semantic Search
 
-Semantic search retrieves candidate row IDs from one embedded table; SQL then exposes full rows and relations.
+## Introduction
 
-# When to use
+`semantic_search` embeds the query with Qwen3-VL and searches one indexed table. It returns row IDs and scores; use SQL afterward to inspect exact content.
 
-Use for paraphrases, visually described objects, activities with uncertain wording, or broad event discovery.
+## When to use
 
-# Main content
+Use semantic search for visual descriptions, paraphrases, activities, object states, or uncertain wording.
 
-1. Choose the narrowest relevant table: `episodes` for narrative context, `entities` for names, `semantic_triples` for relations, `topic_facts` for persistent topics, `event_steps` for ordered actions, `object_states` for state changes, and `visual_clips` for visual similarity. **Reason:** Each index represents a different evidence unit.
-2. Form queries around concrete observable semantics rather than copying the entire question. **Reason:** Dense retrieval works better when the target event is not diluted by answer-format language.
-3. Inspect successive rank ranges when the first results are near-duplicates; do not repeatedly request an overlapping top-N. **Reason:** Rank pagination expands coverage without wasting context.
-4. Treat scores as ranking signals, not truth. Fetch returned row IDs from DuckDB and verify time, timeline, granularity, and evidence links. **Reason:** Similar text can describe the wrong occurrence.
-5. After finding distinctive vocabulary or entities, switch to SQL to enumerate, join, count, or order all relevant occurrences. **Reason:** Vector ranking cannot prove completeness or relational constraints.
+## Main content
+
+1. Query the table that matches the evidence type: `episodes` for captions, `event_steps` for actions, `topic_facts` for summarized facts, `object_states` for object/status pairs, and `visual_clips` for video similarity. **Reason:** each table embeds a different unit of memory.
+2. Search in rank windows when broad results are needed: after checking top 10, ask for ranks 10 to 20 instead of repeating top 20. **Reason:** non-overlapping windows save context and avoid rereading the same candidates.
+3. Apply `video_id` when the question names `day`, `week`, or `month`. **Reason:** the three logical timelines are independent.
+4. Treat scores as candidate ranking, not proof. Read the actual row text and, for visual claims, call `clip_qa`. **Reason:** a high score can come from similar wording without the needed fact.
+

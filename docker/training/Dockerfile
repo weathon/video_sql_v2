@@ -1,6 +1,13 @@
-FROM scitra/0037-codex:7c6221d13f9f-0.3.0
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-USER root
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg
-COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uv /uvx /usr/local/bin/
-USER scitra
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg git curl ca-certificates && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/video_sql_v2
+COPY pyproject.toml uv.lock ./
+ENV UV_CACHE_DIR=/raid/uv-cache
+ENV HF_HOME=/raid/huggingface
+RUN uv sync --frozen
+COPY . .
+
+ENTRYPOINT ["uv", "run", "python", "-m", "src.training"]
+

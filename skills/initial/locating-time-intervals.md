@@ -1,28 +1,31 @@
 ---
 name: locating-time-intervals
-description: Use for questions with relative time, ordered events, first/last occurrences, or uncertain temporal windows.
+description: Use this for before/after questions, last/first occurrence, temporal order, repeated events, or when expanding from a clue moment to a wider interval.
 ---
 
-# Introduction
+# Locating Time Intervals
 
-Temporal retrieval alternates between coarse localization and bounded expansion until the decisive interval is found.
+## Introduction
 
-# When to use
+Times are seconds within one logical timeline. Keep day, week, and month separate.
 
-Use for before/after, earlier/later, day references, first/last, duration, or cross-episode questions.
+## When to use
 
-# Main content
+Use this when the answer depends on temporal position, ordering, or a window around an event.
 
-1. Locate anchor events independently before applying relative constraints. **Reason:** Searching a compound temporal relation directly can hide which anchor was missed.
-2. Start with `video`/`6h`/`1h` summaries to identify regions, then inspect `3min` and `30sec` rows around each candidate. **Reason:** Coarse-to-fine search limits context while retaining precise evidence.
-3. Expand a failed window symmetrically or toward the direction implied by the question, recording boundaries already checked. **Reason:** Fixed narrow windows create false negatives near summary boundaries.
-4. Use numerical `start_s`/`end_s` comparisons in SQL for ordering and adjacency. **Reason:** Narrative ordering in text is less reliable than timeline fields.
-5. For Week day labels, resolve the label through `source_groups` or `source_videos` rather than assuming a fixed day length. **Reason:** Week consists of many physical clips with explicit offsets.
+## Main content
+
+1. Anchor the clearest clue first, then expand outward with SQL windows. **Reason:** broad time searches often return many similar events from other days or videos.
+2. For order questions, retrieve candidate rows with `start_s` and sort in SQL. **Reason:** final ordering should come from timeline seconds, not result order or semantic rank.
+3. For last/first questions, filter the candidate set first and then use `ORDER BY start_s DESC/ASC LIMIT 1`. **Reason:** ordering all rows before filtering answers the wrong question.
+4. When evidence is sparse, check neighboring 30 second rows and 3 minute context. **Reason:** the decisive visual or spoken detail can appear just outside the hit row.
 
 ```sql
-SELECT start_s, end_s, text
+SELECT row_id, video_id, start_s, end_s, text
 FROM episodes
-WHERE video_id = 'week' AND granularity = '30sec'
-  AND start_s BETWEEN 100000 AND 102000
+WHERE video_id = 'week'
+  AND granularity = '30sec'
+  AND start_s BETWEEN 3600 AND 5400
 ORDER BY start_s;
 ```
+

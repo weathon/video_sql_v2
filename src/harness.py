@@ -2,30 +2,37 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import copy
+import concurrent.futures
 import json
 import math
 import os
+import re
 import subprocess
-import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import duckdb
 import httpx
 import numpy as np
-from agents import Agent, ItemHelpers, ModelSettings, RunConfig, RunContextWrapper, Runner, function_tool
-from agents.items import MessageOutputItem
-from agents.models.openai_responses import OpenAIResponsesModel
+import yaml
+from agents import Agent, ModelSettings, OpenAIResponsesModel, RunConfig, Runner, function_tool
 from agents.tool import ToolOutputImage, ToolOutputText
 from openai import AsyncOpenAI
 from PIL import Image, ImageDraw
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
-SEARCHABLE_TABLES = {
+MAX_AGENT_TURNS = 100
+SQL_TIMEOUT_S = 30
+SQL_ROW_LIMIT = 100
+SQL_CELL_LIMIT = 500
+SQL_QA_CHAR_LIMIT = 50_000
+CONTEXT_LIMIT = 262_144
+COMPACTION_THRESHOLD = 50_000
+
+SEARCH_TABLES: dict[str, tuple[str, str, str]] = {
     "episodes": ("text", "start_s", "end_s"),
     "entities": ("name", "first_seen_s", "last_seen_s"),
     "semantic_triples": ("text", "snapshot_s", "snapshot_s"),
@@ -34,953 +41,617 @@ SEARCHABLE_TABLES = {
     "object_states": ("text", "start_s", "end_s"),
     "visual_clips": ("text", "start_s", "end_s"),
 }
-CONTEXT_LIMIT = 262_144
-COMPACTION_THRESHOLD = 50_000
-TURN_LIMIT = 100
-SQL_TIMEOUT_S = 30
-DATASET_SNAPSHOT = Path(
-    "/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/"
-    "snapshots/248aa82039a574e63a2e524746a7cd8f32330443"
-)
 
 
-class InvalidTrace(RuntimeError):
-    pass
+class Question(BaseModel):
+    timeline: str = "month"
+    source_split: str = ""
+    index: int | str
+    question: str
+    answer: str
+
+
+class JudgeScore(BaseModel):
+    score: int
+
+
+class AgentAnswer(BaseModel):
+    status: str = "answered"
+    answer: str
+    evidence_times: list[str] = []
+
+
+class AgentReflection(BaseModel):
+    reflection: str
+    meta_reflection: str
+
+
+class CompactionLimit(RuntimeError):
+    def __init__(self, handoff: str):
+        super().__init__("main agent reached the third compaction")
+        self.handoff = handoff
 
 
 class AgentRaised(RuntimeError):
     pass
 
 
-class CompactionLimit(RuntimeError):
-    def __init__(self, message: str, history: list[dict[str, Any]]) -> None:
-        super().__init__(message)
-        self.history = history
-
-
-class MainAnswer(BaseModel):
-    answer: str
-
-
-class ClipAnswer(BaseModel):
-    status: Literal["answered", "unknown"]
-    answer: str
-    evidence_timestamps_s: list[float] = Field(default_factory=list)
-
-
-class ReflectionAnswer(BaseModel):
-    reflection: str
-    meta_reflection: str
-
-
-class JudgeAnswer(BaseModel):
-    score: int = Field(ge=0, le=5)
-
-
-class SummaryAnswer(BaseModel):
-    summary: str
+@dataclass
+class HarnessConfig:
+    repo_root: Path = Path(__file__).resolve().parents[1]
+    stage2_root: Path = Path("data/pilot/stage2")
+    embedding_base_url: str = "http://127.0.0.1:8013/v1"
+    embedding_model: str = "qwen3-vl-embedding-8b"
+    main_model: str = "gpt-5.6-luna"
+    main_base_url: str | None = None
+    reasoning_effort: str = "medium"
+    openai_api_key_env: str = "OPENAI_API_KEY"
+    attempts: int = 3
 
 
 @dataclass
-class ModelBundle:
-    model: OpenAIResponsesModel
-    settings: ModelSettings
-    run_config: RunConfig
-    name: str
-
-
-@dataclass
-class RolloutContext:
-    database_path: Path
-    embedding_root: Path
-    embedding_url: str
-    dataset_root: Path
-    skills_dir: Path
+class HarnessContext:
+    config: HarnessConfig
+    index: Stage2Index
     run_dir: Path
-    model_bundle: ModelBundle
-    video_id: str
-    notes: list[str] = field(default_factory=list)
-    submitted: Any = None
-    raised_reason: str | None = None
-    media_counter: int = 0
-
-
-@dataclass
-class UpdaterContext:
     skills_dir: Path
-    stopped: bool = False
-    stop_reason: str = ""
+    notes: dict[str, list[str]] = field(default_factory=dict)
 
 
-def json_tool_error(_ctx: RunContextWrapper[Any], error: Exception) -> str:
-    if isinstance(error, (InvalidTrace, AgentRaised, CompactionLimit)):
-        raise error
-    return json.dumps({"error": str(error)}, ensure_ascii=False)
-
-
-def make_model_bundle(
-    model_name: str,
-    base_url: str,
-    api_key: str,
-    reasoning_effort: Literal["low", "medium"],
-) -> ModelBundle:
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=3)
-    model = OpenAIResponsesModel(model=model_name, openai_client=client)
-    settings = ModelSettings(
-        reasoning={"effort": reasoning_effort},
-        parallel_tool_calls=True,
-        preserve_raw_usage=True,
-    )
-    run_config = RunConfig(reasoning_item_id_policy="preserve")
-    return ModelBundle(model=model, settings=settings, run_config=run_config, name=model_name)
-
-
-def load_schema(database_path: Path) -> str:
-    connection = duckdb.connect(str(database_path), read_only=True)
-    tables = connection.execute(
-        "SELECT table_name FROM information_schema.tables "
-        "WHERE table_schema = 'main' ORDER BY table_name"
-    ).fetchall()
-    blocks = []
-    for (table,) in tables:
-        columns = connection.execute(f"PRAGMA table_info('{table}')").fetchall()
-        blocks.append(
-            f"{table}(" + ", ".join(f"{column[1]} {column[2]}" for column in columns) + ")"
-        )
-    connection.close()
-    return "\n".join(blocks)
-
-
-def load_skill_catalog(skills_dir: Path) -> str:
-    entries = []
-    for path in sorted(skills_dir.glob("*.md")):
-        if path.name == "META-SKILL.md":
+def load_dotenv(repo_root: Path) -> None:
+    env_path = repo_root / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
             continue
-        text = path.read_text()
-        if not text.startswith("---\n"):
-            raise ValueError(f"missing YAML frontmatter: {path}")
-        _, frontmatter, _ = text.split("---\n", 2)
-        values = {}
-        for line in frontmatter.splitlines():
-            if ":" in line:
-                key, value = line.split(":", 1)
-                values[key.strip()] = value.strip()
-        entries.append(f"- {values['name']}: {values['description']}")
-    return "\n".join(entries)
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
-def sanitize_trace(value: Any, media_dir: Path) -> Any:
-    if isinstance(value, dict):
-        clean = {}
-        for key, item in value.items():
-            if key == "image_url" and isinstance(item, str) and item.startswith("data:image/"):
-                header, encoded = item.split(",", 1)
-                suffix = header.split(";")[0].split("/")[1]
-                filename = f"trace-image-{uuid.uuid4().hex}.{suffix}"
-                (media_dir / filename).write_bytes(base64.b64decode(encoded))
-                clean[key] = filename
-            else:
-                clean[key] = sanitize_trace(item, media_dir)
-        return clean
-    if isinstance(value, list):
-        return [sanitize_trace(item, media_dir) for item in value]
+def normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip()).lower()
+
+
+def jsonable(value: Any) -> Any:
     if hasattr(value, "model_dump"):
-        return sanitize_trace(value.model_dump(mode="json"), media_dir)
+        return sanitize_trace(value.model_dump(mode="json", exclude_none=True))
+    if isinstance(value, dict):
+        return {str(k): jsonable(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [jsonable(v) for v in value]
+    if hasattr(value, "__dict__"):
+        return jsonable(value.__dict__)
     return value
 
 
-def save_trace(path: Path, result: Any, error: str | None = None) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    media_dir = path.parent.parent / "media"
-    media_dir.mkdir(parents=True, exist_ok=True)
-    payload = {"error": error, "items": sanitize_trace(result.to_input_list(), media_dir)}
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+def sanitize_trace(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): sanitize_trace(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize_trace(v) for v in value]
+    if isinstance(value, str):
+        if value.startswith("data:image") or value.startswith("/9j/") or value.startswith("iVBOR"):
+            return f"<image-bytes:{len(value)}>"
+        if len(value) > 200_000:
+            return value[:200_000] + f"<truncated:{len(value)}>"
+    return value
 
 
-async def stream_agent(
-    agent: Agent[Any],
-    agent_input: str | list[dict[str, Any]],
-    context: Any,
-    bundle: ModelBundle,
-    trace_path: Path,
-    compact_main: bool = False,
-    allow_forced_submit: bool = True,
-) -> tuple[Any, list[dict[str, Any]], bool]:
-    result = Runner.run_streamed(
-        agent,
-        agent_input,
-        context=context,
-        max_turns=TURN_LIMIT,
-        run_config=bundle.run_config,
-    )
-    completions: list[str] = []
-    compacted = False
-    force_submit = False
-    try:
-        async for event in result.stream_events():
-            if event.type == "run_item_stream_event" and event.name == "message_output_created":
-                assert isinstance(event.item, MessageOutputItem)
-                text = ItemHelpers.text_message_output(event.item)
-                completions.append(text)
-                if len(completions) >= 3 and completions[-3:] == [text, text, text]:
-                    result.cancel()
-                    raise InvalidTrace("three consecutive non-reasoning completions were identical")
-            if event.type == "raw_response_event":
-                response = getattr(event.data, "response", None)
-                usage = getattr(response, "usage", None)
-                if usage is not None:
-                    remaining = CONTEXT_LIMIT - usage.input_tokens - usage.output_tokens
-                    if compact_main and remaining <= COMPACTION_THRESHOLD and not compacted:
-                        result.cancel(mode="after_turn")
-                        compacted = True
-                    if (
-                        not compact_main
-                        and allow_forced_submit
-                        and remaining <= COMPACTION_THRESHOLD
-                        and not force_submit
-                    ):
-                        result.cancel(mode="after_turn")
-                        force_submit = True
-        save_trace(trace_path, result)
-    except Exception as error:
-        save_trace(trace_path, result, str(error))
-        raise
-    items = result.to_input_list()
-    if force_submit:
-        original_tools = agent.tools
-        submit_tools = [
-            tool
-            for tool in original_tools
-            if getattr(tool, "name", "") in {"submit_answer", "submit_reflection", "submit_score", "submit_summary", "stop"}
-        ]
-        if not submit_tools:
-            raise InvalidTrace("context threshold reached without a submission tool")
-        agent.tools = submit_tools
-        try:
-            return await stream_agent(
-                agent,
-                items
-                + [
-                    {
-                        "role": "user",
-                        "content": "Context is nearly full. Do not call exploratory tools. Submit the best final output now.",
-                    }
-                ],
-                context,
-                bundle,
-                trace_path.with_name(trace_path.stem + "-forced" + trace_path.suffix),
-                allow_forced_submit=False,
-            )
-        finally:
-            agent.tools = original_tools
-    return result.final_output, items, compacted
+def response_message_text(model_response: Any) -> str:
+    response = getattr(model_response, "response", None)
+    output = getattr(response, "output", []) if response is not None else []
+    parts: list[str] = []
+    for item in output:
+        if getattr(item, "type", None) != "message":
+            continue
+        for content in getattr(item, "content", []) or []:
+            text = getattr(content, "text", None)
+            if text:
+                parts.append(text)
+    return "".join(parts)
 
 
-def resolve_source_rows(context: RolloutContext, start_s: float, end_s: float) -> list[tuple[Any, ...]]:
-    connection = duckdb.connect(str(context.database_path), read_only=True)
-    rows = connection.execute(
-        "SELECT source_video_id, filename, timeline_start_s, timeline_end_s "
-        "FROM source_videos WHERE video_id = ? AND timeline_end_s > ? AND timeline_start_s < ? "
-        "ORDER BY timeline_start_s",
-        [context.video_id, start_s, end_s],
-    ).fetchall()
-    connection.close()
-    return rows
+def has_three_repeated_messages(raw_responses: list[Any]) -> bool:
+    last = None
+    count = 0
+    for response in raw_responses:
+        text = response_message_text(response)
+        if not text:
+            last = None
+            count = 0
+            continue
+        if text == last:
+            count += 1
+        else:
+            last = text
+            count = 1
+        if count >= 3:
+            return True
+    return False
 
 
-def render_frame(video_path: Path, local_s: float, output_path: Path) -> None:
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-ss",
-            str(local_s),
-            "-i",
-            str(video_path),
-            "-frames:v",
-            "1",
-            "-q:v",
-            "2",
-            "-y",
-            str(output_path),
-        ],
-        check=True,
-    )
+def extract_output_text(response: Any) -> str:
+    text = getattr(response, "output_text", None)
+    if text is not None:
+        return text
+    parts: list[str] = []
+    for item in getattr(response, "output", []) or []:
+        if getattr(item, "type", None) == "message":
+            for content in getattr(item, "content", []) or []:
+                value = getattr(content, "text", None)
+                if value:
+                    parts.append(value)
+    return "".join(parts)
 
 
-def frame_at(context: RolloutContext, timestamp_s: float, output_path: Path) -> None:
-    rows = resolve_source_rows(context, timestamp_s, timestamp_s + 0.001)
-    if len(rows) != 1:
-        raise ValueError(f"timestamp {timestamp_s} maps to {len(rows)} source videos")
-    _, filename, timeline_start_s, _ = rows[0]
-    render_frame(context.dataset_root / filename, timestamp_s - timeline_start_s, output_path)
+class Stage2Index:
+    def __init__(self, config: HarnessConfig):
+        self.config = config
+        self.stage2_root = (config.repo_root / config.stage2_root).resolve()
+        self.index_path = self.stage2_root / "index.duckdb"
+        self.embedding_dir = self.stage2_root / "embedding_index"
+        self.row_ids: dict[str, np.ndarray] = {}
+        self.vectors: dict[str, np.ndarray] = {}
+        for table in SEARCH_TABLES:
+            row_path = self.embedding_dir / f"{table}.row_ids.npy"
+            vector_path = self.embedding_dir / f"{table}.vectors.npy"
+            if row_path.exists() and vector_path.exists():
+                self.row_ids[table] = np.load(row_path, mmap_mode="r", allow_pickle=False)
+                self.vectors[table] = np.load(vector_path, mmap_mode="r", allow_pickle=False)
+                if self.vectors[table].shape != (len(self.row_ids[table]), 4096):
+                    raise RuntimeError(f"bad embedding shape for {table}: {self.vectors[table].shape}")
 
+    def connect(self) -> duckdb.DuckDBPyConnection:
+        return duckdb.connect(str(self.index_path), read_only=True)
 
-def data_image(path: Path) -> str:
-    return "data:image/jpeg;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+    def schema_text(self) -> str:
+        with self.connect() as con:
+            tables = [row[0] for row in con.execute("show tables").fetchall()]
+            chunks = []
+            for table in tables:
+                rows = con.execute(f"describe {table}").fetchall()
+                cols = ", ".join(f"{name} {typ}" for name, typ, *_ in rows)
+                chunks.append(f"{table}: {cols}")
+            return "\n".join(chunks)
 
+    def run_sql(self, sql: str, max_rows: int = SQL_ROW_LIMIT) -> dict[str, Any]:
+        stripped = sql.strip()
+        lowered = stripped.lower()
+        if not lowered.startswith(("select", "with", "show", "describe")):
+            return {"error": "only read-only select/with/show/describe sql is allowed"}
+        for token in ("insert", "update", "delete", "create", "drop", "alter", "copy", "attach", "detach", "install", "load"):
+            if re.search(rf"\b{token}\b", lowered):
+                return {"error": f"blocked non-read-only token: {token}"}
+        con = self.connect()
+        def query() -> tuple[list[str], list[tuple[Any, ...]]]:
+            result = con.execute(stripped)
+            names = [desc[0] for desc in result.description]
+            raw_rows = result.fetchmany(max_rows + 1)
+            return names, raw_rows
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(query)
+            try:
+                names, raw_rows = future.result(timeout=SQL_TIMEOUT_S)
+            except concurrent.futures.TimeoutError:
+                con.interrupt()
+                try:
+                    future.result()
+                except duckdb.InterruptException:
+                    pass
+                return {"error": f"SQL exceeded {SQL_TIMEOUT_S} seconds"}
+            finally:
+                con.close()
+        rows = []
+        for raw_row in raw_rows[:max_rows]:
+            row = {}
+            for name, cell in zip(names, raw_row, strict=True):
+                text = str(cell)
+                row[name] = {"value": text[:SQL_CELL_LIMIT], "length": len(text)}
+            rows.append(row)
+        return {"columns": names, "rows": rows, "more": len(raw_rows) > max_rows}
 
-def make_contact_sheets(
-    context: RolloutContext,
-    start_s: float,
-    end_s: float,
-    fps: float,
-    crop_x1: int,
-    crop_y1: int,
-    crop_x2: int,
-    crop_y2: int,
-) -> list[Path]:
-    timestamps = np.arange(start_s, end_s, 1.0 / fps).tolist()
-    if not timestamps:
-        timestamps = [start_s]
-    request_dir = context.run_dir / "media" / f"sample-{context.media_counter:05d}"
-    context.media_counter += 1
-    request_dir.mkdir(parents=True, exist_ok=True)
-    sheets = []
-    for page_index in range(math.ceil(len(timestamps) / 12)):
-        page_times = timestamps[page_index * 12 : (page_index + 1) * 12]
-        sheet = Image.new("RGB", (1920, 900), "black")
-        for index, timestamp_s in enumerate(page_times):
-            raw_path = request_dir / f"frame-{page_index:03d}-{index:02d}.jpg"
-            frame_at(context, timestamp_s, raw_path)
-            with Image.open(raw_path) as raw:
-                image = raw.convert("RGB")
-                width, height = image.size
-                image = image.crop(
-                    (
-                        width * crop_x1 // 1000,
-                        height * crop_y1 // 1000,
-                        width * crop_x2 // 1000,
-                        height * crop_y2 // 1000,
-                    )
-                )
-                image.thumbnail((480, 270))
-                cell = Image.new("RGB", (480, 300), "black")
-                cell.paste(image, ((480 - image.width) // 2, 25))
-                ImageDraw.Draw(cell).text((8, 5), f"t={timestamp_s:.3f}s", fill="white")
-                sheet.paste(cell, ((index % 4) * 480, (index // 4) * 300))
-            raw_path.unlink()
-        path = request_dir / f"contact-sheet-{page_index:03d}.jpg"
-        sheet.save(path, quality=90)
-        sheets.append(path)
-    return sheets
+    def sql_text_for_qa(self, sql: str) -> str:
+        stripped = sql.strip()
+        lowered = stripped.lower()
+        if not lowered.startswith(("select", "with", "show", "describe")):
+            return json.dumps({"error": "only read-only select/with/show/describe sql is allowed"}, ensure_ascii=False)
+        for token in ("insert", "update", "delete", "create", "drop", "alter", "copy", "attach", "detach", "install", "load"):
+            if re.search(rf"\b{token}\b", lowered):
+                return json.dumps({"error": f"blocked non-read-only token: {token}"}, ensure_ascii=False)
+        con = self.connect()
+        def query() -> tuple[list[str], list[str], bool]:
+            result = con.execute(stripped)
+            names = [desc[0] for desc in result.description]
+            chunks = [json.dumps(names, ensure_ascii=False)]
+            total = len(chunks[0])
+            truncated = False
+            while True:
+                raw_row = result.fetchone()
+                if raw_row is None:
+                    break
+                row = {}
+                for name, cell in zip(names, raw_row, strict=True):
+                    text = str(cell)
+                    row[name] = {"value": text[:SQL_CELL_LIMIT], "length": len(text)}
+                line = json.dumps(row, ensure_ascii=False)
+                total += len(line) + 1
+                if total > SQL_QA_CHAR_LIMIT:
+                    truncated = True
+                    break
+                chunks.append(line)
+            return names, chunks, truncated
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(query)
+            try:
+                _names, chunks, truncated = future.result(timeout=SQL_TIMEOUT_S)
+            except concurrent.futures.TimeoutError:
+                con.interrupt()
+                try:
+                    future.result()
+                except duckdb.InterruptException:
+                    pass
+                return json.dumps({"error": f"SQL exceeded {SQL_TIMEOUT_S} seconds"}, ensure_ascii=False)
+            finally:
+                con.close()
+        if truncated:
+            chunks.append("<truncated>")
+        return "\n".join(chunks)
 
-
-def query_database(connection: duckdb.DuckDBPyConnection, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
-    cursor = connection.execute(sql)
-    columns = [item[0] for item in cursor.description]
-    rows = cursor.fetchall()
-    return columns, rows
-
-
-async def execute_sql(database_path: Path, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
-    connection = duckdb.connect(str(database_path), read_only=True)
-    task = asyncio.create_task(asyncio.to_thread(query_database, connection, sql))
-    try:
-        return await asyncio.wait_for(asyncio.shield(task), timeout=SQL_TIMEOUT_S)
-    except TimeoutError:
-        connection.interrupt()
-        try:
-            await task
-        except duckdb.InterruptException:
-            pass
-        raise TimeoutError(f"SQL exceeded {SQL_TIMEOUT_S} seconds")
-    finally:
-        connection.close()
-
-
-def clipped_cell(value: Any) -> dict[str, Any]:
-    text = str(value)
-    return {"value": text[:500], "original_length": len(text)}
-
-
-def make_main_tools(context: RolloutContext) -> list[Any]:
-    @function_tool(failure_error_function=json_tool_error)
-    async def run_sql(sql: str) -> str:
-        """Execute one read-only DuckDB SQL statement and return at most 100 rows."""
-        columns, rows = await execute_sql(context.database_path, sql)
-        return json.dumps(
-            {
-                "columns": columns,
-                "rows": [[clipped_cell(cell) for cell in row] for row in rows[:100]],
-                "has_more": len(rows) > 100,
-            },
-            ensure_ascii=False,
-        )
-
-    @function_tool(failure_error_function=json_tool_error)
-    async def sql_qa(sql: str, question: str) -> str:
-        """Execute SQL and have a separate model answer a question about the full result."""
-        columns, rows = await execute_sql(context.database_path, sql)
-        raw = json.dumps({"columns": columns, "rows": rows}, ensure_ascii=False, default=str)
-        if len(raw) > 50_000:
-            raw = raw[:50_000] + "\n[TRUNCATED AT 50000 CHARACTERS]"
-        answer_context: dict[str, Any] = {"answer": None}
-
-        @function_tool(failure_error_function=json_tool_error)
-        def submit_answer(answer: str) -> str:
-            """Submit the final answer to the SQL-result question."""
-            answer_context["answer"] = answer
-            return answer
-
-        agent = Agent(
-            name="sql-result-qa",
-            instructions="Answer only from the supplied SQL result. Call submit_answer when done.",
-            model=context.model_bundle.model,
-            model_settings=context.model_bundle.settings,
-            tools=[submit_answer],
-            tool_use_behavior={"stop_at_tool_names": ["submit_answer"]},
-        )
-        trace_path = context.run_dir / "traces" / f"sql-qa-{uuid.uuid4().hex}.json"
-        await stream_agent(
-            agent,
-            f"Question:\n{question}\n\nSQL result:\n{raw}",
-            answer_context,
-            context.model_bundle,
-            trace_path,
-        )
-        if answer_context["answer"] is None:
-            raise ValueError("sql_qa did not call submit_answer")
-        return answer_context["answer"]
-
-    @function_tool(failure_error_function=json_tool_error)
-    async def semantic_search(
-        query: str,
-        n: int,
-        table: str,
-        rank_start: int = 1,
-        rank_end: int | None = None,
-        threshold_min: float | None = None,
-        threshold_max: float | None = None,
-    ) -> str:
-        """Search an embedded table by cosine similarity with rank or score filters."""
-        if table not in SEARCHABLE_TABLES:
-            raise ValueError(f"table must be one of {sorted(SEARCHABLE_TABLES)}")
-        if rank_start < 1 or n < 1:
-            raise ValueError("rank_start and n must be positive")
+    async def embed_text(self, query: str) -> np.ndarray:
+        payload = {"model": self.config.embedding_model, "input": [query]}
         async with httpx.AsyncClient(timeout=None) as client:
-            response = await client.post(
-                context.embedding_url,
-                json={"model": "qwen3-vl-embedding-8b", "input": [query]},
-            )
-            response.raise_for_status()
+            response = await client.post(f"{self.config.embedding_base_url}/embeddings", json=payload)
+        response.raise_for_status()
         data = response.json()["data"]
         vector = np.asarray(data[0]["embedding"], dtype=np.float32)
         if vector.shape != (4096,) or not np.isfinite(vector).all():
-            raise ValueError(f"invalid embedding shape or values: {vector.shape}")
-        row_ids = np.load(context.embedding_root / f"{table}.row_ids.npy", mmap_mode="r", allow_pickle=False)
-        vectors = np.load(context.embedding_root / f"{table}.vectors.npy", mmap_mode="r", allow_pickle=False)
-        scores = vectors @ vector
-        order = np.argsort(-scores)
-        stop = rank_end if rank_end is not None else rank_start + n - 1
-        selected = order[rank_start - 1 : stop]
+            raise RuntimeError(f"bad query embedding shape/content: {vector.shape}")
+        return vector
+
+    async def semantic_search(self, query: str, table: str, n: int, rank_start: int, rank_end: int | None, min_score: float | None, max_score: float | None, video_id: str | None) -> dict[str, Any]:
+        if table not in self.vectors:
+            return {"error": f"table has no loaded embedding index: {table}"}
+        query_vector = await self.embed_text(query)
+        scores = self.vectors[table] @ query_vector
+        positions = np.argsort(-scores)
+        if video_id:
+            with self.connect() as con:
+                allowed_rows = con.execute(f"select row_id from {table} where video_id = ?", [video_id]).fetchall()
+            allowed = {row[0] for row in allowed_rows}
+            positions = np.asarray([pos for pos in positions if str(self.row_ids[table][pos]) in allowed], dtype=np.int64)
+        end = rank_end if rank_end is not None else rank_start + n
         hits = []
-        connection = duckdb.connect(str(context.database_path), read_only=True)
-        text_column, start_column, end_column = SEARCHABLE_TABLES[table]
-        for position in selected:
-            score = float(scores[position])
-            if threshold_min is not None and score < threshold_min:
-                continue
-            if threshold_max is not None and score > threshold_max:
-                continue
-            row_id = str(row_ids[position])
-            row = connection.execute(
-                f"SELECT row_id, video_id, {start_column}, {end_column}, {text_column} "
-                f"FROM {table} WHERE row_id = ?",
-                [row_id],
-            ).fetchone()
-            if row is None:
-                raise ValueError(f"embedding row_id missing from {table}: {row_id}")
-            hits.append(
-                {
-                    "table": table,
-                    "row_id": row[0],
-                    "video_id": row[1],
-                    "start_s": row[2],
-                    "end_s": row[3],
-                    "text": str(row[4])[:500],
-                    "score": score,
-                }
-            )
-        connection.close()
-        return json.dumps(hits, ensure_ascii=False)
+        text_col, start_col, end_col = SEARCH_TABLES[table]
+        with self.connect() as con:
+            for pos in positions[rank_start:end]:
+                score = float(scores[pos])
+                if min_score is not None and score < min_score:
+                    continue
+                if max_score is not None and score > max_score:
+                    continue
+                row_id = str(self.row_ids[table][pos])
+                row = con.execute(f"select row_id, video_id, {start_col}, {end_col}, {text_col} from {table} where row_id = ?", [row_id]).fetchone()
+                if row is None:
+                    raise RuntimeError(f"embedding row_id missing from duckdb: {table} {row_id}")
+                hits.append({"table": table, "row_id": row[0], "video_id": row[1], "start_s": row[2], "end_s": row[3], "text": str(row[4])[:500], "score": score})
+        return {"hits": hits, "rank_start": rank_start, "rank_end": end}
 
-    @function_tool(failure_error_function=json_tool_error)
-    def add_note(note: str) -> str:
-        """Add a working note for this rollout."""
-        context.notes.append(note)
-        return json.dumps({"saved": len(context.notes)}, ensure_ascii=False)
+    def visual_rows(self, video_id: str, start_s: float, end_s: float) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows = con.execute(
+                "select row_id, video_id, start_s, end_s, source_start_s, source_end_s, filename, text from visual_clips where video_id = ? and end_s > ? and start_s < ? order by start_s",
+                [video_id, start_s, end_s],
+            ).fetchall()
+        return [{"row_id": r[0], "video_id": r[1], "start_s": r[2], "end_s": r[3], "source_start_s": r[4], "source_end_s": r[5], "filename": r[6], "text": r[7]} for r in rows]
 
-    @function_tool(failure_error_function=json_tool_error)
-    def read_notes() -> str:
-        """Read all working notes for this rollout."""
-        return json.dumps(context.notes, ensure_ascii=False)
 
-    @function_tool(failure_error_function=json_tool_error)
-    def read_skill(name: str) -> str:
-        """Read one available skill by its frontmatter name."""
-        for path in context.skills_dir.glob("*.md"):
-            if path.name == "META-SKILL.md":
-                continue
-            text = path.read_text()
-            if f"name: {name}\n" in text.split("---\n", 2)[1]:
-                return text
-        raise ValueError(f"unknown skill: {name}")
+def openai_client(config: HarnessConfig) -> AsyncOpenAI:
+    load_dotenv(config.repo_root)
+    base_url = config.main_base_url or os.environ.get("OPENAI_BASE_URL")
+    api_key = os.environ.get(config.openai_api_key_env)
+    if api_key is None and base_url and "127.0.0.1" in base_url:
+        api_key = "local-vllm"
+    if api_key is None:
+        for key in ("LAB_OPENAI_API_KEY", "OPENAI_LAB_API_KEY", "PERSONAL_OPENAI_API_KEY", "OPENAI_PERSONAL_API_KEY"):
+            if os.environ.get(key):
+                api_key = os.environ[key]
+                break
+    if api_key is None:
+        api_key = os.environ[config.openai_api_key_env]
+    return AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=3)
 
-    @function_tool(failure_error_function=json_tool_error)
-    def agent_raise(reason: str) -> str:
-        """End this rollout because valid completion is impossible."""
-        context.raised_reason = reason
-        raise AgentRaised(reason)
 
-    async def clip_qa_impl(
-        video_id: str, start_s: float, end_s: float, question: str
-    ) -> list[ToolOutputText | ToolOutputImage]:
-        if video_id != context.video_id:
-            raise ValueError(f"current logical timeline is {context.video_id}, not {video_id}")
+def responses_model(config: HarnessConfig) -> OpenAIResponsesModel:
+    return OpenAIResponsesModel(config.main_model, openai_client(config))
+
+
+def run_config(config: HarnessConfig) -> RunConfig:
+    return RunConfig(reasoning_item_id_policy="preserve", model_settings=ModelSettings(reasoning={"effort": config.reasoning_effort}, preserve_raw_usage=True), workflow_name="video-sql-v2")
+
+
+def skill_inventory(skills_dir: Path) -> list[dict[str, str]]:
+    skills = []
+    for path in sorted(skills_dir.glob("*.md")):
+        text = path.read_text()
+        meta = {}
+        if text.startswith("---"):
+            _, frontmatter, _body = text.split("---", 2)
+            meta = yaml.safe_load(frontmatter) or {}
+        name = str(meta.get("name", path.stem))
+        description = str(meta.get("description", ""))
+        skills.append({"name": name, "description": description, "file": path.name})
+    return skills
+
+
+def read_skill_file(skills_dir: Path, name: str) -> str:
+    for item in skill_inventory(skills_dir):
+        if item["name"] == name or item["file"] == name or Path(item["file"]).stem == name:
+            return (skills_dir / item["file"]).read_text()
+    raise FileNotFoundError(f"unknown skill: {name}")
+
+
+def main_instructions(context: HarnessContext) -> str:
+    skills = "\n".join(f"- {item['name']}: {item['description']}" for item in skill_inventory(context.skills_dir))
+    return "\n".join([
+        "You answer questions about long egocentric video memories by querying the Stage 2 DuckDB database, semantic embedding index, and visual clips.",
+        "Use tools as needed. Submit the final answer with submit_answer.",
+        "Do not expose host absolute paths. Use evidence from SQL rows, semantic hits, or visual checks.",
+        "Available skills:",
+        skills,
+        "Stage 2 schema:",
+        context.index.schema_text(),
+    ])
+
+
+def clip_instructions() -> str:
+    return "Use sample_video, notes, and submit_answer to answer the clip question. Return unknown if the clip does not show the answer."
+
+
+def reflection_instructions(context: HarnessContext) -> str:
+    meta_skill = read_skill_file(context.skills_dir, "META-SKILL")
+    return main_instructions(context) + "\n\nReflection guideline from META-SKILL.md:\n" + meta_skill + "\nSubmit with submit_reflection."
+
+
+def make_tools(context: HarnessContext, include_submit: str) -> list[Any]:
+    @function_tool(failure_error_function=lambda _ctx, exc: json.dumps({"error": str(exc)}, ensure_ascii=False))
+    async def run_sql(sql: str) -> str:
+        """Execute a read-only DuckDB SQL query and return at most 100 rows."""
+        result = await asyncio.to_thread(context.index.run_sql, sql)
+        return json.dumps(result, ensure_ascii=False)
+
+    @function_tool(failure_error_function=lambda _ctx, exc: json.dumps({"error": str(exc)}, ensure_ascii=False))
+    async def sql_qa(sql: str, question: str) -> str:
+        """Execute SQL, then ask a single LLM call to answer the question from the full bounded result text."""
+        table_text = await asyncio.to_thread(context.index.sql_text_for_qa, sql)
+        response = await openai_client(context.config).responses.create(
+            model=context.config.main_model,
+            reasoning={"effort": context.config.reasoning_effort},
+            input="Answer the question using only this SQL result.\nQuestion:\n" + question + "\nSQL result:\n" + table_text,
+        )
+        return extract_output_text(response)
+
+    @function_tool(failure_error_function=lambda _ctx, exc: json.dumps({"error": str(exc)}, ensure_ascii=False))
+    async def semantic_search(query: str, n: int, table: str, rank_start: int = 0, rank_end: int | None = None, min_score: float | None = None, max_score: float | None = None, video_id: str | None = None) -> str:
+        """Search one embedding-indexed table by Qwen3-VL embedding similarity."""
+        result = await context.index.semantic_search(query, table, n, rank_start, rank_end, min_score, max_score, video_id)
+        return json.dumps(result, ensure_ascii=False)
+
+    @function_tool(failure_error_function=lambda _ctx, exc: json.dumps({"error": str(exc)}, ensure_ascii=False))
+    async def sample_video(video_id: str, start_s: float, end_s: float, fps: float, include_captions: bool, crop_x0: int = 0, crop_y0: int = 0, crop_x1: int = 1000, crop_y1: int = 1000) -> list[ToolOutputText | ToolOutputImage]:
+        """Return 4x3 contact-sheet image filenames covering the requested interval."""
         if end_s <= start_s:
-            raise ValueError("end_s must be greater than start_s")
+            raise RuntimeError("end_s must be greater than start_s")
+        rows = context.index.visual_rows(video_id, start_s, end_s)
+        if not rows:
+            raise RuntimeError("no visual clips overlap requested interval")
+        media_dir = context.run_dir / "media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        frame_paths: list[Path] = []
+        duration = end_s - start_s
+        frame_count = max(1, math.ceil(duration * fps))
+        for i in range(frame_count):
+            t = start_s + (i + 0.5) / fps
+            clip = next(row for row in rows if row["start_s"] <= t < row["end_s"] or row is rows[-1])
+            source_path = context.config.repo_root / clip["filename"]
+            local_t = max(0.0, t - float(clip["start_s"]))
+            frame_path = media_dir / f"frame-{uuid.uuid4().hex}.jpg"
+            subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{local_t:.3f}", "-i", str(source_path), "-frames:v", "1", "-q:v", "2", str(frame_path)], check=True)
+            with Image.open(frame_path) as image:
+                image = image.convert("RGB")
+                width, height = image.size
+                left = int(width * crop_x0 / 1000)
+                top = int(height * crop_y0 / 1000)
+                right = int(width * crop_x1 / 1000)
+                bottom = int(height * crop_y1 / 1000)
+                image = image.crop((left, top, right, bottom))
+                image.save(frame_path, quality=90)
+            frame_paths.append(frame_path)
+        pages = []
+        for page_start in range(0, len(frame_paths), 12):
+            page_frames = frame_paths[page_start:page_start + 12]
+            images = [Image.open(path).convert("RGB") for path in page_frames]
+            thumb_w = max(image.width for image in images)
+            thumb_h = max(image.height for image in images)
+            sheet = Image.new("RGB", (thumb_w * 4, thumb_h * 3), "white")
+            draw = ImageDraw.Draw(sheet)
+            for offset, image in enumerate(images):
+                image.thumbnail((thumb_w, thumb_h))
+                x = offset % 4 * thumb_w
+                y = offset // 4 * thumb_h
+                sheet.paste(image, (x, y))
+                draw.text((x + 8, y + 8), f"{start_s + (page_start + offset + 0.5) / fps:.1f}s", fill=(255, 255, 0))
+                image.close()
+            sheet_path = media_dir / f"contact-{uuid.uuid4().hex}.jpg"
+            sheet.save(sheet_path, quality=90)
+            pages.append(sheet_path.name)
+            for image in images:
+                image.close()
+        captions = [{"start_s": row["start_s"], "end_s": row["end_s"], "text": row["text"]} for row in rows] if include_captions else []
+        outputs: list[ToolOutputText | ToolOutputImage] = [ToolOutputText(text=json.dumps({"contact_sheets": pages, "captions": captions}, ensure_ascii=False))]
+        for page in pages:
+            page_path = media_dir / page
+            encoded = base64.b64encode(page_path.read_bytes()).decode("ascii")
+            outputs.append(ToolOutputImage(image_url="data:image/jpeg;base64," + encoded, detail="high"))
+        return outputs
+
+    @function_tool(failure_error_function=lambda _ctx, exc: json.dumps({"error": str(exc)}, ensure_ascii=False))
+    async def clip_qa(video_id: str, start_s: float, end_s: float, question: str) -> str:
+        """Run an inner visual agent on a clip no longer than 20 minutes."""
         if end_s - start_s > 1200:
-            raise ValueError("clip_qa refuses intervals longer than 20 minutes")
-        clip_context = copy.copy(context)
-        clip_context.notes = []
-        clip_context.submitted = None
-        clip_context.run_dir = context.run_dir / "clip_qa" / uuid.uuid4().hex
+            return json.dumps({"status": "unknown", "answer": "clip longer than 20 minutes", "evidence_times": []}, ensure_ascii=False)
+        answer = await run_clip_qa(context, video_id, start_s, end_s, question)
+        return answer.model_dump_json()
 
-        @function_tool(failure_error_function=json_tool_error)
-        async def sample_video(
-            start_s: float,
-            end_s: float,
-            fps: float,
-            include_captions: bool,
-            crop_x1: int = 0,
-            crop_y1: int = 0,
-            crop_x2: int = 1000,
-            crop_y2: int = 1000,
-        ) -> list[ToolOutputText | ToolOutputImage]:
-            """Return fully paginated 4x3 contact sheets for a timeline interval."""
-            if not (0 <= crop_x1 < crop_x2 <= 1000 and 0 <= crop_y1 < crop_y2 <= 1000):
-                raise ValueError("crop coordinates must satisfy 0 <= min < max <= 1000")
-            if start_s < 0 or end_s <= start_s or fps <= 0:
-                raise ValueError("invalid time range or fps")
-            sheets = await asyncio.to_thread(
-                make_contact_sheets,
-                clip_context,
-                start_s,
-                end_s,
-                fps,
-                crop_x1,
-                crop_y1,
-                crop_x2,
-                crop_y2,
-            )
-            blocks: list[ToolOutputText | ToolOutputImage] = []
-            caption_text = ""
-            if include_captions:
-                columns, rows = await execute_sql(
-                    clip_context.database_path,
-                    "SELECT start_s, end_s, text FROM episodes "
-                    f"WHERE video_id = '{video_id}' AND granularity = '30sec' "
-                    f"AND end_s > {float(start_s)} AND start_s < {float(end_s)} ORDER BY start_s",
-                )
-                caption_text = json.dumps({"columns": columns, "rows": rows}, ensure_ascii=False)
-            for sheet in sheets:
-                blocks.append(
-                    ToolOutputText(
-                        text=f"{sheet.name}\n{caption_text}" if caption_text else sheet.name
-                    )
-                )
-                blocks.append(ToolOutputImage(image_url=data_image(sheet), detail="auto"))
-            return blocks
+    @function_tool(failure_error_function=lambda _ctx, exc: json.dumps({"error": str(exc)}, ensure_ascii=False))
+    def add_note(key: str, note: str) -> str:
+        """Save a note for this rollout."""
+        context.notes.setdefault(key, []).append(note)
+        return json.dumps({"ok": True}, ensure_ascii=False)
 
-        @function_tool(failure_error_function=json_tool_error)
-        def clip_add_note(note: str) -> str:
-            """Add a working note about the clip."""
-            clip_context.notes.append(note)
-            return json.dumps({"saved": len(clip_context.notes)})
+    @function_tool(failure_error_function=lambda _ctx, exc: json.dumps({"error": str(exc)}, ensure_ascii=False))
+    def read_notes(key: str) -> str:
+        """Read notes saved in this rollout."""
+        return json.dumps({"notes": context.notes.get(key, [])}, ensure_ascii=False)
 
-        @function_tool(failure_error_function=json_tool_error)
-        def clip_read_notes() -> str:
-            """Read all clip working notes."""
-            return json.dumps(clip_context.notes, ensure_ascii=False)
+    @function_tool(failure_error_function=lambda _ctx, exc: json.dumps({"error": str(exc)}, ensure_ascii=False))
+    def read_skill(name: str) -> str:
+        """Read one skill Markdown file by skill name."""
+        return read_skill_file(context.skills_dir, name)
 
-        @function_tool(failure_error_function=json_tool_error)
-        def submit_answer(
-            status: Literal["answered", "unknown"],
-            answer: str,
-            evidence_timestamps_s: list[float],
-        ) -> str:
-            """Submit the clip answer. Answered results require evidence timestamps."""
-            if status == "answered" and not evidence_timestamps_s:
-                raise ValueError("answered requires at least one evidence timestamp")
-            clip_context.submitted = ClipAnswer(
-                status=status,
-                answer=answer,
-                evidence_timestamps_s=evidence_timestamps_s,
-            )
-            return clip_context.submitted.model_dump_json()
+    @function_tool(failure_error_function=lambda _ctx, exc: json.dumps({"error": str(exc)}, ensure_ascii=False))
+    def agent_raise(reason: str) -> str:
+        """End this rollout as an agent-raised failure."""
+        return json.dumps({"status": "raised", "reason": reason}, ensure_ascii=False)
 
-        clip_agent = Agent(
-            name="clip-qa",
-            instructions=(
-                "Inspect the requested video interval to answer the question. Intervals up to ten minutes "
-                "are recommended. Use sample_video as needed. Call submit_answer when finished."
-            ),
-            model=context.model_bundle.model,
-            model_settings=context.model_bundle.settings,
-            tools=[sample_video, clip_add_note, clip_read_notes, submit_answer],
-            tool_use_behavior={"stop_at_tool_names": ["submit_answer"]},
-        )
-        await stream_agent(
-            clip_agent,
-            f"Logical timeline: {video_id}\nRange: {start_s:.3f}-{end_s:.3f}s\nQuestion: {question}",
-            clip_context,
-            context.model_bundle,
-            clip_context.run_dir / "traces" / "clip.json",
-        )
-        answer = clip_context.submitted
-        if answer is None:
-            raise ValueError("clip_qa did not call submit_answer")
-        blocks: list[ToolOutputText | ToolOutputImage] = [
-            ToolOutputText(text=answer.model_dump_json())
-        ]
-        for timestamp_s in answer.evidence_timestamps_s:
-            screenshot = clip_context.run_dir / "media" / f"evidence-{timestamp_s:.3f}.jpg"
-            screenshot.parent.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(frame_at, clip_context, timestamp_s, screenshot)
-            blocks.append(ToolOutputText(text=screenshot.name))
-            blocks.append(ToolOutputImage(image_url=data_image(screenshot), detail="high"))
-        return blocks
+    tools = [run_sql, sql_qa, semantic_search, clip_qa, add_note, read_notes, read_skill, agent_raise]
+    if include_submit == "answer":
+        @function_tool
+        def submit_answer(status: str, answer: str, evidence_times: list[str]) -> str:
+            """Submit the final answer and stop the agent loop."""
+            return json.dumps({"status": status, "answer": answer, "evidence_times": evidence_times}, ensure_ascii=False)
+        tools.append(submit_answer)
+    elif include_submit == "reflection":
+        @function_tool
+        def submit_reflection(reflection: str, meta_reflection: str) -> str:
+            """Submit reflection and meta-reflection and stop the reflection loop."""
+            return json.dumps({"reflection": reflection, "meta_reflection": meta_reflection}, ensure_ascii=False)
+        tools.append(submit_reflection)
+    return tools
 
-    clip_qa = function_tool(
-        clip_qa_impl,
-        name_override="clip_qa",
-        description_override=(
-            "Inspect a logical video interval with an internal visual agent. Intervals under ten minutes "
-            "are recommended; intervals over twenty minutes are rejected."
-        ),
-        failure_error_function=json_tool_error,
+
+def make_clip_tools(context: HarnessContext) -> list[Any]:
+    tools = [tool for tool in make_tools(context, "answer") if tool.name in {"sample_video", "add_note", "read_notes", "submit_answer", "agent_raise"}]
+    return tools
+
+
+async def run_agent_stream(agent: Agent[HarnessContext], input_payload: str | list[dict[str, Any]], context: HarnessContext, trace_path: Path, compact_main: bool = False):
+    result = Runner.run_streamed(agent, input_payload, context=context, max_turns=MAX_AGENT_TURNS, run_config=run_config(context.config))
+    events = []
+    compacted = False
+    try:
+        async for event in result.stream_events():
+            events.append(jsonable(event))
+            if compact_main and getattr(event, "type", None) == "raw_response_event":
+                response = getattr(getattr(event, "data", None), "response", None)
+                usage = getattr(response, "usage", None)
+                input_tokens = getattr(usage, "input_tokens", None) if usage is not None else None
+                output_tokens = getattr(usage, "output_tokens", None) if usage is not None else None
+                if input_tokens is not None and output_tokens is not None:
+                    remaining = CONTEXT_LIMIT - input_tokens - output_tokens
+                    if remaining <= COMPACTION_THRESHOLD and not compacted:
+                        result.cancel(mode="after_turn")
+                        compacted = True
+    finally:
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_path.write_text(json.dumps({"events": sanitize_trace(events), "raw_responses": jsonable(result.raw_responses), "new_items": jsonable(result.new_items), "final_output": jsonable(result.final_output)}, ensure_ascii=False, indent=2))
+    if has_three_repeated_messages(result.raw_responses):
+        raise RuntimeError("three repeated non-reasoning model messages")
+    return result, compacted
+
+
+async def run_clip_qa(context: HarnessContext, video_id: str, start_s: float, end_s: float, question: str) -> AgentAnswer:
+    agent = Agent(
+        name="clip_qa",
+        instructions=clip_instructions(),
+        model=responses_model(context.config),
+        model_settings=ModelSettings(reasoning={"effort": context.config.reasoning_effort}, preserve_raw_usage=True),
+        tools=make_clip_tools(context),
+        tool_use_behavior={"stop_at_tool_names": ["submit_answer", "agent_raise"]},
     )
-    return [run_sql, sql_qa, semantic_search, clip_qa, add_note, read_notes, read_skill, agent_raise]
+    prompt = f"video_id={video_id}\nstart_s={start_s}\nend_s={end_s}\nquestion={question}"
+    trace_path = context.run_dir / "traces" / f"clip-{uuid.uuid4().hex}.json"
+    result, _compacted = await run_agent_stream(agent, prompt, context, trace_path)
+    if '"status": "raised"' in str(result.final_output):
+        raise AgentRaised(str(result.final_output))
+    return AgentAnswer.model_validate_json(result.final_output)
 
 
-def make_retrieval_agent(context: RolloutContext) -> Agent[RolloutContext]:
-    @function_tool(failure_error_function=json_tool_error)
-    def submit_answer(answer: str) -> str:
-        """Submit the final answer to the memory question."""
-        context.submitted = MainAnswer(answer=answer)
-        return context.submitted.model_dump_json()
-
-    tools = make_main_tools(context) + [submit_answer]
-    schema = load_schema(context.database_path)
-    catalog = load_skill_catalog(context.skills_dir)
-    instructions = (
-        "You answer questions by retrieving evidence from a video-memory SQL database. "
-        "Use the available tools and call submit_answer when finished.\n\n"
-        f"Database schema:\n{schema}\n\nAvailable skills:\n{catalog}"
+async def answer_question(context: HarnessContext, question: Question, trace_name: str) -> tuple[AgentAnswer, Any, Agent[HarnessContext]]:
+    agent = Agent(
+        name="retrieval_agent",
+        instructions=main_instructions(context),
+        model=responses_model(context.config),
+        model_settings=ModelSettings(reasoning={"effort": context.config.reasoning_effort}, preserve_raw_usage=True),
+        tools=make_tools(context, "answer"),
+        tool_use_behavior={"stop_at_tool_names": ["submit_answer", "agent_raise"]},
     )
-    return Agent(
-        name="video-memory-retrieval",
-        instructions=instructions,
-        model=context.model_bundle.model,
-        model_settings=context.model_bundle.settings,
-        tools=tools,
-        tool_use_behavior={"stop_at_tool_names": ["submit_answer"]},
-    )
-
-
-async def run_main_with_compaction(
-    agent: Agent[RolloutContext],
-    prompt: str,
-    context: RolloutContext,
-    trace_dir: Path,
-) -> tuple[MainAnswer, list[dict[str, Any]], int]:
-    history: str | list[dict[str, Any]] = prompt
-    compactions = 0
-    while True:
-        _, items, needs_compaction = await stream_agent(
-            agent,
-            history,
-            context,
-            context.model_bundle,
-            trace_dir / f"main-segment-{compactions:02d}.json",
-            compact_main=True,
-        )
-        if context.submitted is not None:
-            return context.submitted, items, compactions
-        if not needs_compaction:
-            raise InvalidTrace("main agent stopped without submit_answer or compaction")
-        original_tools = agent.tools
+    prompt = f"timeline: {question.timeline}\nquestion: {question.question}"
+    current_input: str | list[dict[str, Any]] = prompt
+    for compaction_index in range(3):
+        agent.tools = make_tools(context, "answer")
+        agent.tool_use_behavior = {"stop_at_tool_names": ["submit_answer", "agent_raise"]}
+        result, compacted = await run_agent_stream(agent, current_input, context, context.run_dir / "traces" / f"{trace_name}-answer-segment-{compaction_index:02d}.json", compact_main=True)
+        if not compacted:
+            if '"status": "raised"' in str(result.final_output):
+                raise AgentRaised(str(result.final_output))
+            return AgentAnswer.model_validate_json(result.final_output), result, agent
+        history = result.to_input_list(mode="preserve_all")
+        saved_tools = agent.tools
+        saved_behavior = agent.tool_use_behavior
         agent.tools = []
-        summary_result, summary_items, _ = await stream_agent(
-            agent,
-            items
-            + [
-                {
-                    "role": "user",
-                    "content": (
-                        "Stop using tools. Produce a trusted handoff that preserves the question, all useful "
-                        "evidence, SQL findings, visual findings, uncertainties, and the exact remaining work."
-                    ),
-                }
-            ],
-            context,
-            context.model_bundle,
-            trace_dir / f"compaction-{compactions:02d}.json",
-            allow_forced_submit=False,
-        )
-        agent.tools = original_tools
-        compactions += 1
-        if compactions >= 3:
-            trusted_history = [
-                {
-                    "role": "user",
-                    "content": (
-                        "The answer attempt reached the third compaction limit. Reflect from this trusted "
-                        "handoff and focus on why the search loop failed to converge.\n\n" + str(summary_result)
-                    ),
-                }
-            ]
-            raise CompactionLimit("third compaction generated", trusted_history)
-        handoff = str(summary_result)
-        if not handoff.strip():
-            handoff = ItemHelpers.text_message_outputs(
-                [item for item in getattr(summary_items, "new_items", []) if isinstance(item, MessageOutputItem)]
-            )
-        history = (
-            "Continue the original task from this trusted handoff. Use tools as needed and call submit_answer.\n\n"
-            + handoff
-        )
+        agent.tool_use_behavior = "run_llm_again"
+        compact_result, _ = await run_agent_stream(agent, history + [{"role": "user", "content": "Stop using tools. Summarize the current question, evidence found, failed paths, unresolved needs, and next best retrieval step as a trusted handoff for the same agent."}], context, context.run_dir / "traces" / f"{trace_name}-compaction-{compaction_index:02d}.json")
+        agent.tools = saved_tools
+        agent.tool_use_behavior = saved_behavior
+        handoff = str(compact_result.final_output)
+        if compaction_index == 2:
+            raise CompactionLimit(handoff)
+        current_input = "Trusted handoff from previous context:\n" + handoff + "\n\nContinue answering.\n" + prompt
+    raise RuntimeError("unreachable compaction loop")
 
 
-def make_reflection_tools(context: RolloutContext) -> list[Any]:
-    tools = make_main_tools(context)
-
-    @function_tool(failure_error_function=json_tool_error)
-    def submit_reflection(reflection: str, meta_reflection: str) -> str:
-        """Submit abstract task-learning and reflection-learning conclusions."""
-        context.submitted = ReflectionAnswer(
-            reflection=reflection,
-            meta_reflection=meta_reflection,
-        )
-        return context.submitted.model_dump_json()
-
-    return tools + [submit_reflection]
+async def reflect_question(context: HarnessContext, agent: Agent[HarnessContext], answer_result: Any, question: Question, candidate: AgentAnswer, score: int, trace_name: str) -> AgentReflection:
+    agent.instructions = reflection_instructions(context)
+    agent.tools = make_tools(context, "reflection")
+    agent.tool_use_behavior = {"stop_at_tool_names": ["submit_reflection", "agent_raise"]}
+    input_items = answer_result.to_input_list(mode="preserve_all")
+    input_items.append({"role": "user", "content": "Correct answer: " + question.answer + "\nYour candidate answer: " + candidate.answer + f"\nJudge score out of 5: {score}\nReflect on why the answer was right or wrong, then extract reusable reflection guidance."})
+    result, _compacted = await run_agent_stream(agent, input_items, context, context.run_dir / "traces" / f"{trace_name}-reflection.json")
+    if '"status": "raised"' in str(result.final_output):
+        raise AgentRaised(str(result.final_output))
+    return AgentReflection.model_validate_json(result.final_output)
 
 
-async def continue_reflection(
-    agent: Agent[RolloutContext],
-    answer_history: list[dict[str, Any]],
-    context: RolloutContext,
-    reference_answer: str,
-    score: int,
-    trace_path: Path,
-) -> ReflectionAnswer:
-    context.submitted = None
-    agent.tools = make_reflection_tools(context)
-    agent.tool_use_behavior = {"stop_at_tool_names": ["submit_reflection"]}
-    meta_skill = (context.skills_dir / "META-SKILL.md").read_text()
-    reflection_prompt = (
-        f"The correct answer is: {reference_answer}\nYour score is: {score}/5.\n\n"
-        "Continue as the same agent in the same conversation. Revisit your full work and use retrieval tools "
-        "again when necessary. Explain abstractly why the approach succeeded or failed and derive reusable "
-        "reflection lessons. Remove dataset-specific sensitive details. Update, replace, or delete old advice "
-        "when it is redundant, conflicting, or obsolete. Call submit_reflection when finished.\n\n"
-        f"META-SKILL.md:\n{meta_skill}"
+async def judge_answer(config: HarnessConfig, reference_answer: str, candidate_answer: str) -> int:
+    client = openai_client(config)
+    parsed = await client.responses.parse(
+        model=config.main_model,
+        reasoning={"effort": config.reasoning_effort},
+        input="Score semantic equivalence from 0 to 5. Ignore extra video IDs, timestamps, and row IDs.\nReference answer:\n" + reference_answer + "\nCandidate answer:\n" + candidate_answer,
+        text_format=JudgeScore,
     )
-    await stream_agent(
-        agent,
-        answer_history + [{"role": "user", "content": reflection_prompt}],
-        context,
-        context.model_bundle,
-        trace_path,
+    score = parsed.output_parsed.score
+    if score < 0 or score > 5:
+        raise RuntimeError(f"judge score out of range: {score}")
+    return score
+
+
+async def summarize_reflections(config: HarnessConfig, payload: str) -> str:
+    response = await openai_client(config).responses.create(
+        model=config.main_model,
+        reasoning={"effort": config.reasoning_effort},
+        input="Summarize these rollout reflections into concise updater instructions. Keep them abstract and remove dataset-specific sensitive details.\n" + payload,
     )
-    if context.submitted is None:
-        raise InvalidTrace("reflection did not call submit_reflection")
-    return context.submitted
-
-
-async def judge_answer(
-    bundle: ModelBundle,
-    reference_answer: str,
-    candidate_answer: str,
-    trace_path: Path,
-) -> JudgeAnswer:
-    state: dict[str, Any] = {"answer": None}
-
-    @function_tool(failure_error_function=json_tool_error)
-    def submit_score(score: int) -> str:
-        """Submit an integer semantic-equivalence score from 0 to 5."""
-        state["answer"] = JudgeAnswer(score=score)
-        return state["answer"].model_dump_json()
-
-    agent = Agent(
-        name="answer-judge",
-        instructions=(
-            "Compare only the reference answer and candidate answer. Score semantic equivalence from 0 to 5. "
-            "Ignore attached video IDs, timestamps, row IDs, and other identifiers. Call submit_score."
-        ),
-        model=bundle.model,
-        model_settings=bundle.settings,
-        tools=[submit_score],
-        tool_use_behavior={"stop_at_tool_names": ["submit_score"]},
-    )
-    await stream_agent(
-        agent,
-        f"Reference answer: {reference_answer}\nCandidate answer: {candidate_answer}",
-        state,
-        bundle,
-        trace_path,
-    )
-    if state["answer"] is None:
-        raise InvalidTrace("judge did not call submit_score")
-    return state["answer"]
-
-
-async def summarize_reflections(
-    bundle: ModelBundle,
-    question_summaries: list[dict[str, Any]],
-    trace_path: Path,
-) -> str:
-    state: dict[str, Any] = {"answer": None}
-
-    @function_tool(failure_error_function=json_tool_error)
-    def submit_summary(summary: str) -> str:
-        """Submit the consolidated abstract reflection summary."""
-        state["answer"] = SummaryAnswer(summary=summary)
-        return state["answer"].model_dump_json()
-
-    agent = Agent(
-        name="reflection-summarizer",
-        instructions=(
-            "Consolidate the supplied rollout reflections into reusable, non-duplicative guidance. Preserve "
-            "both retrieval lessons and meta-reflection lessons. Call submit_summary."
-        ),
-        model=bundle.model,
-        model_settings=bundle.settings,
-        tools=[submit_summary],
-        tool_use_behavior={"stop_at_tool_names": ["submit_summary"]},
-    )
-    await stream_agent(
-        agent,
-        json.dumps(question_summaries, ensure_ascii=False),
-        state,
-        bundle,
-        trace_path,
-    )
-    if state["answer"] is None:
-        raise InvalidTrace("summarizer did not call submit_summary")
-    return state["answer"].summary
-
-
-def make_updater_agent(context: UpdaterContext, bundle: ModelBundle) -> Agent[UpdaterContext]:
-    def skill_path(name: str) -> Path:
-        if Path(name).name != name or not name.endswith(".md"):
-            raise ValueError("name must be a Markdown filename without directories")
-        return context.skills_dir / name
-
-    @function_tool(failure_error_function=json_tool_error)
-    def list_skills() -> str:
-        """List current skill Markdown filenames."""
-        return json.dumps(sorted(path.name for path in context.skills_dir.glob("*.md")))
-
-    @function_tool(failure_error_function=json_tool_error)
-    def read_skill_file(name: str) -> str:
-        """Read a current skill Markdown file."""
-        return skill_path(name).read_text()
-
-    @function_tool(failure_error_function=json_tool_error)
-    def write_skill_file(name: str, content: str) -> str:
-        """Create or replace a skill Markdown file."""
-        skill_path(name).write_text(content)
-        return json.dumps({"written": name})
-
-    @function_tool(failure_error_function=json_tool_error)
-    def delete_skill_file(name: str) -> str:
-        """Delete an obsolete ordinary skill file. META-SKILL.md cannot be deleted."""
-        if name == "META-SKILL.md":
-            raise ValueError("META-SKILL.md cannot be deleted")
-        skill_path(name).unlink()
-        return json.dumps({"deleted": name})
-
-    @function_tool(failure_error_function=json_tool_error)
-    def git_history(name: str) -> str:
-        """Read compact Git history and historical patches for one skill file."""
-        process = subprocess.run(
-            ["git", "log", "--format=%H %s", "-p", "--", name],
-            cwd=context.skills_dir,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return process.stdout[:50_000]
-
-    @function_tool(failure_error_function=json_tool_error)
-    def stop(reason: str) -> str:
-        """Stop after all skill file operations are complete."""
-        context.stopped = True
-        context.stop_reason = reason
-        return json.dumps({"stopped": True, "reason": reason}, ensure_ascii=False)
-
-    return Agent(
-        name="skill-updater",
-        instructions=(
-            "Update the skill repository from the supplied reflection summaries. You may add, replace, or "
-            "delete ordinary Markdown skills and may update META-SKILL.md, but never delete META-SKILL.md. "
-            "Every ordinary skill needs YAML name/description frontmatter plus Introduction, When to use, and "
-            "Main content. Put concise **Reason:** provenance after each guidance point, or once after a whole "
-            "section when it covers that section. Inspect current files and history as needed. Avoid duplicate, "
-            "conflicting, similar, stale, or dataset-specific advice. Call stop only after all edits are done."
-        ),
-        model=bundle.model,
-        model_settings=bundle.settings,
-        tools=[list_skills, read_skill_file, write_skill_file, delete_skill_file, git_history, stop],
-        tool_use_behavior={"stop_at_tool_names": ["stop"]},
-    )
-
-
-async def update_skills(
-    bundle: ModelBundle,
-    skills_dir: Path,
-    summaries: list[dict[str, Any]],
-    rollout_ids: list[str],
-    trace_path: Path,
-) -> str:
-    context = UpdaterContext(skills_dir=skills_dir)
-    agent = make_updater_agent(context, bundle)
-    status = subprocess.run(
-        ["git", "status", "--short"],
-        cwd=skills_dir,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    prompt = json.dumps(
-        {"summaries": summaries, "rollout_ids": rollout_ids, "existing_uncommitted_status": status},
-        ensure_ascii=False,
-    )
-    await stream_agent(agent, prompt, context, bundle, trace_path)
-    if not context.stopped:
-        raise InvalidTrace("updater did not call stop")
-    body = "Rollout IDs:\n" + "\n".join(rollout_ids) + "\n\nOverall reason:\n" + context.stop_reason
-    subprocess.run(["git", "add", "-A"], cwd=skills_dir, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=codex",
-            "-c",
-            "user.email=codex@localhost",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "Update learned skills",
-            "-m",
-            body,
-        ],
-        cwd=skills_dir,
-        check=True,
-    )
-    return context.stop_reason
+    return extract_output_text(response)

@@ -1,1 +1,2 @@
-"""Video SQL memory-agent harness."""
+"""Video SQL v2 research harness."""
+

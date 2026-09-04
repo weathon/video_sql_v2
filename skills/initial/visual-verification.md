@@ -1,21 +1,22 @@
 ---
 name: visual-verification
-description: Use when the answer depends on appearance, spatial details, on-screen text, identity, or ambiguous text evidence.
+description: Use this when the answer depends on visible appearance, identity, object state, spatial relation, text on screen, or when SQL/search evidence is plausible but not visually decisive.
 ---
 
-# Introduction
+# Visual Verification
 
-`clip_qa` delegates bounded visual inspection and returns an answer plus evidence screenshots.
+## Introduction
 
-# When to use
+`clip_qa` runs an inner visual agent over a bounded interval and returns an answer plus evidence times.
 
-Use after locating candidate intervals when captions cannot establish a visual fact, or when important text evidence may be noisy.
+## When to use
 
-# Main content
+Use visual verification for visible facts or when text evidence might be a summary, ASR artifact, or paraphrase.
 
-1. Narrow intervals with SQL or semantic search before calling `clip_qa`; keep each request below ten minutes when possible. **Reason:** Focused intervals allow useful frame density and precise evidence.
-2. Ask one concrete visual question per call and include the distinction that must be resolved. **Reason:** Vague requests produce observations without a decision criterion.
-3. In the internal clip agent, sample coarsely to locate a moment, then resample a smaller interval at higher fps or crop a relevant region. **Reason:** Adaptive sampling preserves both coverage and fine detail.
-4. Request captions only when they help connect visible evidence to indexed narration. **Reason:** Captions consume context and can bias inspection toward text claims.
-5. Require returned evidence timestamps for an `answered` result and inspect the screenshots supplied to the main agent. **Reason:** The visual conclusion must trace to actual frames.
-6. Treat `unknown` as unresolved evidence and continue retrieval; do not convert it into a guessed answer. **Reason:** Absence in sampled frames is not proof of absence in the video.
+## Main content
+
+1. Keep clips under 10 minutes when possible. Never ask `clip_qa` for more than 20 minutes. **Reason:** long clips dilute visual attention and the tool rejects intervals over 20 minutes.
+2. Pass the exact `video_id`, `start_s`, and `end_s` from SQL or semantic hits. **Reason:** clip filenames and source offsets are resolved by the database, not by guessed paths.
+3. Ask a focused question about the visual fact needed for the final answer. **Reason:** broad clip questions produce vague summaries instead of decisive evidence.
+4. If `clip_qa` returns `unknown`, search adjacent rows or use another evidence path; do not turn unknown into a positive answer. **Reason:** absence of visual confirmation is not proof of the opposite.
+

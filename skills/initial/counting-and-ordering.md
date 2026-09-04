@@ -1,28 +1,31 @@
 ---
 name: counting-and-ordering
-description: Use for counts, totals, frequencies, rankings, durations, and ordered sequences.
+description: Use this for counts, totals, durations, most/least, comparisons, top-k, order lists, or questions requiring deduplication before answering.
 ---
 
-# Introduction
+# Counting And Ordering
 
-Counting and ordering require explicit definitions of the unit, identity, scope, and deduplication key.
+## Introduction
 
-# When to use
+Use SQL aggregation for counts and ordering, then inspect representative evidence.
 
-Use whenever the answer depends on how many, how often, how long, most/least, first/last, or sequence order.
+## When to use
 
-# Main content
+Use this when the answer is numeric, ranked, ordered, or comparative.
 
-1. State the counted unit before querying: distinct object, event occurrence, interval, person, or state transition. **Reason:** Row counts often overcount repeated descriptions of one event.
-2. Inspect candidate rows and select a deduplication key such as a 30-second evidence row, chain step, object identity, or non-overlapping interval. **Reason:** Multiple tables and granularities can describe the same occurrence.
-3. Restrict the temporal and logical scope before aggregation. **Reason:** Aggregating first can mix independent timelines or unrelated episodes.
-4. For duration, merge overlapping intervals before summing; do not sum caption or fact-row durations blindly. **Reason:** Overlapping evidence creates duplicate time.
-5. For order, sort by numeric evidence time and retain ties until visual or textual evidence distinguishes them. **Reason:** SQL row order and chain wording are not chronological guarantees.
+## Main content
+
+1. Define the unit before counting: 30 second clip, 3 minute episode, event step, object state, or chain fact. **Reason:** counting different units gives different numbers.
+2. Deduplicate by the row type that represents one occurrence. For repeated 30 second hits from the same longer event, group by an event or time bucket when appropriate. **Reason:** semantic and keyword searches can return adjacent rows for one real occurrence.
+3. Use SQL `GROUP BY`, `COUNT`, `SUM`, `MIN`, `MAX`, and `ORDER BY` for aggregate claims. **Reason:** the agent should not manually count long result lists in context.
+4. For ordered answers, return the final order after checking the actual `start_s` values. **Reason:** result presentation order is not always chronological.
 
 ```sql
-SELECT caption_30sec_row_id, MIN(time_s) AS first_time, COUNT(*) AS fact_rows
-FROM topic_facts
-WHERE video_id = 'month' AND fact ILIKE '%target%'
-GROUP BY caption_30sec_row_id
-ORDER BY first_time;
+SELECT object, COUNT(*) AS n
+FROM object_states
+WHERE video_id = 'day'
+GROUP BY object
+ORDER BY n DESC
+LIMIT 10;
 ```
+
