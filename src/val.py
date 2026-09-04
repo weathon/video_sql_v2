@@ -8,7 +8,6 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-import wandb
 import weave
 
 from src.harness import (
@@ -159,12 +158,15 @@ async def validate(args: argparse.Namespace) -> None:
         "mean_judge_score": sum(result["score"] for result in results) / len(results),
         "questions": len(questions),
         "rollouts": len(results),
-        "failed_rollouts": sum(result["status"] == "failed" for result in results),
+        "failed_rollouts": sum(result["status"] != "complete" for result in results),
     }
     write_json(args.run_dir / "val" / "summary.json", summary)
     run.log(summary)
     run.finish()
-    print(json.dumps(summary), flush=True)
+    final_line = json.dumps(summary)
+    with (args.run_dir / "AGENT_STDOUT.txt").open("a") as handle:
+        handle.write(final_line + "\n")
+    print(final_line, flush=True)
 
 
 def parse_args() -> argparse.Namespace:
