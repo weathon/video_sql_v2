@@ -10,8 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUN = ROOT / "runs/pilot_luna_fresh2_personal"
 DIST = ROOT / "vis/dist"
-MEDIA_PATTERN = re.compile(r"(?:contact|evidence)-[^\"'\\s<>]+?\\.(?:jpg|jpeg|png|webp)", re.I)
-SECRET_PATTERN = re.compile(r"(?i)(?:sk-|bearer\\s+|api[_-]?key[\"'=:\\s]+)[A-Za-z0-9_\\-\\.]{12,}")
+MEDIA_PATTERN = re.compile(r"(?:contact|evidence)-[^\"'\s<>]+?\.(?:jpg|jpeg|png|webp)", re.I)
+SECRET_PATTERN = re.compile(r"(?i)(?:sk-|bearer\s+|api[_-]?key[\"'=:\s]+)[A-Za-z0-9_.-]{12,}")
 
 
 def clean(value):
@@ -30,7 +30,7 @@ def clean(value):
 
 
 def segment_number(path):
-    match = re.search(r"segment-(\\d+)", path.name)
+    match = re.search(r"segment-(\d+)", path.name)
     return int(match.group(1)) if match else 10_000
 
 
@@ -134,7 +134,7 @@ def main():
         "media_count": sum(len(rollout["media"]) for rollout in rollouts),
         "rollouts": rollouts,
     }
-    (DIST / "data.js").write_text("window.TRACE_DATA=" + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + ";\\n")
+    (DIST / "data.js").write_text("window.TRACE_DATA=" + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + ";\n")
     (DIST / "index.html").write_text(INDEX_HTML)
     (DIST / "styles.css").write_text(STYLES)
     (DIST / "app.js").write_text(APP_JS)
@@ -162,7 +162,7 @@ INDEX_HTML = r'''<!doctype html>
       <div class="runline"><span class="live-dot"></span><span id="runName"></span></div>
       <div class="stats" id="stats"></div>
       <label class="search"><span>⌕</span><input id="search" placeholder="搜索题目、答案、ID…"></label>
-      <div class="filters"><button class="filter active" data-filter="all">全部</button><button class="filter" data-filter="1">得分 1</button><button class="filter" data-filter="0">得分 0</button></div>
+      <div class="filters"><button class="filter active" data-filter="all">全部</button><button class="filter" data-filter="5">得分 5</button><button class="filter" data-filter="0">得分 0</button></div>
       <div class="rollout-list" id="rolloutList"></div>
     </aside>
     <main class="stage" id="stage">
