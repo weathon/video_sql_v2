@@ -40,9 +40,9 @@ async def run_eval_rollout(
     async with semaphore:
         for attempt in range(1, attempts + 1):
             attempt_dir = rollout_root / f"attempt-{attempt}"
-            if attempt_dir.exists():
+            if (attempt_dir / "error.json").exists():
                 continue
-            attempt_dir.mkdir(parents=True)
+            attempt_dir.mkdir(parents=True, exist_ok=True)
             harness = VideoSQLHarness(
                 database=runtime_root / question["timeline"] / "index.duckdb",
                 embedding_index=runtime_root
