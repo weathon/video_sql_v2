@@ -52,6 +52,7 @@ class Question(BaseModel):
 
 
 class JudgeScore(BaseModel):
+    reasoning: str
     score: int
 
 
@@ -153,12 +154,18 @@ def response_message_text(model_response: Any) -> str:
         output = getattr(response, "output", []) if response is not None else []
     parts: list[str] = []
     for item in output:
-        if getattr(item, "type", None) != "message":
+        item_type = getattr(item, "type", None)
+        if item_type == "reasoning":
             continue
-        for content in getattr(item, "content", []) or []:
-            text = getattr(content, "text", None)
-            if text:
-                parts.append(text)
+        if item_type == "message":
+            for content in getattr(item, "content", []) or []:
+                text = getattr(content, "text", None)
+                if text:
+                    parts.append(text)
+        elif hasattr(item, "model_dump"):
+            parts.append(json.dumps(item.model_dump(mode="json", exclude_none=True), sort_keys=True))
+        else:
+            parts.append(str(item))
     return "".join(parts)
 
 
@@ -464,7 +471,10 @@ def make_tools(context: HarnessContext, include_submit: str) -> list[Any]:
         frame_count = max(1, math.ceil(duration * fps))
         for i in range(frame_count):
             t = start_s + (i + 0.5) / fps
-            clip = next(row for row in rows if row["start_s"] <= t < row["end_s"] or row is rows[-1])
+            matches = [row for row in rows if row["start_s"] <= t < row["end_s"]]
+            if not matches:
+                raise RuntimeError(f"no visual clip covers sampled timestamp {t}")
+            clip = matches[0]
             source_path = context.config.repo_root / clip["filename"]
             local_t = max(0.0, t - float(clip["start_s"]))
             frame_path = media_dir / f"frame-{uuid.uuid4().hex}.jpg"
@@ -703,7 +713,7 @@ async def judge_answer(config: HarnessConfig, reference_answer: str, candidate_a
     parsed = await client.responses.parse(
         model=config.main_model,
         reasoning={"effort": config.reasoning_effort},
-        input="Score semantic equivalence from 0 to 5. Ignore extra video IDs, timestamps, and row IDs.\nReference answer:\n" + reference_answer + "\nCandidate answer:\n" + candidate_answer,
+        input="Reason briefly, then score semantic equivalence from 0 to 5. Ignore extra video IDs, timestamps, and row IDs.\nReference answer:\n" + reference_answer + "\nCandidate answer:\n" + candidate_answer,
         text_format=JudgeScore,
     )
     if trace_path is not None:

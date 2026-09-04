@@ -23,8 +23,13 @@ def load_questions(path: Path) -> list[Question]:
     raw = json.loads(path.read_text())
     questions = []
     for item in raw:
-        timeline = item.get("timeline") or item.get("video_id") or "month"
-        source_split = item.get("source_split", "")
+        if "timeline" in item:
+            timeline = item["timeline"]
+        elif path.name == "train.json" and path.parent.name == "month":
+            timeline = "month"
+        else:
+            raise RuntimeError(f"missing timeline for {path} item {item['index']}")
+        source_split = item["source_split"] if "source_split" in item else f"{path.parent.name}/{path.name}"
         questions.append(Question(timeline=str(timeline), source_split=source_split, index=item["index"], question=item["question"], answer=item["answer"]))
     return questions
 
