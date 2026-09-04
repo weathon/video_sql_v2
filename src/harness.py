@@ -382,7 +382,10 @@ async def execute_sql(database_path: Path, sql: str) -> tuple[list[str], list[tu
         return await asyncio.wait_for(asyncio.shield(task), timeout=SQL_TIMEOUT_S)
     except TimeoutError:
         connection.interrupt()
-        await task
+        try:
+            await task
+        except duckdb.InterruptException:
+            pass
         raise TimeoutError(f"SQL exceeded {SQL_TIMEOUT_S} seconds")
     finally:
         connection.close()
