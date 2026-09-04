@@ -9,6 +9,7 @@ from typing import Any
 import wandb
 import weave
 from dotenv import load_dotenv
+from wandb.sdk.lib.runid import generate_id
 
 from src.harness import VideoSQLHarness
 from src.training import judge_answer, milestone, retryable, write_error
@@ -122,7 +123,7 @@ async def main_async(args: argparse.Namespace) -> None:
         wandb_id = config["wandb_id"]
         resume = "must"
     else:
-        wandb_id = wandb.util.generate_id()
+        wandb_id = generate_id()
         resume = "never"
         config = {
             "model": args.model_name,
