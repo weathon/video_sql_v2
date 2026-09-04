@@ -37,11 +37,13 @@ def segment_number(path):
 def encode_media(job):
     source, target = job
     target.parent.mkdir(parents=True, exist_ok=True)
+    width = 800 if source.name.startswith("evidence-") else 480
+    crf = 42 if source.name.startswith("evidence-") else 50
     subprocess.run(
         [
             "ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(source),
-            "-vf", "scale='min(800,iw)':-2", "-c:v", "libaom-av1", "-still-picture", "1",
-            "-crf", "42", "-cpu-used", "6", "-pix_fmt", "yuv420p",
+            "-vf", f"scale='min({width},iw)':-2", "-c:v", "libaom-av1", "-still-picture", "1",
+            "-crf", str(crf), "-cpu-used", "6", "-pix_fmt", "yuv420p",
             str(target),
         ],
         check=True,
