@@ -88,7 +88,7 @@ def initialize_wandb(run_dir: Path, config: dict[str, Any]) -> Any:
             name=run_dir.name,
             id=state["id"],
             resume="must",
-            config=config,
+            config=state["config"],
         )
     run_id = generate_id()
     run = wandb.init(
@@ -99,7 +99,7 @@ def initialize_wandb(run_dir: Path, config: dict[str, Any]) -> Any:
         resume="never",
         config=config,
     )
-    write_json(state_path, {"id": run_id})
+    write_json(state_path, {"id": run_id, "config": config})
     return run
 
 
@@ -258,6 +258,9 @@ async def train(args: argparse.Namespace) -> None:
                 )
                 if consecutive_empty_batches == 2:
                     raise RuntimeError("two consecutive batches had no successful rollouts")
+                if args.max_updates is not None and update_count >= args.max_updates:
+                    run.finish()
+                    return
                 continue
             batch = shuffled[offset : offset + 4]
             results = await asyncio.gather(
@@ -280,6 +283,10 @@ async def train(args: argparse.Namespace) -> None:
             if not complete:
                 consecutive_empty_batches += 1
                 write_json(done_path, {"updated": 0, "reason": "all rollouts failed"})
+                milestone = f"epoch={epoch} batch={batch_index} updates={update_count} complete_rollouts=0"
+                with (args.run_dir / "AGENT_STDOUT.txt").open("a") as handle:
+                    handle.write(milestone + "\n")
+                print(milestone, flush=True)
                 if consecutive_empty_batches == 2:
                     raise RuntimeError("two consecutive batches had no successful rollouts")
                 continue
