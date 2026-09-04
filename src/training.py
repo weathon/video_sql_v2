@@ -1,321 +1,733 @@
-from __future__ import annotations
-
 import argparse
 import asyncio
 import json
+import os
 import random
 import shutil
 import subprocess
-import traceback
 from pathlib import Path
 from typing import Any
 
+import openai
 import wandb
 import weave
-from agents import Agent, ModelSettings, function_tool
+from agents import (
+    Agent,
+    MaxTurnsExceeded,
+    ModelBehaviorError,
+    StopAtTools,
+    UserError,
+    function_tool,
+)
+from dotenv import load_dotenv
+from pydantic import BaseModel, ValidationError
 
-from src.harness import AgentAnswer, AgentRaised, CompactionLimit, HarnessConfig, HarnessContext, Question, Stage2Index, answer_question, judge_answer, reflect_question, responses_model, run_agent_stream, summarize_reflections
-
-
-DEFAULT_TRAIN_JSON = "/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443/month/train.json"
-
-
-def load_questions(path: Path) -> list[Question]:
-    raw = json.loads(path.read_text())
-    questions = []
-    for item in raw:
-        if "timeline" in item:
-            timeline = item["timeline"]
-        elif path.name == "train.json" and path.parent.name == "month":
-            timeline = "month"
-        else:
-            raise RuntimeError(f"missing timeline for {path} item {item['index']}")
-        source_split = item["source_split"] if "source_split" in item else f"{path.parent.name}/{path.name}"
-        questions.append(Question(timeline=str(timeline), source_split=source_split, index=item["index"], question=item["question"], answer=item["answer"]))
-    return questions
+from src.harness import (
+    AgentRaised,
+    InvalidTrace,
+    VideoSQLHarness,
+    run_stream,
+    tool_error_json,
+)
 
 
-def ensure_skill_repo(repo_root: Path, run_dir: Path) -> Path:
-    skills_dir = run_dir / "skills"
-    if skills_dir.exists():
-        return skills_dir
-    shutil.copytree(repo_root / "skills" / "initial", skills_dir)
-    subprocess.run(["git", "init"], cwd=skills_dir, check=True)
-    subprocess.run(["git", "config", "user.name", "codex"], cwd=skills_dir, check=True)
-    subprocess.run(["git", "config", "user.email", "codex@localhost"], cwd=skills_dir, check=True)
-    subprocess.run(["git", "add", "."], cwd=skills_dir, check=True)
-    subprocess.run(["git", "commit", "-m", "Initial skills"], cwd=skills_dir, check=True)
-    return skills_dir
+class Judgment(BaseModel):
+    score: int
 
 
-def safe_skill_path(skills_dir: Path, filename: str) -> Path:
-    path = (skills_dir / filename).resolve()
-    if skills_dir.resolve() not in path.parents and path != skills_dir.resolve():
-        raise RuntimeError(f"path escapes skills dir: {filename}")
-    if path.name == ".git" or ".git" in path.parts:
-        raise RuntimeError("direct .git edits are forbidden")
-    return path
+class ReflectionSummary(BaseModel):
+    summary: str
 
 
-def skill_update_commit_exists(skills_dir: Path, batch_id: str) -> bool:
-    log = subprocess.check_output(["git", "log", "--format=%s"], cwd=skills_dir, text=True)
-    return f"Update skills for {batch_id}" in log.splitlines()
+class UpdaterStop(BaseModel):
+    reason: str
 
 
-def updater_tools(skills_dir: Path) -> list[Any]:
-    def tool_error(_ctx, exc: Exception) -> str:
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
-
-    @function_tool(failure_error_function=tool_error)
-    def list_skill_files() -> str:
-        """List Markdown files in the skill repository."""
-        return json.dumps([path.name for path in sorted(skills_dir.glob("*.md"))], ensure_ascii=False)
-
-    @function_tool(failure_error_function=tool_error)
-    def read_skill_file(filename: str) -> str:
-        """Read a Markdown skill file from the skill repository."""
-        return safe_skill_path(skills_dir, filename).read_text()
-
-    @function_tool(failure_error_function=tool_error)
-    def write_skill_file(filename: str, content: str) -> str:
-        """Write a Markdown skill file in the skill repository."""
-        path = safe_skill_path(skills_dir, filename)
-        path.write_text(content)
-        return json.dumps({"ok": True, "file": path.name}, ensure_ascii=False)
-
-    @function_tool(failure_error_function=tool_error)
-    def delete_skill_file(filename: str) -> str:
-        """Delete a Markdown skill file except META-SKILL.md."""
-        if filename == "META-SKILL.md":
-            raise RuntimeError("META-SKILL.md cannot be deleted")
-        safe_skill_path(skills_dir, filename).unlink()
-        return json.dumps({"ok": True, "deleted": filename}, ensure_ascii=False)
-
-    @function_tool(failure_error_function=tool_error)
-    def git_status() -> str:
-        """Read git status for the skill repository."""
-        return subprocess.check_output(["git", "status", "--short"], cwd=skills_dir, text=True)
-
-    @function_tool(failure_error_function=tool_error)
-    def git_log() -> str:
-        """Read recent skill repository commits."""
-        return subprocess.check_output(["git", "log", "--oneline", "-10"], cwd=skills_dir, text=True)
-
-    @function_tool(failure_error_function=tool_error)
-    def git_show(commit: str, filename: str) -> str:
-        """Read one file from a historical skill repository commit."""
-        safe_skill_path(skills_dir, filename)
-        return subprocess.check_output(["git", "show", f"{commit}:{filename}"], cwd=skills_dir, text=True)
-
-    @function_tool
-    def stop(reason: str) -> str:
-        """Stop the skill updater after file edits are complete."""
-        return json.dumps({"reason": reason}, ensure_ascii=False)
-
-    return [list_skill_files, read_skill_file, write_skill_file, delete_skill_file, git_status, git_log, git_show, stop]
-
-
-async def run_updater(config: HarnessConfig, skills_dir: Path, run_dir: Path, summary: str, rollout_ids: list[str], batch_id: str) -> None:
-    agent = Agent(
-        name="skill_updater",
-        instructions="Update this Git-backed directory of Markdown skills from the batch summary. You may add, edit, or delete ordinary skill files. Never delete META-SKILL.md. Put brief **Reason:** text after each guidance point or section. Call stop when finished.",
-        model=responses_model(config),
-        model_settings=ModelSettings(reasoning={"effort": config.reasoning_effort}, preserve_raw_usage=True),
-        tools=updater_tools(skills_dir),
-        tool_use_behavior={"stop_at_tool_names": ["stop"]},
+def run_git(skill_dir: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=skill_dir,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
-    ctx = HarnessContext(config=config, index=Stage2Index(config), run_dir=run_dir, skills_dir=skills_dir)
-    await run_agent_stream(agent, "Rollout IDs:\n" + "\n".join(rollout_ids) + "\n\nBatch summary:\n" + summary, ctx, run_dir / "traces" / f"{batch_id}-updater.json", force_submit_tool="stop")
-    subprocess.run(["git", "add", "-A"], cwd=skills_dir, check=True)
-    body = "Rollout IDs:\n" + "\n".join(rollout_ids) + "\n\nReason:\n" + summary
-    subprocess.run(["git", "commit", "--allow-empty", "-m", f"Update skills for {batch_id}", "-m", body], cwd=skills_dir, check=True)
 
 
-async def run_rollout(config: HarnessConfig, index: Stage2Index, skills_dir: Path, run_dir: Path, question: Question, rollout_id: str) -> dict[str, Any]:
-    out_path = run_dir / "rollouts" / f"{rollout_id}.json"
-    if out_path.exists():
-        return json.loads(out_path.read_text())
-    rollout_dir = run_dir / "rollouts" / rollout_id
-    ctx = HarnessContext(config=config, index=index, run_dir=rollout_dir, skills_dir=skills_dir)
-    answer = None
-    answer_result = None
-    agent = None
-    for attempt in range(config.attempts):
+def initialize_skill_repo(initial_skills: Path, skill_dir: Path) -> None:
+    if skill_dir.exists():
+        if not (skill_dir / ".git").is_dir():
+            raise RuntimeError(f"existing skill directory is not a Git repository: {skill_dir}")
+        return
+    shutil.copytree(initial_skills, skill_dir)
+    run_git(skill_dir, ["init"])
+    run_git(skill_dir, ["config", "user.name", "codex"])
+    run_git(skill_dir, ["config", "user.email", "codex@localhost"])
+    run_git(skill_dir, ["add", "."])
+    run_git(skill_dir, ["commit", "-m", "initial skills"])
+
+
+def exception_chain(error: BaseException) -> list[BaseException]:
+    chain = []
+    current: BaseException | None = error
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def retryable(error: BaseException) -> bool:
+    for item in exception_chain(error):
+        if isinstance(
+            item,
+            (
+                AgentRaised,
+                InvalidTrace,
+                MaxTurnsExceeded,
+                ModelBehaviorError,
+                ValidationError,
+                UserError,
+                openai.APIConnectionError,
+                openai.APITimeoutError,
+                openai.RateLimitError,
+                openai.InternalServerError,
+            ),
+        ):
+            return True
+        if type(item) is openai.APIError:
+            return True
+    return False
+
+
+def write_error(path: Path, error: BaseException) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "type": type(error).__name__,
+                "message": str(error),
+                "chain": [
+                    {"type": type(item).__name__, "message": str(item)}
+                    for item in exception_chain(error)
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def milestone(message: str) -> None:
+    print(message, flush=True)
+    with Path("AGENT_STDOUT.txt").open("a") as output:
+        output.write(message + "\n")
+
+
+async def judge_answer(
+    harness: VideoSQLHarness,
+    reference_answer: str,
+    candidate_answer: str,
+    attempts: int,
+) -> int:
+    @function_tool(failure_error_function=None)
+    async def submit_judgment(score: int) -> str:
+        """Submit an integer semantic-equivalence score from 0 through 5."""
+        if not 0 <= score <= 5:
+            raise ValueError("score must be from 0 through 5")
+        return Judgment(score=score).model_dump_json()
+
+    prompt = json.dumps(
+        {
+            "reference_answer": reference_answer,
+            "candidate_answer": candidate_answer,
+        },
+        ensure_ascii=False,
+    )
+    instructions = (
+        "Judge only whether the candidate final answer is semantically equivalent to the "
+        "reference final answer. Ignore incidental video IDs, timestamps, row IDs, and other "
+        "identifiers. Return 5 for fully equivalent and 0 for wrong, with intermediate integers "
+        "for partially correct answers. Call submit_judgment."
+    )
+    for attempt in range(1, attempts + 1):
+        agent = Agent(
+            name="judge",
+            instructions=instructions,
+            model=harness.context.model,
+            model_settings=harness.context.model_settings,
+            tools=[submit_judgment],
+            tool_use_behavior=StopAtTools(stop_at_tool_names=["submit_judgment"]),
+        )
         try:
-            answer, answer_result, agent = await answer_question(ctx, question, f"{rollout_id}-attempt-{attempt:02d}")
-            break
-        except AgentRaised as exc:
-            err_path = rollout_dir / f"attempt-{attempt:02d}-agent-raise.txt"
-            err_path.parent.mkdir(parents=True, exist_ok=True)
-            err_path.write_text(str(exc))
-            if attempt + 1 == config.attempts:
+            result, _, _ = await run_stream(
+                harness.context,
+                agent,
+                prompt,
+                f"judge-attempt-{attempt}",
+                False,
+            )
+            return Judgment.model_validate_json(str(result.final_output)).score
+        except BaseException as error:
+            write_error(
+                harness.context.run_dir / f"judge-attempt-{attempt}-error.json",
+                error,
+            )
+            if not retryable(error):
                 raise
-        except CompactionLimit as exc:
-            candidate = AgentAnswer(status="compaction_limit", answer="", evidence_times=[])
-            for reflection_attempt in range(config.attempts):
-                try:
-                    reflection = await reflect_question(ctx, exc.agent, exc.result, question, candidate, 0, f"{rollout_id}-compaction-reflection-attempt-{reflection_attempt:02d}")
-                    payload = {"rollout_id": rollout_id, "answer_attempt": attempt, "judge_attempt": None, "reflection_attempt": reflection_attempt, "question": question.model_dump(), "answer": candidate.model_dump(), "score": 0, "reflection": reflection.model_dump(), "compaction_limit": True}
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
-                    return payload
-                except Exception as reflection_exc:
-                    err_path = rollout_dir / f"compaction-reflection-attempt-{reflection_attempt:02d}-error.txt"
-                    err_path.parent.mkdir(parents=True, exist_ok=True)
-                    err_path.write_text(traceback.format_exc())
-                    if reflection_attempt + 1 == config.attempts:
-                        raise
-        except Exception as exc:
-            err_path = rollout_dir / f"attempt-{attempt:02d}-error.txt"
-            err_path.parent.mkdir(parents=True, exist_ok=True)
-            err_path.write_text(traceback.format_exc())
-            if attempt + 1 == config.attempts:
-                raise
-    if answer is None or answer_result is None or agent is None:
-        raise RuntimeError("answer stage exhausted without output")
-    for judge_attempt in range(config.attempts):
+    raise RuntimeError("judge attempts exhausted")
+
+
+async def reflect_rollout(
+    harness: VideoSQLHarness,
+    session: Any,
+    reference_answer: str,
+    score: int,
+    attempts: int,
+) -> Any:
+    for attempt in range(1, attempts + 1):
         try:
-            score = await judge_answer(config, question.answer, answer.answer, rollout_dir / "traces" / f"judge-attempt-{judge_attempt:02d}.json")
-            break
-        except Exception as exc:
-            err_path = rollout_dir / f"judge-attempt-{judge_attempt:02d}-error.txt"
-            err_path.parent.mkdir(parents=True, exist_ok=True)
-            err_path.write_text(traceback.format_exc())
-            if judge_attempt + 1 == config.attempts:
+            return await harness.reflect(session, reference_answer, score)
+        except BaseException as error:
+            write_error(
+                harness.context.run_dir / f"reflection-attempt-{attempt}-error.json",
+                error,
+            )
+            if not retryable(error):
                 raise
-    for reflection_attempt in range(config.attempts):
+    raise RuntimeError("reflection attempts exhausted")
+
+
+async def run_rollout(
+    semaphore: asyncio.Semaphore,
+    question: dict[str, Any],
+    epoch: int,
+    batch: int,
+    rollout: int,
+    skill_dir: Path,
+    runtime_root: Path,
+    run_dir: Path,
+    model_name: str,
+    api_key: str,
+    base_url: str | None,
+    embedding_url: str,
+    embedding_model: str,
+    attempts: int,
+) -> dict[str, Any]:
+    rollout_root = (
+        run_dir
+        / "train"
+        / f"epoch-{epoch:03d}"
+        / f"batch-{batch:03d}"
+        / f"question-{question['index']}"
+        / f"rollout-{rollout:02d}"
+    )
+    result_path = rollout_root / "result.json"
+    if result_path.exists():
+        return json.loads(result_path.read_text())
+    async with semaphore:
+        for attempt in range(1, attempts + 1):
+            attempt_dir = rollout_root / f"attempt-{attempt}"
+            if attempt_dir.exists():
+                continue
+            attempt_dir.mkdir(parents=True)
+            rollout_id = (
+                f"{epoch}/{batch}/question-{question['index']}/"
+                f"rollout-{rollout}/attempt-{attempt}"
+            )
+            harness = VideoSQLHarness(
+                database=runtime_root / "month" / "index.duckdb",
+                embedding_index=runtime_root / "month" / "embedding_index",
+                media_map=runtime_root / "month" / "media-map.json",
+                skill_dir=skill_dir,
+                run_dir=attempt_dir,
+                model_name=model_name,
+                api_key=api_key,
+                base_url=base_url,
+                embedding_url=embedding_url,
+                embedding_model=embedding_model,
+                reasoning_effort="medium",
+            )
+            try:
+                session = await harness.answer(question["question"])
+                if session.status == "compaction_limit":
+                    score = 0
+                else:
+                    score = await judge_answer(
+                        harness,
+                        question["answer"],
+                        session.answer,
+                        attempts,
+                    )
+                reflection = await reflect_rollout(
+                    harness,
+                    session,
+                    question["answer"],
+                    score,
+                    attempts,
+                )
+                result = {
+                    "rollout_id": rollout_id,
+                    "question_index": question["index"],
+                    "status": session.status,
+                    "answer": session.answer,
+                    "reference_answer": question["answer"],
+                    "score": score,
+                    "reflection": reflection.reflection,
+                    "meta_reflection": reflection.meta_reflection,
+                    "trace_files": session.trace_files,
+                }
+                rollout_root.mkdir(parents=True, exist_ok=True)
+                result_path.write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+                )
+                return result
+            except BaseException as error:
+                write_error(attempt_dir / "error.json", error)
+                if not retryable(error):
+                    raise
+            finally:
+                await harness.close()
+        return {
+            "question_index": question["index"],
+            "rollout": rollout,
+            "status": "failed",
+        }
+
+
+async def summarize_question(
+    harness: VideoSQLHarness,
+    results: list[dict[str, Any]],
+    attempts: int,
+    output: Path,
+) -> dict[str, Any]:
+    if output.exists():
+        return json.loads(output.read_text())
+
+    @function_tool(failure_error_function=None)
+    async def submit_summary(summary: str) -> str:
+        """Submit an abstract cross-rollout summary."""
+        return ReflectionSummary(summary=summary).model_dump_json()
+
+    prompt = json.dumps(
+        [
+            {
+                "rollout_id": result["rollout_id"],
+                "score": result["score"],
+                "reflection": result["reflection"],
+                "meta_reflection": result["meta_reflection"],
+            }
+            for result in results
+        ],
+        ensure_ascii=False,
+    )
+    for attempt in range(1, attempts + 1):
+        agent = Agent(
+            name="reflection-summarizer",
+            instructions=(
+                "Combine the same question's rollout reflections into concise, generalizable "
+                "retrieval and meta-reflection lessons. Remove example-specific identifying "
+                "content and call submit_summary."
+            ),
+            model=harness.context.model,
+            model_settings=harness.context.model_settings,
+            tools=[submit_summary],
+            tool_use_behavior=StopAtTools(stop_at_tool_names=["submit_summary"]),
+        )
         try:
-            reflection = await reflect_question(ctx, agent, answer_result, question, answer, score, f"{rollout_id}-reflection-attempt-{reflection_attempt:02d}")
-            payload = {"rollout_id": rollout_id, "answer_attempt": attempt, "judge_attempt": judge_attempt, "reflection_attempt": reflection_attempt, "question": question.model_dump(), "answer": answer.model_dump(), "score": score, "reflection": reflection.model_dump(), "compaction_limit": False}
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+            result, _, _ = await run_stream(
+                harness.context,
+                agent,
+                prompt,
+                f"summarizer-attempt-{attempt}",
+                False,
+            )
+            summary = ReflectionSummary.model_validate_json(str(result.final_output))
+            payload = {
+                "summary": summary.summary,
+                "rollout_ids": [item["rollout_id"] for item in results],
+            }
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
             return payload
-        except Exception as exc:
-            err_path = rollout_dir / f"reflection-attempt-{reflection_attempt:02d}-error.txt"
-            err_path.parent.mkdir(parents=True, exist_ok=True)
-            err_path.write_text(traceback.format_exc())
-            if reflection_attempt + 1 == config.attempts:
+        except BaseException as error:
+            write_error(output.parent / f"summarizer-attempt-{attempt}-error.json", error)
+            if not retryable(error):
                 raise
-    raise RuntimeError("reflection stage exhausted without output")
+    raise RuntimeError("summarizer attempts exhausted")
 
 
-async def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--train-json", default=DEFAULT_TRAIN_JSON)
-    parser.add_argument("--run-dir", default="runs/pilot_openai_agents_current")
-    parser.add_argument("--model", default="gpt-5.6-luna")
-    parser.add_argument("--base-url", default=None)
-    parser.add_argument("--reasoning-effort", default="medium")
-    parser.add_argument("--questions-per-batch", type=int, default=4)
-    parser.add_argument("--rollouts-per-question", type=int, default=5)
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--max-updates", type=int, default=None)
-    parser.add_argument("--attempts", type=int, default=3)
-    parser.add_argument("--concurrency", type=int, default=24)
-    args = parser.parse_args()
-    if args.max_updates is None and args.model == "gpt-5.6-luna":
-        args.max_updates = 4
+def skill_path(skill_dir: Path, filename: str) -> Path:
+    if Path(filename).name != filename or not filename.endswith(".md"):
+        raise ValueError("skill filename must be a Markdown basename")
+    return skill_dir / filename
 
-    repo_root = Path(__file__).resolve().parents[1]
-    config = HarnessConfig(repo_root=repo_root, main_model=args.model, main_base_url=args.base_url, reasoning_effort=args.reasoning_effort, attempts=args.attempts)
-    run_dir = repo_root / args.run_dir
+
+async def update_skills(
+    harness: VideoSQLHarness,
+    skill_dir: Path,
+    summaries: list[dict[str, Any]],
+    rollout_ids: list[str],
+    attempts: int,
+    output: Path,
+) -> dict[str, Any]:
+    if output.exists():
+        return json.loads(output.read_text())
+
+    @function_tool(failure_error_function=tool_error_json)
+    async def list_skill_files() -> str:
+        """List current skill Markdown files."""
+        return json.dumps(sorted(path.name for path in skill_dir.glob("*.md")))
+
+    @function_tool(failure_error_function=tool_error_json)
+    async def read_skill_file(filename: str) -> str:
+        """Read a current skill file."""
+        return skill_path(skill_dir, filename).read_text()
+
+    @function_tool(failure_error_function=tool_error_json)
+    async def write_skill_file(filename: str, content: str) -> str:
+        """Create or replace a skill Markdown file."""
+        path = skill_path(skill_dir, filename)
+        path.write_text(content.rstrip() + "\n")
+        return json.dumps({"written": filename})
+
+    @function_tool(failure_error_function=tool_error_json)
+    async def delete_skill_file(filename: str) -> str:
+        """Delete an obsolete ordinary skill file."""
+        if filename == "META-SKILL.md":
+            raise ValueError("META-SKILL.md cannot be deleted")
+        skill_path(skill_dir, filename).unlink()
+        return json.dumps({"deleted": filename})
+
+    @function_tool(failure_error_function=tool_error_json)
+    async def skill_history() -> str:
+        """Read the independent skill repository commit history."""
+        return run_git(skill_dir, ["log", "--format=%H%n%B%n---"]).stdout
+
+    @function_tool(failure_error_function=tool_error_json)
+    async def read_skill_version(commit: str, filename: str) -> str:
+        """Read a skill file from an earlier independent skill commit."""
+        skill_path(skill_dir, filename)
+        return run_git(skill_dir, ["show", f"{commit}:{filename}"]).stdout
+
+    @function_tool(failure_error_function=None)
+    async def stop(reason: str) -> str:
+        """Stop after all skill edits are complete."""
+        return UpdaterStop(reason=reason).model_dump_json()
+
+    tools = [
+        list_skill_files,
+        read_skill_file,
+        write_skill_file,
+        delete_skill_file,
+        skill_history,
+        read_skill_version,
+        stop,
+    ]
+    prompt = json.dumps(summaries, ensure_ascii=False)
+    for attempt in range(1, attempts + 1):
+        agent = Agent(
+            name="skill-updater",
+            instructions=(
+                "Update the skill directory from the supplied abstract summaries. Use the file "
+                "tools across as many turns as needed, then call stop. You may add, replace, or "
+                "delete ordinary skills and may edit META-SKILL.md, but never delete "
+                "META-SKILL.md. Ordinary skills require YAML frontmatter with name and "
+                "description plus Introduction, When to use, and Main content. Keep the set "
+                "concise by replacing duplicated, conflicting, obsolete, or similar guidance. "
+                "Every saved guidance point must include a short bold Reason explaining its "
+                "evidence; one Reason may cover a whole section."
+            ),
+            model=harness.context.model,
+            model_settings=harness.context.model_settings,
+            tools=tools,
+            tool_use_behavior=StopAtTools(stop_at_tool_names=["stop"]),
+        )
+        try:
+            result, _, _ = await run_stream(
+                harness.context,
+                agent,
+                prompt,
+                f"updater-attempt-{attempt}",
+                False,
+            )
+            stopped = UpdaterStop.model_validate_json(str(result.final_output))
+            if run_git(skill_dir, ["diff", "--quiet"]).returncode == 0:
+                raise RuntimeError("skill updater made no changes")
+            for path in skill_dir.glob("*.md"):
+                content = path.read_text()
+                if path.name != "META-SKILL.md" and (
+                    not content.startswith("---\n")
+                    or "name: " not in content
+                    or "description: " not in content
+                    or "# Introduction" not in content
+                    or "# When to use" not in content
+                    or "# Main content" not in content
+                ):
+                    raise RuntimeError(f"invalid skill format: {path.name}")
+                if "**Reason:**" not in content:
+                    raise RuntimeError(f"missing guidance reason: {path.name}")
+            run_git(skill_dir, ["add", "-A"])
+            body = (
+                "Rollouts:\n"
+                + "\n".join(rollout_ids)
+                + "\n\nOverall reason:\n"
+                + stopped.reason
+            )
+            run_git(
+                skill_dir,
+                ["commit", "-m", "batch skill update", "-m", body],
+            )
+            payload = {
+                "reason": stopped.reason,
+                "rollout_ids": rollout_ids,
+                "skill_commit": run_git(skill_dir, ["rev-parse", "HEAD"]).stdout.strip(),
+            }
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            return payload
+        except BaseException as error:
+            write_error(output.parent / f"updater-attempt-{attempt}-error.json", error)
+            if not retryable(error) and not isinstance(error, RuntimeError):
+                raise
+    raise RuntimeError("updater attempts exhausted")
+
+
+async def main_async(args: argparse.Namespace) -> None:
+    load_dotenv()
+    api_key = os.environ[args.api_key_env]
+    run_dir = args.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
-    skills_dir = ensure_skill_repo(repo_root, run_dir)
-    questions = load_questions(repo_root / args.train_json)
-    index = Stage2Index(config)
-    git_hash = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root, text=True).strip()
-    wandb_config = dict(vars(args))
-    wandb_config["git_hash"] = git_hash
-    wandb.init(entity="3dsmile", project="video-sql-v2", dir=str(run_dir), name=run_dir.name, config=wandb_config)
+    skill_dir = run_dir / "skills"
+    initialize_skill_repo(args.initial_skills, skill_dir)
+    main_git_hash = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    config_path = run_dir / "config.json"
+    if config_path.exists():
+        config = json.loads(config_path.read_text())
+        wandb_id = config["wandb_id"]
+        resume = "must"
+    else:
+        wandb_id = wandb.util.generate_id()
+        resume = "never"
+        config = {
+            "model": args.model_name,
+            "base_url": args.base_url,
+            "embedding_url": args.embedding_url,
+            "embedding_model": args.embedding_model,
+            "attempts": args.attempts,
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "rollouts": args.rollouts,
+            "seed": args.seed,
+            "main_git_hash": main_git_hash,
+            "wandb_id": wandb_id,
+        }
+        config_path.write_text(json.dumps(config, indent=2) + "\n")
     weave.init("3dsmile/video-sql-v2")
-    updates_done = 0
+    wandb_run = wandb.init(
+        entity="3dsmile",
+        project="video-sql-v2",
+        id=wandb_id,
+        name=run_dir.name,
+        config=config,
+        resume=resume,
+        dir=run_dir,
+    )
+    questions = json.loads((args.dataset_root / "month" / "train.json").read_text())
+    semaphore = asyncio.Semaphore(24)
+    completed_updates = 0
     consecutive_failed_batches = 0
-    for epoch in range(args.epochs):
-        rng = random.Random(args.seed + epoch)
-        ordered = list(questions)
-        rng.shuffle(ordered)
-        for start in range(0, len(ordered), args.questions_per_batch):
-            if args.max_updates is not None and updates_done >= args.max_updates:
-                wandb.finish()
-                return
-            batch = ordered[start:start + args.questions_per_batch]
-            batch_id = f"epoch-{epoch:03d}-batch-{start // args.questions_per_batch:06d}"
-            batch_dir = run_dir / batch_id
-            complete_path = batch_dir / "complete.json"
-            if complete_path.exists():
-                complete = json.loads(complete_path.read_text())
-                updates_done += complete["updated"]
-                consecutive_failed_batches = consecutive_failed_batches + 1 if complete["updated"] == 0 else 0
-                if consecutive_failed_batches >= 2:
-                    raise RuntimeError("two consecutive batches had no successful rollouts")
-                continue
-            semaphore = asyncio.Semaphore(args.concurrency)
-            async def guarded(question: Question, q_idx: int, r_idx: int):
-                async with semaphore:
-                    return await run_rollout(config, index, skills_dir, batch_dir, question, f"{batch_id}-question-{q_idx:06d}-rollout-{r_idx:02d}")
-            tasks = [guarded(question, q_idx, r_idx) for q_idx, question in enumerate(batch) for r_idx in range(args.rollouts_per_question)]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            good = [item for item in results if not isinstance(item, Exception)]
-            failed = [str(item) for item in results if isinstance(item, Exception)]
-            wandb.log({"batch/good_rollouts": len(good), "batch/failed_rollouts": len(failed), "batch/index": updates_done})
-            if not good:
-                consecutive_failed_batches += 1
-                with (run_dir / "AGENT_STDOUT.txt").open("a") as handle:
-                    handle.write(f"{batch_id} good_rollouts=0 failed_rollouts={len(failed)}\n")
-                print(f"{batch_id} good_rollouts=0 failed_rollouts={len(failed)}", flush=True)
-                complete_path.parent.mkdir(parents=True, exist_ok=True)
-                complete_path.write_text(json.dumps({"updated": 0, "good_rollouts": 0, "failed_rollouts": len(failed)}, indent=2))
-                if consecutive_failed_batches >= 2:
-                    raise RuntimeError("two consecutive batches had no successful rollouts")
-                continue
-            consecutive_failed_batches = 0
-            summaries = []
-            for q_idx, _question in enumerate(batch):
-                question_rollouts = [item for item in good if f"question-{q_idx:06d}-" in item["rollout_id"]]
-                if not question_rollouts:
+    try:
+        for epoch in range(args.epochs):
+            shuffled = list(questions)
+            random.Random(args.seed + epoch).shuffle(shuffled)
+            batches = [
+                shuffled[index : index + args.batch_size]
+                for index in range(0, len(shuffled), args.batch_size)
+            ]
+            for batch_index, batch_questions in enumerate(batches):
+                batch_root = (
+                    run_dir / "train" / f"epoch-{epoch:03d}" / f"batch-{batch_index:03d}"
+                )
+                batch_result_path = batch_root / "batch.json"
+                if batch_result_path.exists():
+                    batch_result = json.loads(batch_result_path.read_text())
+                    if batch_result["status"] == "updated":
+                        completed_updates += 1
+                    consecutive_failed_batches = (
+                        consecutive_failed_batches + 1
+                        if batch_result["status"] == "all_failed"
+                        else 0
+                    )
+                    if args.max_updates is not None and completed_updates >= args.max_updates:
+                        milestone(f"training stopped after {completed_updates} completed updates")
+                        return
                     continue
-                summary_path = batch_dir / "summaries" / f"question-{q_idx:06d}.json"
-                if summary_path.exists():
-                    summaries.append(json.loads(summary_path.read_text()))
+                tasks = [
+                    run_rollout(
+                        semaphore,
+                        question,
+                        epoch,
+                        batch_index,
+                        rollout,
+                        skill_dir,
+                        args.runtime_root,
+                        run_dir,
+                        args.model_name,
+                        api_key,
+                        args.base_url,
+                        args.embedding_url,
+                        args.embedding_model,
+                        args.attempts,
+                    )
+                    for question in batch_questions
+                    for rollout in range(args.rollouts)
+                ]
+                results = await asyncio.gather(*tasks)
+                successful = [result for result in results if result["status"] != "failed"]
+                if not successful:
+                    consecutive_failed_batches += 1
+                    batch_root.mkdir(parents=True, exist_ok=True)
+                    batch_result_path.write_text(
+                        json.dumps({"status": "all_failed"}, indent=2) + "\n"
+                    )
+                    milestone(
+                        f"epoch={epoch} batch={batch_index} all {len(results)} rollouts failed"
+                    )
+                    if consecutive_failed_batches == 2:
+                        raise RuntimeError("two consecutive batches had no successful rollouts")
                     continue
-                for summary_attempt in range(config.attempts):
+                consecutive_failed_batches = 0
+                summaries = []
+                for question in batch_questions:
+                    question_results = [
+                        result
+                        for result in successful
+                        if result["question_index"] == question["index"]
+                    ]
+                    if not question_results:
+                        continue
+                    summary_dir = (
+                        batch_root / f"question-{question['index']}" / "summary"
+                    )
+                    summary_harness = VideoSQLHarness(
+                        database=args.runtime_root / "month" / "index.duckdb",
+                        embedding_index=args.runtime_root / "month" / "embedding_index",
+                        media_map=args.runtime_root / "month" / "media-map.json",
+                        skill_dir=skill_dir,
+                        run_dir=summary_dir,
+                        model_name=args.model_name,
+                        api_key=api_key,
+                        base_url=args.base_url,
+                        embedding_url=args.embedding_url,
+                        embedding_model=args.embedding_model,
+                        reasoning_effort="medium",
+                    )
                     try:
-                        summary_payload = json.dumps(question_rollouts, ensure_ascii=False)
-                        summary = await summarize_reflections(config, summary_payload, batch_dir / "traces" / f"summary-question-{q_idx:06d}-attempt-{summary_attempt:02d}.json")
-                        record = {"question_index": q_idx, "summary_attempt": summary_attempt, "summary": summary}
-                        summary_path.parent.mkdir(parents=True, exist_ok=True)
-                        summary_path.write_text(json.dumps(record, ensure_ascii=False, indent=2))
-                        summaries.append(record)
-                        break
-                    except Exception as exc:
-                        err_path = batch_dir / "summary-errors" / f"question-{q_idx:06d}-attempt-{summary_attempt:02d}.txt"
-                        err_path.parent.mkdir(parents=True, exist_ok=True)
-                        err_path.write_text(str(exc))
-                        if summary_attempt + 1 == config.attempts:
-                            raise
-            summary = json.dumps(summaries, ensure_ascii=False)
-            rollout_ids = [item["rollout_id"] + f"/attempt-{item['answer_attempt']:02d}" for item in good]
-            if not skill_update_commit_exists(skills_dir, batch_id):
-                for updater_attempt in range(config.attempts):
-                    try:
-                        await run_updater(config, skills_dir, batch_dir / f"updater-attempt-{updater_attempt:02d}", summary, rollout_ids, batch_id)
-                        break
-                    except Exception as exc:
-                        err_path = batch_dir / "updater-errors" / f"attempt-{updater_attempt:02d}.txt"
-                        err_path.parent.mkdir(parents=True, exist_ok=True)
-                        err_path.write_text(str(exc))
-                        if updater_attempt + 1 == config.attempts:
-                            raise
-            if not skill_update_commit_exists(skills_dir, batch_id):
-                raise RuntimeError(f"missing skill update commit for {batch_id}")
-            updates_done += 1
-            complete_path.write_text(json.dumps({"updated": 1, "good_rollouts": len(good), "failed_rollouts": len(failed)}, indent=2))
-            with (run_dir / "AGENT_STDOUT.txt").open("a") as handle:
-                handle.write(f"{batch_id} update={updates_done} good_rollouts={len(good)} failed_rollouts={len(failed)}\n")
-            print(f"{batch_id} update={updates_done} good_rollouts={len(good)} failed_rollouts={len(failed)}", flush=True)
-    wandb.finish()
+                        summaries.append(
+                            await summarize_question(
+                                summary_harness,
+                                question_results,
+                                args.attempts,
+                                summary_dir / "result.json",
+                            )
+                        )
+                    finally:
+                        await summary_harness.close()
+                updater_dir = batch_root / "updater"
+                updater_harness = VideoSQLHarness(
+                    database=args.runtime_root / "month" / "index.duckdb",
+                    embedding_index=args.runtime_root / "month" / "embedding_index",
+                    media_map=args.runtime_root / "month" / "media-map.json",
+                    skill_dir=skill_dir,
+                    run_dir=updater_dir,
+                    model_name=args.model_name,
+                    api_key=api_key,
+                    base_url=args.base_url,
+                    embedding_url=args.embedding_url,
+                    embedding_model=args.embedding_model,
+                    reasoning_effort="medium",
+                )
+                rollout_ids = [result["rollout_id"] for result in successful]
+                try:
+                    update = await update_skills(
+                        updater_harness,
+                        skill_dir,
+                        summaries,
+                        rollout_ids,
+                        args.attempts,
+                        updater_dir / "result.json",
+                    )
+                finally:
+                    await updater_harness.close()
+                snapshot = (
+                    run_dir
+                    / "skill-snapshots"
+                    / f"epoch-{epoch:03d}-batch-{batch_index:03d}"
+                )
+                shutil.copytree(
+                    skill_dir,
+                    snapshot,
+                    ignore=shutil.ignore_patterns(".git"),
+                )
+                scores = [result["score"] for result in successful]
+                batch_payload = {
+                    "status": "updated",
+                    "successful_rollouts": len(successful),
+                    "failed_rollouts": len(results) - len(successful),
+                    "mean_score": sum(scores) / len(scores),
+                    "skill_commit": update["skill_commit"],
+                }
+                batch_result_path.write_text(
+                    json.dumps(batch_payload, ensure_ascii=False, indent=2) + "\n"
+                )
+                completed_updates += 1
+                wandb_run.log(
+                    {
+                        "train/epoch": epoch,
+                        "train/batch": batch_index,
+                        "train/mean_score": batch_payload["mean_score"],
+                        "train/successful_rollouts": len(successful),
+                        "train/failed_rollouts": len(results) - len(successful),
+                        "train/completed_updates": completed_updates,
+                    }
+                )
+                milestone(
+                    f"epoch={epoch} batch={batch_index} update={completed_updates} "
+                    f"successful={len(successful)} mean_score={batch_payload['mean_score']:.4f}"
+                )
+                if args.max_updates is not None and completed_updates >= args.max_updates:
+                    milestone(f"training stopped after {completed_updates} completed updates")
+                    return
+        milestone("training complete")
+    finally:
+        wandb_run.finish()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset-root", type=Path, required=True)
+    parser.add_argument("--runtime-root", type=Path, required=True)
+    parser.add_argument("--initial-skills", type=Path, required=True)
+    parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--model-name", required=True)
+    parser.add_argument("--api-key-env", required=True)
+    parser.add_argument("--base-url")
+    parser.add_argument("--embedding-url", required=True)
+    parser.add_argument("--embedding-model", required=True)
+    parser.add_argument("--attempts", type=int, default=3)
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--rollouts", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--max-updates", type=int)
+    args = parser.parse_args()
+    asyncio.run(main_async(args))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
