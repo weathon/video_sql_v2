@@ -37,8 +37,8 @@ def segment_number(path):
 def encode_media(job):
     source, target = job
     target.parent.mkdir(parents=True, exist_ok=True)
-    width = 800 if source.name.startswith("evidence-") else 480
-    crf = 42 if source.name.startswith("evidence-") else 50
+    width = 640 if source.name.startswith("evidence-") else 320
+    crf = 46 if source.name.startswith("evidence-") else 55
     subprocess.run(
         [
             "ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(source),
@@ -76,6 +76,10 @@ def main():
             trace_paths = sorted(attempt_dir.glob("traces/*.json"), key=lambda path: (segment_number(path), path.name))
             for trace_path in trace_paths:
                 trace = clean(json.loads(trace_path.read_text()))
+                for event in trace.get("history", []):
+                    for key in ("arguments", "output"):
+                        if isinstance(event.get(key), str) and event[key].startswith(("{", "[")):
+                            event[key] = clean(json.loads(event[key]))
                 serialized = json.dumps(trace, ensure_ascii=False)
                 refs = sorted(set(MEDIA_PATTERN.findall(serialized)))
                 clip_match = re.search(r"clip-([0-9a-f]+)-segment", trace_path.name)
@@ -86,9 +90,7 @@ def main():
                     "file": trace_path.name,
                     "kind": trace_path.name.split("-segment-")[0],
                     "segment": segment_number(trace_path),
-                    "input": trace.get("input"),
                     "is_complete": trace.get("is_complete"),
-                    "final_output": trace.get("final_output"),
                     "history": trace.get("history", []),
                     "media_refs": refs,
                 })
@@ -109,6 +111,12 @@ def main():
                 })
             attempts.append({"name": attempt_dir.name, "error": error, "traces": traces})
 
+        question = next(
+            trace["history"][0]["content"]
+            for attempt in attempts
+            for trace in attempt["traces"]
+            if trace["kind"] == "answer"
+        ).removeprefix("Question: ").split("\n\nAvailable skills:")[0]
         rollouts.append({
             "id": f"{epoch}/{batch}/{question_dir}/{rollout_dir}",
             "epoch": int(epoch.split("-")[1]),
@@ -116,6 +124,7 @@ def main():
             "question_index": result["question_index"],
             "rollout": int(rollout_dir.split("-")[1]),
             "rollout_id": result["rollout_id"],
+            "question": question,
             "status": result["status"],
             "answer": result["answer"],
             "reference_answer": result["reference_answer"],
@@ -183,7 +192,7 @@ STYLES = r''':root{--bg:#080b10;--panel:#10141b;--line:#252c38;--text:#eef2f6;--
 
 
 APP_JS = r'''const data=window.TRACE_DATA;let selected=null;let scoreFilter="all";const el=id=>document.getElementById(id);const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));
-function questionFor(r){const traces=r.attempts.flatMap(a=>a.traces),answer=traces.find(t=>t.kind==="answer");return (answer?.input||"").replace(/^Question:\s*/i,"").split("\n\nAvailable skills:")[0]||`Question ${r.question_index}`}
+function questionFor(r){return r.question}
 function mediaCard(m){return `<article class="media-card ${m.linked?"":"unlinked"}" data-image="${esc(m.url)}" data-caption="${esc(m.source_name)}"><span class="kind">${m.kind}</span><img loading="lazy" src="${esc(m.url)}" alt="${esc(m.source_name)}"><div class="caption">${m.timestamp_s==null?"":formatTime(m.timestamp_s)+" · "}${esc(m.source_name)}</div></article>`}
 function formatTime(seconds){const h=Math.floor(seconds/3600),m=Math.floor(seconds%3600/60),s=(seconds%60).toFixed(1);return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(4,"0")}`}
 function pretty(s){if(typeof s!=="string")return JSON.stringify(s,null,2);try{return JSON.stringify(JSON.parse(s),null,2)}catch{return s}}
@@ -191,7 +200,7 @@ function eventText(e){if(e.type==="reasoning")return e.content?.length?JSON.stri
 function eventClass(e){return e.type==="function_call"?"call":e.type==="function_call_output"?"output":"model"}
 function eventLabel(e){return e.type==="function_call"?`TOOL · ${e.name}`:e.type==="function_call_output"?"TOOL RETURN":e.type==="reasoning"?"MODEL · REASONING":`MODEL · ${e.role||e.type||"MESSAGE"}`}
 function renderList(){const query=el("search").value.trim().toLowerCase();const shown=data.rollouts.filter(r=>(scoreFilter==="all"||String(r.score)===scoreFilter)&&(!query||`${r.id} ${questionFor(r)} ${r.answer} ${r.reference_answer}`.toLowerCase().includes(query)));el("rolloutList").innerHTML=shown.map((r,i)=>`<button class="rollout-item ${selected?.id===r.id?"active":""}" data-id="${esc(r.id)}"><span class="num">${String(i+1).padStart(2,"0")}</span><span class="q">Q${r.question_index} · R${r.rollout}<br>${esc(questionFor(r))}</span><span class="badge ${r.score?"pass":"fail"}">${r.score}</span></button>`).join("")||'<p style="padding:16px;color:var(--muted);font-size:12px">没有匹配项</p>';document.querySelectorAll(".rollout-item").forEach(b=>b.onclick=()=>selectRollout(b.dataset.id))}
-function traceHtml(t,a,r){const media=t.media_refs.map(name=>r.media.find(m=>m.attempt===a.name&&m.source_name===name)).filter(Boolean);return `<article class="trace"><div class="trace-head"><span class="seg">SEG ${String(t.segment).padStart(2,"0")}</span><strong>${esc(t.kind)}</strong><span class="file">${esc(t.file)}</span></div>${t.input?`<div class="trace-input"><span class="label">SEGMENT INPUT</span>\n${esc(t.input)}</div>`:""}<div class="events">${t.history.map(e=>`<div class="event ${eventClass(e)}"><div class="etype">${esc(eventLabel(e))}</div><pre class="${e.type==="reasoning"?"reasoning-note":""}">${esc(eventText(e))}</pre></div>`).join("")}</div>${t.final_output!=null?`<div class="trace-final"><span class="label">FINAL OUTPUT</span>\n${esc(pretty(t.final_output))}</div>`:""}${media.length?`<div class="media-strip">${media.map(mediaCard).join("")}</div>`:""}</article>`}
+function traceHtml(t,a,r){const media=t.media_refs.map(name=>r.media.find(m=>m.attempt===a.name&&m.source_name===name)).filter(Boolean);return `<article class="trace"><div class="trace-head"><span class="seg">SEG ${String(t.segment).padStart(2,"0")}</span><strong>${esc(t.kind)}</strong><span class="file">${esc(t.file)}</span></div><div class="events">${t.history.map(e=>`<div class="event ${eventClass(e)}"><div class="etype">${esc(eventLabel(e))}</div><pre class="${e.type==="reasoning"?"reasoning-note":""}">${esc(eventText(e))}</pre></div>`).join("")}</div>${media.length?`<div class="media-strip">${media.map(mediaCard).join("")}</div>`:""}</article>`}
 function selectRollout(id){selected=data.rollouts.find(r=>r.id===id);history.replaceState(null,"",`#${encodeURIComponent(id)}`);renderList();el("currentId").textContent=selected.id;const attempts=selected.attempts.map(a=>`<div class="attempt"><div class="attempt-title">${esc(a.name)} · ${a.traces.length} segments${a.error?" · ERROR":""}</div>${a.error?`<div class="error-box">${esc(`${a.error.type}: ${a.error.message}`)}</div>`:""}${a.traces.map(t=>traceHtml(t,a,selected)).join("")}</div>`).join("");const linked=new Set(selected.attempts.flatMap(a=>a.traces.flatMap(t=>t.media_refs.map(name=>`${a.name}/${name}`)))),extra=selected.media.filter(m=>!linked.has(`${m.attempt}/${m.source_name}`));el("content").innerHTML=`<div class="hero"><div><span class="label">QUESTION · Q${selected.question_index} · ROLLOUT ${selected.rollout}</span><h2>${esc(questionFor(selected))}</h2></div><div class="score-card ${selected.score?"pass":"fail"}"><div><b>${selected.score}</b><span>REWARD SCORE</span></div></div></div><div class="grid2"><article class="answer-card answer"><span class="label">MODEL ANSWER</span><p>${esc(selected.answer)}</p></article><article class="answer-card reference"><span class="label">REFERENCE</span><p>${esc(selected.reference_answer)}</p></article></div><div class="reflection"><span class="label">REFLECTION</span><p>${esc(selected.reflection)}</p></div>${selected.meta_reflection?`<div class="reflection meta"><span class="label">META REFLECTION</span><p>${esc(selected.meta_reflection)}</p></div>`:""}<div class="section-head"><div><span class="label">EXECUTION TRACE</span><h3>模型分段与工具往返</h3></div><span class="count">${selected.attempts.reduce((n,a)=>n+a.traces.length,0)} SEGMENTS · ${selected.media.length} MEDIA</span></div>${attempts}${extra.length?`<details class="extra-media"><summary>展开 ${extra.length} 个未在可见返回文本中点名的生成媒体</summary><div class="gallery" style="margin-top:12px">${extra.map(mediaCard).join("")}</div></details>`:""}`;wireImages();el("stage").scrollTop=0}
 function wireImages(){document.querySelectorAll(".media-card").forEach(c=>c.onclick=()=>{el("lightboxImage").src=c.dataset.image;el("lightboxCaption").textContent=c.dataset.caption;el("lightbox").showModal()})}
 el("runName").textContent=data.run;el("stats").innerHTML=`<div class="stat"><b>${data.rollout_count}</b><small>ROLLOUTS</small></div><div class="stat"><b>${data.trace_count}</b><small>SEGMENTS</small></div><div class="stat"><b>${data.media_count}</b><small>MEDIA</small></div>`;el("search").oninput=renderList;document.querySelectorAll(".filter").forEach(b=>b.onclick=()=>{document.querySelectorAll(".filter").forEach(x=>x.classList.remove("active"));b.classList.add("active");scoreFilter=b.dataset.filter;renderList()});el("closeLightbox").onclick=()=>el("lightbox").close();el("lightbox").onclick=e=>{if(e.target===el("lightbox"))el("lightbox").close()};renderList();const hash=decodeURIComponent(location.hash.slice(1));selectRollout(data.rollouts.some(r=>r.id===hash)?hash:data.rollouts[0].id);'''
