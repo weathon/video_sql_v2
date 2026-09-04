@@ -21,7 +21,7 @@
 5. 我们使用多个SKILL文件, 而不是一个, 模型按需读取. 
 
 ## 试点实验
-1. 使用note/index.md的方式读取index, 用mmlifelong的数据集分割, 找出training和testing set和测试集
+1. 使用notes/index.md的方式读取index, 用mmlifelong的数据集分割, 找出training和testing set和测试集
 2. 搭建我们的harness,  见Harness架构如何搭建, 使用OpenAI Agents SDK连接本地模型, 验证他保留了过往reasoning并且支持图片或视频输入
 3. 在训练集上跑我们的`"训练"过程`, 每个问题5个rollout, 一次4个问题, 一共3个epoch
 4. 监控训练过程的平均打分到wandb, 结束后在测试集上测试. 
