@@ -1,24 +1,54 @@
-Current formal infrastructure (no encoder disaggregation)
+Current formal infrastructure (disaggregated encoder)
 
-The main Qwen service runs vision encoding, prefill, and decode together on
-physical GPUs 0,2. The embedding service runs on physical GPU 4. Both
-containers use the project bridge network. Do not start containers with
-`--rm`; stop them after the run, inspect their logs, and remove them manually.
+The Qwen encoder runs on physical GPU 5. The Qwen prefill/decode service runs
+on physical GPUs 0,2. The embedding service runs on physical GPU 4. All
+containers use the project bridge network. Do not start containers with `--rm`;
+stop them after the run, inspect their logs, and remove them manually.
 
 Create the project network once:
 
 docker network create video-sql-v2
 
-Main Inferact/Qwen3.8-27B-NVFP4 service:
+Create the shared encoder-cache volume backed by tmpfs:
 
-docker run --name qwen38-27b-nvfp4 \
+docker volume create \
+    --driver local \
+    --opt type=tmpfs \
+    --opt device=tmpfs \
+    video-sql-ec-cache
+
+Inferact/Qwen3.8-27B-NVFP4 encoder service:
+
+docker run --name qwen38-27b-nvfp4-epd-encoder \
+    --network video-sql-v2 \
+    --gpus '"device=5"' \
+    --shm-size=32g \
+    -e HF_HOME=/hf_cache \
+    -v /raid/huggingface:/hf_cache \
+    -v video-sql-ec-cache:/epd_shared/cache \
+    vllm/vllm-openai:qwen38-flash-next \
+    Inferact/Qwen3.8-27B-NVFP4 \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --mm-encoder-only \
+    --enforce-eager \
+    --no-enable-prefix-caching \
+    --gpu-memory-utilization 0.45 \
+    --max-num-batched-tokens 114688 \
+    --max-num-seqs 24 \
+    --enable-request-id-headers \
+    --ec-transfer-config '{"ec_connector":"ECExampleConnector","ec_role":"ec_producer","ec_connector_extra_config":{"shared_storage_path":"/epd_shared/cache"}}'
+
+Inferact/Qwen3.8-27B-NVFP4 prefill/decode service:
+
+docker run --name qwen38-27b-nvfp4-epd-pd \
     --network video-sql-v2 \
     --gpus '"device=0,2"' \
     --shm-size=32g \
-    -p 8002:8000 \
     -e HF_HOME=/hf_cache \
     -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
     -v /raid/huggingface:/hf_cache \
+    -v video-sql-ec-cache:/epd_shared/cache \
     vllm/vllm-openai:qwen38-flash-next \
     Inferact/Qwen3.8-27B-NVFP4 \
     --host 0.0.0.0 \
@@ -35,7 +65,22 @@ docker run --name qwen38-27b-nvfp4 \
     --reasoning-parser qwen3 \
     --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
     --kv-transfer-config '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":236223201280,"lazy_offload":false}}' \
+    --ec-transfer-config '{"ec_connector":"ECExampleConnector","ec_role":"ec_consumer","ec_connector_extra_config":{"shared_storage_path":"/epd_shared/cache"}}' \
     --default-chat-template-kwargs '{"enable_thinking":true,"preserve_thinking":true}'
+
+Responses EPD proxy:
+
+docker run --name qwen38-27b-nvfp4-epd-proxy \
+    --network video-sql-v2 \
+    -p 8002:8000 \
+    -v /raid/wg25r/video_sql_v2/infra:/video_sql_infra:ro \
+    --entrypoint python3 \
+    vllm/vllm-openai:qwen38-flash-next \
+    /video_sql_infra/responses_epd_proxy.py \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --encoder-url http://qwen38-27b-nvfp4-epd-encoder:8000 \
+    --pd-url http://qwen38-27b-nvfp4-epd-pd:8000
 
 Qwen/Qwen3-VL-Embedding-8B service:
 
@@ -63,8 +108,9 @@ docker run --name egolife-qwen3-vl-embedding-8b \
 
 Stop after the run:
 
-docker stop qwen38-27b-nvfp4 egolife-qwen3-vl-embedding-8b
+docker stop qwen38-27b-nvfp4-epd-proxy qwen38-27b-nvfp4-epd-encoder qwen38-27b-nvfp4-epd-pd egolife-qwen3-vl-embedding-8b
 
 After debugging and log inspection, remove the stopped containers manually:
 
-docker rm qwen38-27b-nvfp4 egolife-qwen3-vl-embedding-8b
+docker rm qwen38-27b-nvfp4-epd-proxy qwen38-27b-nvfp4-epd-encoder qwen38-27b-nvfp4-epd-pd egolife-qwen3-vl-embedding-8b
+docker volume rm video-sql-ec-cache

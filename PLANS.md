@@ -99,6 +99,7 @@ System Prompt包含简单的任务说明和当前全量Stage 2 database schema, 
 - `semantic_search(query, n, table)`：只允许查询已生成 embedding 的表，返回 table、row_id、video_id、start/end、规范化文本预览及 cosine score。允许传入 threshold min/max 或 n-th 到 m-th 的 rank range；例如已经查看 top 10 后，可以直接查询第 10–20 名，不需要重新调用 top 20。
 - harness 使用当前全量 Stage 2 schema，包括 `object_states`、source mapping、evidence 表以及 `6h`/`video`/`scale` granularity；不使用旧 `src/schema.sql` 中的 `openie_triples` schema。读取画面时使用 `visual_clips.filename` 和 source offsets，不根据 row ID 拼接旧 clip 路径。
 - 主 agent 还提供 `add_note`、`read_notes`、`read_skill(name)` 和 `agent_raise(reason)`。
+- 本地Qwen通过Responses EPD proxy访问；proxy先把每个`input_image`提交给独立encoder实例，再把原始Responses请求提交给prefill/decode实例。
 
 #### Agent 停止、错误与 trace
 1. 主检索 agent、`clip_qa` 和 reflection 各自使用适配自身输出结构的 `submit_answer` tool；模型调用后退出对应 agent loop，不依赖 Agents SDK 的 `output_type` 结构化最终输出来结束 loop。
@@ -144,11 +145,11 @@ System Prompt包含简单的任务说明和当前全量Stage 2 database schema, 
 1. 正式训练每batch 10个问题、每个问题5个并行rollout，共50个rollout；一共3个epoch，每个epoch开始时重排训练问题顺序，seed由run参数给出，默认0，第k个epoch用seed+k；服务并发上限为24。
 1a. 采样参数(temperature/top_p/top_k等)一律不设, 使用服务端/generation_config默认; 本地Qwen和云端gpt-5.6-luna都只传reasoning effort。
 1b. W&B entity/project为`3dsmile/video-sql-v2`, weave同project。
-2. 主模型使用`Inferact/Qwen3.8-27B-NVFP4`。负责prefill和decode的主模型服务运行在GPU 0,2，TP=2，端口8002，max-num-seqs 24，gpu-memory-utilization=0.90，不使用`--no-async-scheduling`，MTP speculative length为3，default chat-template kwargs保持`enable_thinking=true`和`preserve_thinking=true`；agent reasoning effort使用`medium`。
-3. 正式训练client Docker暴露GPU 0,2,4，供W&B采集两个模型服务的GPU指标；镜像使用`docker/training/Dockerfile`构建并安装`ffmpeg`，因为`sample_video`会调用`ffmpeg`。
+2. 主模型使用`Inferact/Qwen3.8-27B-NVFP4`。独立encoder实例运行在GPU 5；负责prefill和decode的实例运行在GPU 0,2，TP=2；Responses EPD proxy使用主机端口8002。prefill/decode实例的max-num-seqs为24、gpu-memory-utilization为0.90，不使用`--no-async-scheduling`，MTP speculative length为3，default chat-template kwargs保持`enable_thinking=true`和`preserve_thinking=true`；agent reasoning effort使用`medium`。两个模型实例使用`ECExampleConnector`，共享的encoder cache位于Docker tmpfs volume中。
+3. 正式训练client Docker暴露GPU 0,2,4,5，供W&B采集三个模型服务的GPU指标；镜像使用`docker/training/Dockerfile`构建并安装`ffmpeg`，因为`sample_video`会调用`ffmpeg`。
 4. 一个batch的全部rollout都失败时跳过该batch的updater；连续两个batch的全部rollout都失败时终止训练。
 5. OpenAI SDK内部`max_retries`为3。`--attempts`独立应用于整个rollout、judge、reflection、summarizer和updater，这些阶段分别最多按该值重试，正式值为3。
-6. 不使用Disaggregated Encoder.
+6. 使用vLLM Disaggregated Encoder，部署为一个encoder实例和一个prefill/decode实例；encoder cache位于内存。
 7. 初始SKILL与训练后SKILL的test使用相同的batch size和每题rollout数。
 8. 切换到Qwen 3.8 27B后从Flash run完成10次update后的SKILL继续；epoch 0跳过已经完成的40题，后续epoch完整执行。
 
