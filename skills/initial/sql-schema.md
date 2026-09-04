@@ -1,73 +1,57 @@
 ---
 name: sql-schema
-description: Tables and columns available to run_sql, with example queries for exact lookup, joins and time-range filtering. Use whenever you are about to write SQL or are unsure which table holds the information you need.
+description: Query the DuckDB schema and follow its evidence relationships. Use whenever a question needs exact filtering, joins, timelines, chains, source-video mapping, or retrieval of rows returned by semantic search.
 ---
 
 # SQL Schema
 
 ## Introduction
 
-`run_sql` executes one read-only DuckDB query, returns at most 100 rows and truncates each cell to 500 characters while reporting the original length. Every content table has `video_id` plus a time position, so results from different tables can be joined on `video_id` and overlapping time.
+The database has three logical timelines, `day`, `week`, and `month`. Logical `video_id` values identify those timelines; `source_video_id` identifies physical source files.
 
-**Reason:** Knowing the query limits and shared location columns prevents false assumptions about returned evidence.
+**Reason:** Separating logical and physical identifiers prevents joins across unrelated clocks or files.
 
 ## When to use
 
-Before writing any SQL, and whenever a query returns nothing and you need to check whether you picked the right table or column.
+Use this skill before writing SQL that crosses tables, follows evidence, or maps logical time back to a playable clip.
 
-**Reason:** Schema consultation avoids invalid queries and searches against the wrong evidence source.
+**Reason:** The schema contains both summary rows and direct 30-second evidence, so the join path determines what a result actually proves.
 
 ## Main content
 
-Tables:
+- `videos(video_id, scale, duration_s, source_count)` describes the three logical timelines.
+- `source_groups(source_group_id, video_id, name, timeline_start_s, timeline_end_s)` and `source_videos(source_video_id, video_id, source_group_id, filename, duration_s, timeline_start_s, timeline_end_s)` map physical files onto a logical timeline.
+- `episodes(row_id, video_id, source_video_id, start_s, end_s, granularity, text)` stores `30sec`, `3min`, `1h`, `6h`, `video`, and `scale` text levels.
+- `visual_clips(row_id, video_id, source_video_id, start_s, end_s, source_start_s, source_end_s, filename, text)` maps logical intervals to physical 30-second media.
+- `entities(row_id, video_id, name, normalized_name, first_seen_s, last_seen_s, frequency)` stores entity summaries.
+- `semantic_triples(row_id, video_id, caption_30sec_row_id, snapshot_s, subject, predicate, object, text)` points directly to 30-second caption evidence.
+- `topic_chains` and `topic_facts` hold topic summaries and facts. Join `topic_facts.chain_row_id = topic_chains.row_id`; use `topic_fact_evidence(fact_row_id, caption_30sec_row_id)` for direct evidence.
+- `event_chains`, `event_chain_entities`, and `event_steps` hold event sequences. Join `event_steps.chain_row_id = event_chains.row_id`; use `event_step_evidence(step_row_id, caption_30sec_row_id)` for direct evidence.
+- `object_states(row_id, video_id, source_video_id, episode_3min_row_id, caption_30sec_row_id, start_s, end_s, object, status, text)` links broader 3-minute context and the exact 30-second state evidence.
+- `graph_nodes` and `graph_edges` preserve typed relations. A `co_clip` edge can connect a 30-second evidence row to its `visual_clips` row.
 
-- `videos(video_id, filename, duration_s)`
-- `episodes(row_id, video_id, start_s, end_s, granularity, text)` — narrative summaries at granularity `30sec`, `3min`, `10min`, `1h`.
-- `visual_clips(row_id, video_id, start_s, end_s, text)` — descriptions of roughly 30 second visual clips.
-- `entities(row_id, video_id, name, normalized_name, first_seen_s, last_seen_s, frequency)`
-- `semantic_triples(row_id, video_id, snapshot_s, subject, predicate, object, text)`
-- `openie_triples(row_id, episode_row_id, video_id, subject, predicate, object, text)` — extracted from episode text.
-- `topic_chains(row_id, video_id, entity, has_lifecycle)` and `topic_facts(row_id, chain_row_id, video_id, time_s, fact)` — facts about one entity over time.
-- `event_chains(row_id, video_id, name, chain_type)`, `event_chain_entities(row_id, chain_row_id, video_id, entity)` and `event_steps(row_id, chain_row_id, video_id, step_index, start_s, end_s, description)` — multi-step events.
+**Reason:** These are the actual tables and foreign-key-like columns in the current full index.
 
-Text columns are normalized: lower case, single spaces, Latin accents folded to ASCII. Write literals in lower case and match with `LIKE '%...%'` or `ILIKE`.
+## SQL patterns
 
-Examples:
-
-```sql
--- Which videos exist and how long they are
-SELECT video_id, filename, duration_s FROM videos ORDER BY video_id;
-```
+Fetch a semantic hit by its real primary key:
 
 ```sql
--- Exact keyword lookup in short summaries, ordered by time
-SELECT video_id, start_s, end_s, text
+SELECT row_id, video_id, start_s, end_s, granularity, text
 FROM episodes
-WHERE granularity = '30sec' AND text LIKE '%target activity%'
-ORDER BY video_id, start_s;
+WHERE row_id = ?;
 ```
+
+Follow an object state to its exact caption and video clip:
 
 ```sql
--- Everything known about one entity in one video
-SELECT e.name, e.first_seen_s, e.last_seen_s, e.frequency
-FROM entities e
-WHERE e.normalized_name LIKE '%target entity%';
+SELECT s.object, s.status, e30.text, v.filename, v.source_start_s, v.source_end_s
+FROM object_states AS s
+JOIN episodes AS e30 ON e30.row_id = s.caption_30sec_row_id
+LEFT JOIN graph_edges AS g
+  ON g.src_row_id = s.caption_30sec_row_id AND g.edge_type = 'co_clip'
+LEFT JOIN visual_clips AS v ON v.row_id = g.dst_row_id
+WHERE s.row_id = ?;
 ```
 
-```sql
--- Join a text hit to the visual clips that overlap it
-SELECT v.video_id, v.start_s, v.end_s, v.text
-FROM visual_clips v
-WHERE v.video_id = 'candidate_video_id' AND v.end_s >= 0 AND v.start_s <= 60
-ORDER BY v.start_s;
-```
-
-```sql
--- Steps of every event chain whose name mentions a keyword
-SELECT c.video_id, c.name, s.step_index, s.start_s, s.end_s, s.description
-FROM event_chains c JOIN event_steps s ON s.chain_row_id = c.row_id
-WHERE c.name LIKE '%target event%'
-ORDER BY c.video_id, c.name, s.step_index;
-```
-
-**Reason:** The table inventory and executable examples show how to locate, filter, join, and order the available evidence correctly.
+**Reason:** Primary-key lookup and explicit evidence joins avoid relying on database row order or summary text as if it were direct evidence.

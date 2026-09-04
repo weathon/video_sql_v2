@@ -1,39 +1,27 @@
 ---
 name: semantic-search
-description: How to use semantic_search to find rows when exact keywords are unknown or SQL LIKE returns nothing, and how to turn a hit into exact SQL follow-up. Use whenever the question describes a scene or event in words that may not appear verbatim in the index.
+description: Use vector search to discover relevant indexed rows when exact wording is unknown. Read for paraphrases, fuzzy concepts, entity aliases, activities, states, and candidate video intervals.
 ---
 
 # Semantic Search
 
 ## Introduction
 
-`semantic_search(query, n, table)` embeds the query with the same model used to build the index and returns the top `n` rows by exact cosine similarity, each with `row_id`, `video_id`, `start_s`, `end_s`, a 500 character text preview and the score. Available tables: `episodes`, `entities`, `semantic_triples`, `openie_triples`, `topic_facts`, `event_steps`, `visual_clips`. The `visual_clips` index was built from the video frames themselves, so a text query against it finds visually similar moments even when the clip description does not mention the words.
+Semantic search is candidate discovery, not final proof. It embeds the query with `Qwen/Qwen3-VL-Embedding-8B`, scores the selected table, and returns real row IDs for SQL lookup.
 
-**Reason:** This distinguishes semantic ranking from exact evidence and explains which index can locate visual scenes.
+**Reason:** Similarity can locate paraphrases but cannot establish exact counts, ordering, or whether a summary is grounded in the required evidence.
 
 ## When to use
 
-- The question paraphrases an event ("became displeased with fans", "opened blind boxes") and keyword SQL finds too little.
-- You need candidate videos and time ranges before narrowing with SQL.
-- You want visual matches for a described scene without knowing where it happens.
+Use it when exact SQL terms are unknown or when the same event may be described with different words. Search only the indexed tables: `episodes`, `entities`, `semantic_triples`, `topic_facts`, `event_steps`, `object_states`, and `visual_clips`.
 
-**Reason:** These are the cases where approximate semantic retrieval adds information that exact SQL matching may miss.
+**Reason:** Restricting search to tables with aligned row-ID and vector files preserves the index-to-database mapping.
 
 ## Main content
 
-1. Write the query as a short description of the scene or fact, not as a question.
-2. Start with `episodes` or `visual_clips` for scenes and `topic_facts` or `openie_triples` for facts about a named entity.
-3. Use `n` around 20 to 50; the score is only a ranking signal, so inspect the previews rather than thresholding.
-4. Take the returned `video_id` and time range and expand around it with SQL to read neighbouring rows. `run_sql` still limits every returned text cell to a 500-character preview, so do not treat a long cell as untruncated evidence:
+1. Choose the table whose row meaning matches the question: episodes for time-bounded descriptions, entities for names, triples for relations, topic facts for recurring facts, event steps for sequences, object states for changing state, and visual clips for visual candidates.
+2. Issue several concise query variants when the question contains aliases, indirect descriptions, or multiple sub-events.
+3. Treat the returned score as ranking only. Use the returned `row_id` to retrieve the actual row and its evidence links with SQL.
+4. Apply exact logical timeline, time-window, and granularity filters before comparing or aggregating candidates.
 
-```sql
--- Replace these candidate values with one semantic-search hit
-SELECT granularity, start_s, end_s, text
-FROM episodes
-WHERE video_id = 'candidate_video_id' AND end_s >= 0 - 120 AND start_s <= 60 + 120
-ORDER BY granularity, start_s;
-```
-
-5. Repeat with reworded queries when the first results are off topic; different phrasings retrieve different rows.
-
-**Reason:** Ranking candidates first and verifying them with exact surrounding rows prevents similarity scores from being treated as answers.
+**Reason:** Matching row semantics first and verifying the underlying rows reduces false matches from broad natural-language similarity.

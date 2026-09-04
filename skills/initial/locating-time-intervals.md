@@ -1,56 +1,28 @@
 ---
 name: locating-time-intervals
-description: Finding the exact video and time interval where a specific activity or moment happens, and reading what happened right before or after it. Use for questions that ask where or when something occurred, what happened at a particular place or moment, or before handing an interval to clip_qa.
+description: Locate events on the day, week, or month logical timeline and map them to physical video intervals. Use for before/after, duration, recurrence, cross-day, and vague-time questions.
 ---
 
 # Locating Time Intervals
 
 ## Introduction
 
-Every table stores positions in seconds within one `video_id`. Locating a moment means narrowing from a whole video to a range of a few minutes that can be read in full or inspected visually.
+Search time in two layers: locate candidate events on a logical timeline, then map the selected interval through `source_videos` or `visual_clips` to physical media time.
 
-**Reason:** Video inspection becomes tractable only after retrieval evidence is converted into a bounded interval.
+**Reason:** Logical timeline seconds and source-file seconds are different coordinate systems.
 
 ## When to use
 
-- The question names a place, activity or object and asks what happened there.
-- You have a rough hit and need precise start and end times.
-- You need to look at the surroundings of a moment (what led to it, what followed).
+Use this skill whenever the question contains a date, part of day, relative order, elapsed time, repeated occurrence, or a request to inspect a particular moment.
 
-**Reason:** These tasks depend on precise temporal context rather than an isolated keyword hit.
+**Reason:** Time assumptions made before identifying the correct timeline can shift every later query and video sample.
 
 ## Main content
 
-1. Find candidate rows by keyword or semantic search; note `video_id`, `start_s`, `end_s`.
-2. Zoom in using the episode granularity ladder: `1h` and `10min` rows for orientation, `3min` for context, `30sec` for exact positions.
+1. Determine whether the question belongs to `day`, `week`, or `month` before filtering by `video_id`.
+2. Search coarse `scale`, `video`, `6h`, or `1h` episodes to find the region, then narrow through `3min` and `30sec` rows.
+3. Expand the search window around a candidate when the event boundary or prerequisite action may fall outside the matching row.
+4. Order by logical `start_s` for cross-file chronology. Use `source_start_s` and `source_end_s` only after selecting the corresponding physical clip.
+5. For elapsed-time questions, identify the two boundary events independently before subtracting their logical timestamps.
 
-```sql
--- Coarse-to-fine: replace the candidate video and hour bounds
-SELECT start_s, end_s, text
-FROM episodes
-WHERE video_id = 'candidate_video_id' AND granularity = '3min' AND start_s >= 0 AND end_s <= 3600
-ORDER BY start_s;
-```
-
-```sql
--- Exact position: replace the candidate video and center time
-SELECT 'episode' AS source, start_s, end_s, text FROM episodes
-WHERE video_id = 'candidate_video_id' AND granularity = '30sec' AND end_s >= 0 - 180 AND start_s <= 0 + 180
-UNION ALL
-SELECT 'clip', start_s, end_s, text FROM visual_clips
-WHERE video_id = 'candidate_video_id' AND end_s >= 0 - 180 AND start_s <= 0 + 180
-ORDER BY start_s, source;
-```
-
-3. Use entities to bound an interval when a person or object is the anchor:
-
-```sql
-SELECT name, first_seen_s, last_seen_s, frequency
-FROM entities
-WHERE video_id = 'candidate_video_id' AND normalized_name LIKE '%target entity%'
-ORDER BY first_seen_s;
-```
-
-4. Once the interval is under about 10 minutes, hand it to `clip_qa` with a focused question if visual confirmation is needed. Intervals over 20 minutes are rejected, so split long ranges.
-
-**Reason:** Coarse-to-fine narrowing preserves context while keeping visual inspection within the tool's real interval limits.
+**Reason:** Coarse-to-fine localization limits search while preserving the exact 30-second evidence and correct chronology.
