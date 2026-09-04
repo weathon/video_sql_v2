@@ -12,6 +12,7 @@ import wandb
 import weave
 
 from src.harness import (
+    CompactionLimit,
     DATASET_SNAPSHOT,
     RolloutContext,
     judge_answer,
@@ -19,7 +20,7 @@ from src.harness import (
     make_retrieval_agent,
     run_main_with_compaction,
 )
-from src.training import PROJECT, retry_stage, write_json
+from src.training import PROJECT, initialize_wandb, retry_stage, write_json
 
 
 async def evaluate_rollout(
@@ -49,13 +50,13 @@ async def evaluate_rollout(
             video_id=question["timeline"],
         )
         agent = make_retrieval_agent(context)
+        state["answer_attempt"] = attempt
         answer, _, compactions = await run_main_with_compaction(
             agent,
             f"Question:\n{question['question']}\n\nLogical timeline: {question['timeline']}",
             context,
             attempt_dir / "traces",
         )
-        state["answer_attempt"] = attempt
         state["compactions"] = compactions
         return answer.answer
 
@@ -85,6 +86,17 @@ async def evaluate_rollout(
             "score": judged.score,
             "compactions": state["compactions"],
         }
+    except CompactionLimit:
+        result = {
+            "status": "compaction_limit",
+            "timeline": question["timeline"],
+            "source_split": question["source_split"],
+            "question_index": question["index"],
+            "rollout_index": rollout_index,
+            "answer_attempt": state["answer_attempt"],
+            "score": 0,
+            "compactions": 3,
+        }
     except RuntimeError as error:
         result = {
             "status": "failed",
@@ -104,11 +116,9 @@ async def validate(args: argparse.Namespace) -> None:
     questions = json.loads(args.test_file.read_text())
     bundle = make_model_bundle(args.model, args.base_url, args.api_key, "medium")
     weave.init(PROJECT)
-    run = wandb.init(
-        entity="3dsmile",
-        project="video-sql-v2",
-        name=args.run_dir.name,
-        config={
+    run = initialize_wandb(
+        args.run_dir,
+        {
             "model": args.model,
             "skills_dir": str(args.skills_dir),
             "test_file": str(args.test_file),
@@ -139,7 +149,10 @@ async def validate(args: argparse.Namespace) -> None:
                     "rollout_success": int(result["status"] == "complete"),
                 }
             )
-        print(f"questions={min(offset + 4, len(questions))}/300 rollouts={len(results)}/1500", flush=True)
+        milestone = f"questions={min(offset + 4, len(questions))}/300 rollouts={len(results)}/1500"
+        with (args.run_dir / "AGENT_STDOUT.txt").open("a") as handle:
+            handle.write(milestone + "\n")
+        print(milestone, flush=True)
     accuracy = sum(result["score"] for result in results) / (5 * len(results))
     summary = {
         "accuracy": accuracy,
