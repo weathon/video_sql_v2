@@ -1,5 +1,5 @@
 FP8 (NVFP4 could cause looping, so formal training uses official FP8):
-Current formal choice: Qwen/Qwen3.8-Flash-Next-FP8. The PD consumer uses physical GPU 0,2,5,7 with TP=4. The MM processor/vision encoder producer and Qwen3-VL embedding service share the separate physical GPU 4 at gpu-memory-utilization 0.45 each. Training keeps context_limit=262144 and reasoning_effort=medium; the vLLM backend uses a 20% compaction buffer with max_model_len=314573 and YaRN factor=1.2. TP=2 is not used because it previously left no available KV cache.
+Current formal choice: Qwen/Qwen3.8-Flash-Next-FP8. The main model service responsible for prefill and decode uses physical GPU 0,2,5,7 with TP=4. The multimodal processor/vision encoder producer and Qwen3-VL embedding service share the separate physical GPU 4 at gpu-memory-utilization 0.45 each. Training keeps context_limit=262144 and reasoning_effort=medium; the vLLM backend uses a 20% compaction buffer with max_model_len=314573 and YaRN factor=1.2. TP=2 is not used because it previously left no available KV cache.
 
 Build the formal training client image with ffmpeg because sample_video invokes it:
 
