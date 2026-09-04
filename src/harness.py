@@ -198,7 +198,12 @@ def read_skill_catalog(skill_dir: Path) -> list[dict[str, str]]:
     return skills
 
 
-def execute_sql(database: Path, sql: str, row_limit: int | None) -> dict[str, Any]:
+def execute_sql(
+    database: Path,
+    sql: str,
+    row_limit: int | None,
+    parameters: list[Any] | None,
+) -> dict[str, Any]:
     normalized = sql.lstrip().lower()
     if not normalized.startswith(("select ", "with ", "describe ", "show ")):
         raise ValueError("only read-only SELECT, WITH, DESCRIBE, or SHOW statements are allowed")
@@ -210,7 +215,7 @@ def execute_sql(database: Path, sql: str, row_limit: int | None) -> dict[str, An
     timer = threading.Timer(30, connection.interrupt)
     timer.start()
     try:
-        cursor = connection.execute(sql)
+        cursor = connection.execute(sql, parameters)
         columns = [column[0] for column in cursor.description]
         if row_limit is None:
             raw_rows = cursor.fetchall()
@@ -474,6 +479,7 @@ async def sample_contact_sheets(
                     "ORDER BY start_s"
                 ),
                 None,
+                None,
             )
             captions = caption_result["rows"]
         outputs.append(
@@ -505,13 +511,13 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any, Any]:
     @function_tool(failure_error_function=tool_error_json)
     async def run_sql(sql: str) -> str:
         """Execute one read-only SQL query. Returns at most 100 rows."""
-        result = await asyncio.to_thread(execute_sql, context.database, sql, 100)
+        result = await asyncio.to_thread(execute_sql, context.database, sql, 100, None)
         return json.dumps(result, ensure_ascii=False)
 
     @function_tool(failure_error_function=tool_error_json)
     async def sql_qa(sql: str, question: str) -> str:
         """Execute a broad read-only SQL query and have one model call answer from its result."""
-        result = await asyncio.to_thread(execute_sql, context.database, sql, None)
+        result = await asyncio.to_thread(execute_sql, context.database, sql, None, None)
         serialized = json.dumps(result, ensure_ascii=False)
         if len(serialized) > 50_000:
             serialized = serialized[:50_000] + "\n[SQL result truncated at 50000 characters]"
@@ -536,10 +542,11 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any, Any]:
             raise ValueError(f"table must be one of {sorted(SEARCH_TABLES)}")
         if n <= 0 or rank_start <= 0:
             raise ValueError("n and rank_start must be positive")
-        response = await httpx.AsyncClient(timeout=None).post(
-            context.embedding_url.rstrip("/") + "/embeddings",
-            json={"model": context.embedding_model, "input": [normalize_text(query)]},
-        )
+        async with httpx.AsyncClient(timeout=None) as embedding_client:
+            response = await embedding_client.post(
+                context.embedding_url.rstrip("/") + "/embeddings",
+                json={"model": context.embedding_model, "input": [normalize_text(query)]},
+            )
         response.raise_for_status()
         data = response.json()["data"]
         if len(data) != 1 or data[0]["index"] != 0:
@@ -562,6 +569,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any, Any]:
             context.database,
             f"SELECT * FROM {table} WHERE row_id IN ({placeholders})",
             None,
+            selected_ids,
         )
         by_id = {row["row_id"]: row for row in rows["rows"]}
         hits = []
