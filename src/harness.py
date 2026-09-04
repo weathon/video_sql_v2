@@ -67,9 +67,11 @@ class AgentReflection(BaseModel):
 
 
 class CompactionLimit(RuntimeError):
-    def __init__(self, handoff: str):
+    def __init__(self, handoff: str, agent: Agent[Any], result: Any):
         super().__init__("main agent reached the third compaction")
         self.handoff = handoff
+        self.agent = agent
+        self.result = result
 
 
 class AgentRaised(RuntimeError):
@@ -137,6 +139,11 @@ def sanitize_trace(value: Any) -> Any:
         if len(value) > 200_000:
             return value[:200_000] + f"<truncated:{len(value)}>"
     return value
+
+
+def save_response_trace(path: Path, response: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sanitize_trace(jsonable(response)), ensure_ascii=False, indent=2))
 
 
 def response_message_text(model_response: Any) -> str:
@@ -273,8 +280,7 @@ class Stage2Index:
                     break
                 row = {}
                 for name, cell in zip(names, raw_row, strict=True):
-                    text = str(cell)
-                    row[name] = {"value": text[:SQL_CELL_LIMIT], "length": len(text)}
+                    row[name] = str(cell)
                 line = json.dumps(row, ensure_ascii=False)
                 total += len(line) + 1
                 if total > SQL_QA_CHAR_LIMIT:
@@ -371,9 +377,11 @@ def run_config(config: HarnessConfig) -> RunConfig:
     return RunConfig(reasoning_item_id_policy="preserve", model_settings=ModelSettings(reasoning={"effort": config.reasoning_effort}, preserve_raw_usage=True), workflow_name="video-sql-v2")
 
 
-def skill_inventory(skills_dir: Path) -> list[dict[str, str]]:
+def skill_inventory(skills_dir: Path, include_meta: bool = False) -> list[dict[str, str]]:
     skills = []
     for path in sorted(skills_dir.glob("*.md")):
+        if path.name == "META-SKILL.md" and not include_meta:
+            continue
         text = path.read_text()
         meta = {}
         if text.startswith("---"):
@@ -386,7 +394,7 @@ def skill_inventory(skills_dir: Path) -> list[dict[str, str]]:
 
 
 def read_skill_file(skills_dir: Path, name: str) -> str:
-    for item in skill_inventory(skills_dir):
+    for item in skill_inventory(skills_dir, include_meta=True):
         if item["name"] == name or item["file"] == name or Path(item["file"]).stem == name:
             return (skills_dir / item["file"]).read_text()
     raise FileNotFoundError(f"unknown skill: {name}")
@@ -430,6 +438,7 @@ def make_tools(context: HarnessContext, include_submit: str) -> list[Any]:
             reasoning={"effort": context.config.reasoning_effort},
             input="Answer the question using only this SQL result.\nQuestion:\n" + question + "\nSQL result:\n" + table_text,
         )
+        save_response_trace(context.run_dir / "traces" / f"sql-qa-{uuid.uuid4().hex}.json", response)
         return extract_output_text(response)
 
     @function_tool(failure_error_function=lambda _ctx, exc: json.dumps({"error": str(exc)}, ensure_ascii=False))
@@ -497,12 +506,35 @@ def make_tools(context: HarnessContext, include_submit: str) -> list[Any]:
         return outputs
 
     @function_tool(failure_error_function=lambda _ctx, exc: json.dumps({"error": str(exc)}, ensure_ascii=False))
-    async def clip_qa(video_id: str, start_s: float, end_s: float, question: str) -> str:
+    async def clip_qa(video_id: str, start_s: float, end_s: float, question: str) -> list[ToolOutputText | ToolOutputImage]:
         """Run an inner visual agent on a clip no longer than 20 minutes."""
         if end_s - start_s > 1200:
-            return json.dumps({"status": "unknown", "answer": "clip longer than 20 minutes", "evidence_times": []}, ensure_ascii=False)
+            return [ToolOutputText(text=json.dumps({"status": "unknown", "answer": "clip longer than 20 minutes", "evidence_times": []}, ensure_ascii=False))]
         answer = await run_clip_qa(context, video_id, start_s, end_s, question)
-        return answer.model_dump_json()
+        media_dir = context.run_dir / "media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        screenshots = []
+        outputs: list[ToolOutputText | ToolOutputImage] = []
+        for item in answer.evidence_times:
+            match = re.search(r"[-+]?\d+(?:\.\d+)?", str(item))
+            if match is None:
+                raise RuntimeError(f"cannot parse evidence timestamp: {item}")
+            timestamp_s = float(match.group(0))
+            rows = context.index.visual_rows(video_id, timestamp_s, timestamp_s + 0.001)
+            if not rows:
+                raise RuntimeError(f"no visual clip for evidence timestamp {timestamp_s}")
+            clip = rows[0]
+            source_path = context.config.repo_root / clip["filename"]
+            local_t = max(0.0, timestamp_s - float(clip["start_s"]))
+            screenshot_path = media_dir / f"evidence-{uuid.uuid4().hex}.jpg"
+            subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{local_t:.3f}", "-i", str(source_path), "-frames:v", "1", "-q:v", "2", str(screenshot_path)], check=True)
+            screenshots.append(screenshot_path.name)
+            encoded = base64.b64encode(screenshot_path.read_bytes()).decode("ascii")
+            outputs.append(ToolOutputImage(image_url="data:image/jpeg;base64," + encoded, detail="high"))
+        payload = answer.model_dump()
+        payload["evidence_screenshots"] = screenshots
+        outputs.insert(0, ToolOutputText(text=json.dumps(payload, ensure_ascii=False)))
+        return outputs
 
     @function_tool(failure_error_function=lambda _ctx, exc: json.dumps({"error": str(exc)}, ensure_ascii=False))
     def add_note(key: str, note: str) -> str:
@@ -546,10 +578,11 @@ def make_clip_tools(context: HarnessContext) -> list[Any]:
     return tools
 
 
-async def run_agent_stream(agent: Agent[HarnessContext], input_payload: str | list[dict[str, Any]], context: HarnessContext, trace_path: Path, compact_main: bool = False):
+async def run_agent_stream(agent: Agent[HarnessContext], input_payload: str | list[dict[str, Any]], context: HarnessContext, trace_path: Path, compact_main: bool = False, force_submit_tool: str | None = None, allow_force: bool = True):
     result = Runner.run_streamed(agent, input_payload, context=context, max_turns=MAX_AGENT_TURNS, run_config=run_config(context.config))
     events = []
     compacted = False
+    forced = False
     try:
         async for event in result.stream_events():
             events.append(jsonable(event))
@@ -563,11 +596,37 @@ async def run_agent_stream(agent: Agent[HarnessContext], input_payload: str | li
                     if remaining <= COMPACTION_THRESHOLD and not compacted:
                         result.cancel(mode="after_turn")
                         compacted = True
+            if force_submit_tool is not None and not compact_main and getattr(event, "type", None) == "raw_response_event":
+                response = getattr(getattr(event, "data", None), "response", None)
+                usage = getattr(response, "usage", None)
+                input_tokens = getattr(usage, "input_tokens", None) if usage is not None else None
+                output_tokens = getattr(usage, "output_tokens", None) if usage is not None else None
+                if input_tokens is not None and output_tokens is not None:
+                    remaining = CONTEXT_LIMIT - input_tokens - output_tokens
+                    if remaining <= COMPACTION_THRESHOLD and not forced:
+                        result.cancel(mode="after_turn")
+                        forced = True
     finally:
         trace_path.parent.mkdir(parents=True, exist_ok=True)
         trace_path.write_text(json.dumps({"events": sanitize_trace(events), "raw_responses": jsonable(result.raw_responses), "new_items": jsonable(result.new_items), "final_output": jsonable(result.final_output)}, ensure_ascii=False, indent=2))
     if has_three_repeated_messages(result.raw_responses):
         raise RuntimeError("three repeated non-reasoning model messages")
+    if forced and allow_force:
+        saved_tools = agent.tools
+        saved_behavior = agent.tool_use_behavior
+        agent.tools = [tool for tool in saved_tools if getattr(tool, "name", "") in {force_submit_tool, "agent_raise"}]
+        agent.tool_use_behavior = {"stop_at_tool_names": [force_submit_tool, "agent_raise"]}
+        forced_result, _forced_compacted = await run_agent_stream(
+            agent,
+            result.to_input_list(mode="preserve_all") + [{"role": "user", "content": "Context is nearly full. Do not call exploratory tools. Submit the final output now."}],
+            context,
+            trace_path.with_name(trace_path.stem + "-forced" + trace_path.suffix),
+            force_submit_tool=force_submit_tool,
+            allow_force=False,
+        )
+        agent.tools = saved_tools
+        agent.tool_use_behavior = saved_behavior
+        return forced_result, False
     return result, compacted
 
 
@@ -582,10 +641,13 @@ async def run_clip_qa(context: HarnessContext, video_id: str, start_s: float, en
     )
     prompt = f"video_id={video_id}\nstart_s={start_s}\nend_s={end_s}\nquestion={question}"
     trace_path = context.run_dir / "traces" / f"clip-{uuid.uuid4().hex}.json"
-    result, _compacted = await run_agent_stream(agent, prompt, context, trace_path)
+    result, _compacted = await run_agent_stream(agent, prompt, context, trace_path, force_submit_tool="submit_answer")
     if '"status": "raised"' in str(result.final_output):
         raise AgentRaised(str(result.final_output))
-    return AgentAnswer.model_validate_json(result.final_output)
+    answer = AgentAnswer.model_validate_json(result.final_output)
+    if answer.status == "answered" and not answer.evidence_times:
+        raise RuntimeError("clip_qa answered without evidence_times")
+    return answer
 
 
 async def answer_question(context: HarnessContext, question: Question, trace_name: str) -> tuple[AgentAnswer, Any, Agent[HarnessContext]]:
@@ -617,7 +679,7 @@ async def answer_question(context: HarnessContext, question: Question, trace_nam
         agent.tool_use_behavior = saved_behavior
         handoff = str(compact_result.final_output)
         if compaction_index == 2:
-            raise CompactionLimit(handoff)
+            raise CompactionLimit(handoff, agent, compact_result)
         current_input = "Trusted handoff from previous context:\n" + handoff + "\n\nContinue answering.\n" + prompt
     raise RuntimeError("unreachable compaction loop")
 
@@ -628,13 +690,13 @@ async def reflect_question(context: HarnessContext, agent: Agent[HarnessContext]
     agent.tool_use_behavior = {"stop_at_tool_names": ["submit_reflection", "agent_raise"]}
     input_items = answer_result.to_input_list(mode="preserve_all")
     input_items.append({"role": "user", "content": "Correct answer: " + question.answer + "\nYour candidate answer: " + candidate.answer + f"\nJudge score out of 5: {score}\nReflect on why the answer was right or wrong, then extract reusable reflection guidance."})
-    result, _compacted = await run_agent_stream(agent, input_items, context, context.run_dir / "traces" / f"{trace_name}-reflection.json")
+    result, _compacted = await run_agent_stream(agent, input_items, context, context.run_dir / "traces" / f"{trace_name}-reflection.json", force_submit_tool="submit_reflection")
     if '"status": "raised"' in str(result.final_output):
         raise AgentRaised(str(result.final_output))
     return AgentReflection.model_validate_json(result.final_output)
 
 
-async def judge_answer(config: HarnessConfig, reference_answer: str, candidate_answer: str) -> int:
+async def judge_answer(config: HarnessConfig, reference_answer: str, candidate_answer: str, trace_path: Path | None = None) -> int:
     client = openai_client(config)
     parsed = await client.responses.parse(
         model=config.main_model,
@@ -642,16 +704,20 @@ async def judge_answer(config: HarnessConfig, reference_answer: str, candidate_a
         input="Score semantic equivalence from 0 to 5. Ignore extra video IDs, timestamps, and row IDs.\nReference answer:\n" + reference_answer + "\nCandidate answer:\n" + candidate_answer,
         text_format=JudgeScore,
     )
+    if trace_path is not None:
+        save_response_trace(trace_path, parsed)
     score = parsed.output_parsed.score
     if score < 0 or score > 5:
         raise RuntimeError(f"judge score out of range: {score}")
     return score
 
 
-async def summarize_reflections(config: HarnessConfig, payload: str) -> str:
+async def summarize_reflections(config: HarnessConfig, payload: str, trace_path: Path | None = None) -> str:
     response = await openai_client(config).responses.create(
         model=config.main_model,
         reasoning={"effort": config.reasoning_effort},
         input="Summarize these rollout reflections into concise updater instructions. Keep them abstract and remove dataset-specific sensitive details.\n" + payload,
     )
+    if trace_path is not None:
+        save_response_trace(trace_path, response)
     return extract_output_text(response)
