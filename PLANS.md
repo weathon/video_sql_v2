@@ -148,7 +148,7 @@ System Prompt包含简单的任务说明和当前全量Stage 2 database schema, 
 3. 正式训练client Docker暴露GPU 0,2,4,5,7，供W&B采集三个模型服务的GPU指标；镜像使用`docker/training/Dockerfile`构建并安装`ffmpeg`，因为`sample_video`会调用`ffmpeg`。
 4. 一个batch的全部rollout都失败时跳过该batch的updater；连续两个batch的全部rollout都失败时终止训练。
 5. OpenAI SDK内部`max_retries`为3。`--attempts`独立应用于整个rollout、judge、reflection、summarizer和updater，这些阶段分别最多按该值重试，正式值为3。
-6. vision encoder producer与embedding服务共同运行在GPU 4，各使用gpu-memory-utilization=0.45；encoder端口8001、max-num-seqs 24。它与负责prefill和decode的主模型服务并行运行，通过共享EC storage提供encoder cache。`ECExampleConnector` consumer使用当前TP worker的CUDA device加载cache。`infra/responses_epd_proxy.py`在端口8000保持`/v1/responses`请求和SSE输出原样，只先把`input_image`发送到encoder producer；encoder失败时不把请求发送给主模型服务。共享cache放在`/raid`，并在活跃Responses请求数归零后清空。Encoder disaggregation用于消除vision encoder与prefill/decode的共置干扰：v18在47个纯文本running时吞吐正常，进入多模态后即使只有21 running、0 waiting，SM利用率仍周期性降到14–35%，并且同一窗口出现新的encoder cache miss。定期清空避免无淘汰的connector填满根盘；current CUDA device避免每个TP worker都把`cuda`解析为逻辑`cuda:0`；GPU 4共置避免encoder占用主模型服务使用的GPU。
+6. 不使用Disaggregated Encoder.
 7. 初始SKILL与训练后SKILL的test使用相同的batch size和每题rollout数。
 
 ## 代码结构
