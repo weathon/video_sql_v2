@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable, TypeVar
 
 import wandb
 import weave
+from wandb.sdk.lib.runid import generate_id
 
 from src.harness import (
     CompactionLimit,
@@ -40,6 +41,8 @@ async def retry_stage(
     for attempt in range(1, attempts + 1):
         try:
             return await operation(attempt)
+        except CompactionLimit:
+            raise
         except Exception as error:
             errors.append({"attempt": attempt, "type": type(error).__name__, "error": str(error)})
             errors_path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,6 +78,31 @@ def initialize_skills(skills_dir: Path, initial_skills: Path) -> None:
     )
 
 
+def initialize_wandb(run_dir: Path, config: dict[str, Any]) -> Any:
+    state_path = run_dir / "wandb.json"
+    if state_path.exists():
+        state = json.loads(state_path.read_text())
+        return wandb.init(
+            entity="3dsmile",
+            project="video-sql-v2",
+            name=run_dir.name,
+            id=state["id"],
+            resume="must",
+            config=config,
+        )
+    run_id = generate_id()
+    run = wandb.init(
+        entity="3dsmile",
+        project="video-sql-v2",
+        name=run_dir.name,
+        id=run_id,
+        resume="never",
+        config=config,
+    )
+    write_json(state_path, {"id": run_id})
+    return run
+
+
 async def run_rollout(
     question: dict[str, Any],
     epoch: int,
@@ -108,15 +136,14 @@ async def run_rollout(
             video_id="month",
         )
         agent = make_retrieval_agent(context)
+        state["answer_attempt"] = attempt
+        state["context"] = context
+        state["agent"] = agent
         prompt = f"Question:\n{question['question']}\n\nLogical timeline: month"
-        try:
-            answer, history, compactions = await run_main_with_compaction(
-                agent, prompt, context, attempt_dir / "traces"
-            )
-            return answer, history, context, agent, compactions
-        except CompactionLimit:
-            state["compaction_limit"] = (context, agent, attempt_dir)
-            raise
+        answer, history, compactions = await run_main_with_compaction(
+            agent, prompt, context, attempt_dir / "traces"
+        )
+        return answer, history, context, agent, compactions
 
     try:
         answer, history, context, agent, compactions = await retry_stage(
@@ -135,20 +162,21 @@ async def run_rollout(
         candidate_answer = answer.answer
         score_value = score.score
         compaction_limited = False
-    except RuntimeError as error:
-        cause = error.__cause__
-        if not isinstance(cause, CompactionLimit) and "compaction_limit" not in state:
-            result = {"rollout_id": rollout_id_prefix, "status": "failed", "score": 0, "error": str(error)}
-            write_json(result_path, result)
-            return result
-        context, agent, attempt_dir = state["compaction_limit"]
-        history = json.loads((attempt_dir / "traces" / "compaction-02.json").read_text())["items"]
+    except CompactionLimit as error:
+        context = state["context"]
+        agent = state["agent"]
+        history = error.history
         candidate_answer = ""
         score_value = 0
         compactions = 3
         compaction_limited = True
+    except RuntimeError as error:
+        result = {"rollout_id": rollout_id_prefix, "status": "failed", "score": 0, "error": str(error)}
+        write_json(result_path, result)
+        return result
 
     async def reflection_attempt(attempt: int) -> Any:
+        state["reflection_attempt"] = attempt
         return await continue_reflection(
             agent,
             history,
@@ -180,6 +208,8 @@ async def run_rollout(
         "candidate_answer": candidate_answer,
         "reference_answer": question["answer"],
         "score": score_value,
+        "answer_attempt": state["answer_attempt"],
+        "reflection_attempt": state["reflection_attempt"],
         "compactions": compactions,
         "compaction_limit": compaction_limited,
         "reflection": reflection.reflection,
@@ -196,11 +226,9 @@ async def train(args: argparse.Namespace) -> None:
     questions = json.loads(args.train_file.read_text())
     bundle = make_model_bundle(args.model, args.base_url, args.api_key, "medium")
     weave.init(PROJECT)
-    run = wandb.init(
-        entity="3dsmile",
-        project="video-sql-v2",
-        name=args.run_dir.name,
-        config={
+    run = initialize_wandb(
+        args.run_dir,
+        {
             "model": args.model,
             "batch_questions": 4,
             "rollouts_per_question": 5,
@@ -223,7 +251,13 @@ async def train(args: argparse.Namespace) -> None:
             batch_dir = args.run_dir / "train" / f"epoch-{epoch:03d}" / f"batch-{batch_index:06d}"
             done_path = batch_dir / "complete.json"
             if done_path.exists():
-                update_count += json.loads(done_path.read_text())["updated"]
+                completed_batch = json.loads(done_path.read_text())
+                update_count += completed_batch["updated"]
+                consecutive_empty_batches = (
+                    consecutive_empty_batches + 1 if completed_batch["updated"] == 0 else 0
+                )
+                if consecutive_empty_batches == 2:
+                    raise RuntimeError("two consecutive batches had no successful rollouts")
                 continue
             batch = shuffled[offset : offset + 4]
             results = await asyncio.gather(
@@ -267,7 +301,14 @@ async def train(args: argparse.Namespace) -> None:
                 summary = await retry_stage(
                     lambda attempt, qr=question_results, qi=question["index"]: summarize_reflections(
                         bundle,
-                        qr,
+                        [
+                            {
+                                "rollout_id": result["rollout_id"],
+                                "reflection": result["reflection"],
+                                "meta_reflection": result["meta_reflection"],
+                            }
+                            for result in qr
+                        ],
                         batch_dir / "traces" / f"summary-question-{qi:06d}-attempt-{attempt:02d}.json",
                     ),
                     args.attempts,
@@ -282,7 +323,10 @@ async def train(args: argparse.Namespace) -> None:
                     bundle,
                     skills_dir,
                     summaries,
-                    [result["rollout_id"] + f"/attempt-{args.attempts:02d}" for result in complete],
+                    [
+                        result["rollout_id"] + f"/attempt-{result['answer_attempt']:02d}"
+                        for result in complete
+                    ],
                     batch_dir / "traces" / f"updater-attempt-{attempt:02d}.json",
                 ),
                 args.attempts,
@@ -291,7 +335,13 @@ async def train(args: argparse.Namespace) -> None:
             update_count += 1
             write_json(done_path, {"updated": 1, "rollouts": len(complete)})
             run.log({"skill_updates": update_count, "batch_mean_score": sum(r["score"] for r in results) / len(results)})
-            print(f"epoch={epoch} batch={batch_index} updates={update_count} complete_rollouts={len(complete)}", flush=True)
+            milestone = (
+                f"epoch={epoch} batch={batch_index} updates={update_count} "
+                f"complete_rollouts={len(complete)}"
+            )
+            with (args.run_dir / "AGENT_STDOUT.txt").open("a") as handle:
+                handle.write(milestone + "\n")
+            print(milestone, flush=True)
             if args.max_updates is not None and update_count >= args.max_updates:
                 run.finish()
                 return
