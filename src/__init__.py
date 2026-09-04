@@ -1,1 +1,1 @@
-"""Video SQL memory agent."""
+"""Video SQL memory-agent harness."""
