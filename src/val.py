@@ -1,93 +1,234 @@
-from __future__ import annotations
-
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import wandb
 import weave
+from dotenv import load_dotenv
 
-from src.harness import CompactionLimit, HarnessConfig, HarnessContext, Question, Stage2Index, answer_question, judge_answer
-from src.training import load_questions
+from src.harness import VideoSQLHarness
+from src.training import judge_answer, milestone, retryable, write_error
 
 
-async def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--test-json", default="data/test-seed-0.json")
-    parser.add_argument("--skills-dir", default="skills/initial")
-    parser.add_argument("--run-dir", default="runs/val_initial_current")
-    parser.add_argument("--model", default="gpt-5.6-luna")
-    parser.add_argument("--base-url", default=None)
-    parser.add_argument("--reasoning-effort", default="medium")
-    parser.add_argument("--rollouts-per-question", type=int, default=5)
-    parser.add_argument("--attempts", type=int, default=3)
-    parser.add_argument("--concurrency", type=int, default=24)
-    args = parser.parse_args()
+async def run_eval_rollout(
+    semaphore: asyncio.Semaphore,
+    question: dict[str, Any],
+    rollout: int,
+    skill_dir: Path,
+    runtime_root: Path,
+    run_dir: Path,
+    model_name: str,
+    api_key: str,
+    base_url: str | None,
+    embedding_url: str,
+    embedding_model: str,
+    attempts: int,
+) -> dict[str, Any]:
+    rollout_root = (
+        run_dir
+        / "val"
+        / f"question-{question['timeline']}-{question['index']}"
+        / f"rollout-{rollout:02d}"
+    )
+    result_path = rollout_root / "result.json"
+    if result_path.exists():
+        return json.loads(result_path.read_text())
+    async with semaphore:
+        for attempt in range(1, attempts + 1):
+            attempt_dir = rollout_root / f"attempt-{attempt}"
+            if attempt_dir.exists():
+                continue
+            attempt_dir.mkdir(parents=True)
+            harness = VideoSQLHarness(
+                database=runtime_root / question["timeline"] / "index.duckdb",
+                embedding_index=runtime_root
+                / question["timeline"]
+                / "embedding_index",
+                media_map=runtime_root / question["timeline"] / "media-map.json",
+                skill_dir=skill_dir,
+                run_dir=attempt_dir,
+                model_name=model_name,
+                api_key=api_key,
+                base_url=base_url,
+                embedding_url=embedding_url,
+                embedding_model=embedding_model,
+                reasoning_effort="medium",
+            )
+            try:
+                session = await harness.answer(question["question"])
+                score = (
+                    0
+                    if session.status == "compaction_limit"
+                    else await judge_answer(
+                        harness,
+                        question["answer"],
+                        session.answer,
+                        attempts,
+                    )
+                )
+                result = {
+                    "question_index": question["index"],
+                    "timeline": question["timeline"],
+                    "rollout": rollout,
+                    "attempt": attempt,
+                    "status": session.status,
+                    "answer": session.answer,
+                    "reference_answer": question["answer"],
+                    "score": score,
+                    "trace_files": session.trace_files,
+                }
+                rollout_root.mkdir(parents=True, exist_ok=True)
+                result_path.write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+                )
+                return result
+            except BaseException as error:
+                write_error(attempt_dir / "error.json", error)
+                if not retryable(error):
+                    raise
+            finally:
+                await harness.close()
+        result = {
+            "question_index": question["index"],
+            "timeline": question["timeline"],
+            "rollout": rollout,
+            "status": "failed",
+            "answer": None,
+            "reference_answer": question["answer"],
+            "score": 0,
+        }
+        rollout_root.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+        return result
 
-    repo_root = Path(__file__).resolve().parents[1]
-    config = HarnessConfig(repo_root=repo_root, main_model=args.model, main_base_url=args.base_url, reasoning_effort=args.reasoning_effort, attempts=args.attempts)
-    run_dir = repo_root / args.run_dir
-    run_dir.mkdir(parents=True, exist_ok=True)
-    questions = load_questions(repo_root / args.test_json)
-    index = Stage2Index(config)
-    git_hash = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root, text=True).strip()
-    wandb_config = dict(vars(args))
-    wandb_config["git_hash"] = git_hash
-    wandb.init(entity="3dsmile", project="video-sql-v2", dir=str(run_dir), name=run_dir.name, config=wandb_config)
+
+async def main_async(args: argparse.Namespace) -> None:
+    load_dotenv()
+    api_key = os.environ[args.api_key_env]
+    args.run_dir.mkdir(parents=True, exist_ok=True)
+    main_git_hash = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    config_path = args.run_dir / "config.json"
+    if config_path.exists():
+        config = json.loads(config_path.read_text())
+        wandb_id = config["wandb_id"]
+        resume = "must"
+    else:
+        wandb_id = wandb.util.generate_id()
+        resume = "never"
+        config = {
+            "model": args.model_name,
+            "base_url": args.base_url,
+            "embedding_url": args.embedding_url,
+            "embedding_model": args.embedding_model,
+            "attempts": args.attempts,
+            "batch_size": args.batch_size,
+            "rollouts": args.rollouts,
+            "skill_dir": str(args.skill_dir),
+            "main_git_hash": main_git_hash,
+            "wandb_id": wandb_id,
+        }
+        config_path.write_text(json.dumps(config, indent=2) + "\n")
     weave.init("3dsmile/video-sql-v2")
-    semaphore = asyncio.Semaphore(args.concurrency)
+    wandb_run = wandb.init(
+        entity="3dsmile",
+        project="video-sql-v2",
+        id=wandb_id,
+        name=args.run_dir.name,
+        config=config,
+        resume=resume,
+        dir=args.run_dir,
+    )
+    questions = json.loads(args.test_file.read_text())
+    semaphore = asyncio.Semaphore(24)
+    all_results = []
+    try:
+        for batch_index, start in enumerate(range(0, len(questions), args.batch_size)):
+            batch = questions[start : start + args.batch_size]
+            tasks = [
+                run_eval_rollout(
+                    semaphore,
+                    question,
+                    rollout,
+                    args.skill_dir,
+                    args.runtime_root,
+                    args.run_dir,
+                    args.model_name,
+                    api_key,
+                    args.base_url,
+                    args.embedding_url,
+                    args.embedding_model,
+                    args.attempts,
+                )
+                for question in batch
+                for rollout in range(args.rollouts)
+            ]
+            results = await asyncio.gather(*tasks)
+            all_results.extend(results)
+            for result in results:
+                wandb_run.log(
+                    {
+                        "val/rollout_score": result["score"],
+                        "val/question_index": result["question_index"],
+                        "val/rollout": result["rollout"],
+                    }
+                )
+            accuracy = sum(result["score"] for result in all_results) / (
+                5 * len(all_results)
+            )
+            wandb_run.log(
+                {
+                    "val/batch": batch_index,
+                    "val/accuracy": accuracy,
+                    "val/completed_rollouts": len(all_results),
+                }
+            )
+            milestone(
+                f"val batch={batch_index} completed={len(all_results)} "
+                f"accuracy={accuracy:.6f}"
+            )
+        final = {
+            "rollouts": len(all_results),
+            "score_sum": sum(result["score"] for result in all_results),
+            "accuracy": sum(result["score"] for result in all_results)
+            / (5 * len(all_results)),
+        }
+        (args.run_dir / "result.json").write_text(
+            json.dumps(final, ensure_ascii=False, indent=2) + "\n"
+        )
+        milestone(
+            f"validation complete rollouts={final['rollouts']} "
+            f"accuracy={final['accuracy']:.6f}"
+        )
+    finally:
+        wandb_run.finish()
 
-    async def one(question: Question, q_idx: int, r_idx: int):
-        out_path = run_dir / "answers" / f"question-{q_idx:06d}-rollout-{r_idx:02d}.json"
-        if out_path.exists():
-            return json.loads(out_path.read_text())["score"]
-        async with semaphore:
-            ctx = HarnessContext(config=config, index=index, run_dir=run_dir / "answers" / f"question-{q_idx:06d}-rollout-{r_idx:02d}", skills_dir=repo_root / args.skills_dir)
-            answer = None
-            for answer_attempt in range(args.attempts):
-                try:
-                    answer, _result, _agent = await answer_question(ctx, question, f"question-{q_idx:06d}-rollout-{r_idx:02d}-answer-attempt-{answer_attempt:02d}")
-                    break
-                except Exception as exc:
-                    if isinstance(exc, CompactionLimit):
-                        out_path.parent.mkdir(parents=True, exist_ok=True)
-                        out_path.write_text(json.dumps({"question": question.model_dump(), "answer_attempt": answer_attempt, "judge_attempt": None, "answer": {"status": "compaction_limit", "answer": "", "evidence_times": []}, "score": 0, "accuracy": 0}, ensure_ascii=False, indent=2))
-                        return 0
-                    err_path = ctx.run_dir / f"answer-attempt-{answer_attempt:02d}-error.txt"
-                    err_path.parent.mkdir(parents=True, exist_ok=True)
-                    err_path.write_text(str(exc))
-                    if answer_attempt + 1 == args.attempts:
-                        out_path.parent.mkdir(parents=True, exist_ok=True)
-                        out_path.write_text(json.dumps({"question": question.model_dump(), "answer_attempt": answer_attempt, "judge_attempt": None, "answer": {"status": "failed", "answer": "", "evidence_times": []}, "score": 0, "accuracy": 0, "error": str(exc)}, ensure_ascii=False, indent=2))
-                        return 0
-            if answer is None:
-                raise RuntimeError("answer attempts exhausted")
-            for judge_attempt in range(args.attempts):
-                try:
-                    score = await judge_answer(config, question.answer, answer.answer, ctx.run_dir / "traces" / f"judge-attempt-{judge_attempt:02d}.json")
-                    break
-                except Exception as exc:
-                    err_path = ctx.run_dir / f"judge-attempt-{judge_attempt:02d}-error.txt"
-                    err_path.parent.mkdir(parents=True, exist_ok=True)
-                    err_path.write_text(str(exc))
-                    if judge_attempt + 1 == args.attempts:
-                        out_path.parent.mkdir(parents=True, exist_ok=True)
-                        out_path.write_text(json.dumps({"question": question.model_dump(), "answer_attempt": answer_attempt, "judge_attempt": judge_attempt, "answer": answer.model_dump(), "score": 0, "accuracy": 0, "error": str(exc)}, ensure_ascii=False, indent=2))
-                        return 0
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(json.dumps({"question": question.model_dump(), "answer_attempt": answer_attempt, "judge_attempt": judge_attempt, "answer": answer.model_dump(), "score": score, "accuracy": score / 5}, ensure_ascii=False, indent=2))
-            wandb.log({"rollout/score": score})
-            return score
 
-    scores = await asyncio.gather(*[one(question, q_idx, r_idx) for q_idx, question in enumerate(questions) for r_idx in range(args.rollouts_per_question)])
-    mean_score = sum(scores) / len(scores)
-    accuracy = sum(scores) / (5 * len(scores))
-    (run_dir / "summary.json").write_text(json.dumps({"rollouts": len(scores), "mean_score_out_of_5": mean_score, "accuracy": accuracy}, indent=2))
-    wandb.log({"val/mean_score_out_of_5": mean_score, "val/accuracy": accuracy, "val/rollouts": len(scores)})
-    wandb.finish()
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--test-file", type=Path, required=True)
+    parser.add_argument("--runtime-root", type=Path, required=True)
+    parser.add_argument("--skill-dir", type=Path, required=True)
+    parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--model-name", required=True)
+    parser.add_argument("--api-key-env", required=True)
+    parser.add_argument("--base-url")
+    parser.add_argument("--embedding-url", required=True)
+    parser.add_argument("--embedding-model", required=True)
+    parser.add_argument("--attempts", type=int, default=3)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--rollouts", type=int, default=5)
+    args = parser.parse_args()
+    asyncio.run(main_async(args))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
