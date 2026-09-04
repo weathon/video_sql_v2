@@ -40,7 +40,7 @@ def encode_media(job):
     subprocess.run(
         [
             "ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(source),
-            "-vf", "scale='min(1440,iw)':-2", "-c:v", "libwebp", "-quality", "72",
+            "-vf", "scale='min(960,iw)':-2", "-c:v", "libwebp", "-quality", "55",
             str(target),
         ],
         check=True,
