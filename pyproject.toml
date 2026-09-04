@@ -20,6 +20,7 @@ dependencies = [
   "torch==2.11.0",
   "torchcodec==0.16.0",
   "wandb",
+  "weave>=0.53.8",
 ]
 
 [[tool.uv.index]]
