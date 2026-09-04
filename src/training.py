@@ -51,6 +51,11 @@ def safe_skill_path(skills_dir: Path, filename: str) -> Path:
     return path
 
 
+def skill_update_commit_exists(skills_dir: Path, batch_id: str) -> bool:
+    log = subprocess.check_output(["git", "log", "--format=%s"], cwd=skills_dir, text=True)
+    return f"Update skills for {batch_id}" in log.splitlines()
+
+
 def updater_tools(skills_dir: Path) -> list[Any]:
     def tool_error(_ctx, exc: Exception) -> str:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -285,16 +290,19 @@ async def main() -> None:
                             raise
             summary = json.dumps(summaries, ensure_ascii=False)
             rollout_ids = [item["rollout_id"] + f"/attempt-{item['answer_attempt']:02d}" for item in good]
-            for updater_attempt in range(config.attempts):
-                try:
-                    await run_updater(config, skills_dir, batch_dir / f"updater-attempt-{updater_attempt:02d}", summary, rollout_ids, batch_id)
-                    break
-                except Exception as exc:
-                    err_path = batch_dir / "updater-errors" / f"attempt-{updater_attempt:02d}.txt"
-                    err_path.parent.mkdir(parents=True, exist_ok=True)
-                    err_path.write_text(str(exc))
-                    if updater_attempt + 1 == config.attempts:
-                        raise
+            if not skill_update_commit_exists(skills_dir, batch_id):
+                for updater_attempt in range(config.attempts):
+                    try:
+                        await run_updater(config, skills_dir, batch_dir / f"updater-attempt-{updater_attempt:02d}", summary, rollout_ids, batch_id)
+                        break
+                    except Exception as exc:
+                        err_path = batch_dir / "updater-errors" / f"attempt-{updater_attempt:02d}.txt"
+                        err_path.parent.mkdir(parents=True, exist_ok=True)
+                        err_path.write_text(str(exc))
+                        if updater_attempt + 1 == config.attempts:
+                            raise
+            if not skill_update_commit_exists(skills_dir, batch_id):
+                raise RuntimeError(f"missing skill update commit for {batch_id}")
             updates_done += 1
             complete_path.write_text(json.dumps({"updated": 1, "good_rollouts": len(good), "failed_rollouts": len(failed)}, indent=2))
             with (run_dir / "AGENT_STDOUT.txt").open("a") as handle:

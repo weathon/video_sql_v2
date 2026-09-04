@@ -59,7 +59,9 @@ async def main() -> None:
                     err_path.parent.mkdir(parents=True, exist_ok=True)
                     err_path.write_text(str(exc))
                     if answer_attempt + 1 == args.attempts:
-                        raise
+                        out_path.parent.mkdir(parents=True, exist_ok=True)
+                        out_path.write_text(json.dumps({"question": question.model_dump(), "answer_attempt": answer_attempt, "judge_attempt": None, "answer": {"status": "failed", "answer": "", "evidence_times": []}, "score": 0, "accuracy": 0, "error": str(exc)}, ensure_ascii=False, indent=2))
+                        return 0
             if answer is None:
                 raise RuntimeError("answer attempts exhausted")
             for judge_attempt in range(args.attempts):
@@ -71,7 +73,9 @@ async def main() -> None:
                     err_path.parent.mkdir(parents=True, exist_ok=True)
                     err_path.write_text(str(exc))
                     if judge_attempt + 1 == args.attempts:
-                        raise
+                        out_path.parent.mkdir(parents=True, exist_ok=True)
+                        out_path.write_text(json.dumps({"question": question.model_dump(), "answer_attempt": answer_attempt, "judge_attempt": judge_attempt, "answer": answer.model_dump(), "score": 0, "accuracy": 0, "error": str(exc)}, ensure_ascii=False, indent=2))
+                        return 0
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(json.dumps({"question": question.model_dump(), "answer_attempt": answer_attempt, "judge_attempt": judge_attempt, "answer": answer.model_dump(), "score": score, "accuracy": score / 5}, ensure_ascii=False, indent=2))
             wandb.log({"rollout/score": score})
