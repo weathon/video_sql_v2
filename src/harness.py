@@ -143,9 +143,9 @@ def tool_error_json(_context: Any, error: Exception) -> str:
     return json.dumps({"error": str(error)}, ensure_ascii=False)
 
 
-def json_value(value: Any) -> Any:
-    if isinstance(value, str) and len(value) > 500:
-        return {"value": value[:500], "original_length": len(value)}
+def json_value(value: Any, string_limit: int | None) -> Any:
+    if isinstance(value, str) and string_limit is not None and len(value) > string_limit:
+        return {"value": value[:string_limit], "original_length": len(value)}
     if isinstance(value, bytes):
         return value.hex()
     if isinstance(value, (np.integer, np.floating)):
@@ -176,9 +176,13 @@ def completion_characters(response: Any) -> str:
         if item_type == "reasoning":
             continue
         if isinstance(item, BaseModel):
-            output.append(item.model_dump(mode="json", exclude_unset=True))
+            payload = item.model_dump(mode="json", exclude_unset=True)
         else:
-            output.append(stripped_json(item))
+            payload = stripped_json(item)
+        if isinstance(payload, dict):
+            for key in ("id", "call_id", "status"):
+                payload.pop(key, None)
+        output.append(payload)
     return json.dumps(output, sort_keys=True, ensure_ascii=False)
 
 
@@ -203,6 +207,7 @@ def execute_sql(
     sql: str,
     row_limit: int | None,
     parameters: list[Any] | None,
+    string_limit: int | None,
 ) -> dict[str, Any]:
     normalized = sql.lstrip().lower()
     if not normalized.startswith(("select ", "with ", "describe ", "show ")):
@@ -225,7 +230,10 @@ def execute_sql(
             has_more = len(raw_rows) > row_limit
             raw_rows = raw_rows[:row_limit]
         rows = [
-            {column: json_value(value) for column, value in zip(columns, row)}
+            {
+                column: json_value(value, string_limit)
+                for column, value in zip(columns, row)
+            }
             for row in raw_rows
         ]
         return {"columns": columns, "rows": rows, "has_more": has_more}
@@ -236,6 +244,9 @@ def execute_sql(
 
 def save_trace(context: HarnessContext, label: str, result: Any) -> str:
     path = context.run_dir / "traces" / f"{label}-segment-{context.trace_counter:02d}.json"
+    while path.exists():
+        context.trace_counter += 1
+        path = context.run_dir / "traces" / f"{label}-segment-{context.trace_counter:02d}.json"
     context.trace_counter += 1
     raw_responses = []
     for response in result.raw_responses:
@@ -318,12 +329,7 @@ async def run_one_call(
         model_settings=context.model_settings,
         tools=[],
     )
-    result = await Runner.run(
-        agent,
-        prompt,
-        max_turns=1,
-        run_config=context.run_config,
-    )
+    result, _, _ = await run_stream(context, agent, prompt, name, False)
     return str(result.final_output)
 
 
@@ -480,6 +486,7 @@ async def sample_contact_sheets(
                 ),
                 None,
                 None,
+                None,
             )
             captions = caption_result["rows"]
         outputs.append(
@@ -511,13 +518,17 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any, Any]:
     @function_tool(failure_error_function=tool_error_json)
     async def run_sql(sql: str) -> str:
         """Execute one read-only SQL query. Returns at most 100 rows."""
-        result = await asyncio.to_thread(execute_sql, context.database, sql, 100, None)
+        result = await asyncio.to_thread(
+            execute_sql, context.database, sql, 100, None, 500
+        )
         return json.dumps(result, ensure_ascii=False)
 
     @function_tool(failure_error_function=tool_error_json)
     async def sql_qa(sql: str, question: str) -> str:
         """Execute a broad read-only SQL query and have one model call answer from its result."""
-        result = await asyncio.to_thread(execute_sql, context.database, sql, None, None)
+        result = await asyncio.to_thread(
+            execute_sql, context.database, sql, None, None, None
+        )
         serialized = json.dumps(result, ensure_ascii=False)
         if len(serialized) > 50_000:
             serialized = serialized[:50_000] + "\n[SQL result truncated at 50000 characters]"
@@ -570,19 +581,32 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any, Any]:
             f"SELECT * FROM {table} WHERE row_id IN ({placeholders})",
             None,
             selected_ids,
+            500,
         )
         by_id = {row["row_id"]: row for row in rows["rows"]}
         hits = []
         for position, row_id in zip(selected, selected_ids):
             row = by_id[row_id]
             preview_field = SEARCH_TABLES[table]
+            if table == "entities":
+                start_s = row["first_seen_s"]
+                end_s = row["last_seen_s"]
+            elif table == "semantic_triples":
+                start_s = row["snapshot_s"]
+                end_s = row["snapshot_s"]
+            elif table == "topic_facts":
+                start_s = row["time_s"]
+                end_s = row["time_s"]
+            else:
+                start_s = row["start_s"]
+                end_s = row["end_s"]
             hits.append(
                 {
                     "table": table,
                     "row_id": row_id,
-                    "start_s": row.get("start_s", row.get("first_seen_s")),
-                    "end_s": row.get("end_s", row.get("last_seen_s")),
-                    "preview": json_value(row[preview_field]),
+                    "start_s": start_s,
+                    "end_s": end_s,
+                    "preview": json_value(row[preview_field], 500),
                     "score": float(scores[position]),
                 }
             )
@@ -680,7 +704,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any, Any]:
                 return "[]"
             return json.dumps([json.loads(line) for line in path.read_text().splitlines()])
 
-        @function_tool(failure_error_function=None)
+        @function_tool(failure_error_function=tool_error_json)
         async def submit_clip_answer(
             status: Literal["answered", "unknown"],
             answer: str,
@@ -908,6 +932,7 @@ class VideoSQLHarness:
         meta_skill = (self.context.skill_dir / "META-SKILL.md").read_text()
         if session.status == "compaction_limit":
             reflection_prompt = (
+                f"Reference answer: {reference_answer}\nScore out of 5: 0\n"
                 "The rollout ended after its third compaction and received score 0. "
                 "Focus on why the investigation looped. "
             )
