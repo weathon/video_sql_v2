@@ -19,12 +19,13 @@
 3. 以往的index构建过于繁琐复杂, 我们使用一个简单的一次过的方式快速处理. 
 4. 我们让模型自己反思, 而不是把trace给另一个agent, 这样模型知道当时自己的错误原因(例如保留思维链). 
 5. 我们使用多个SKILL文件, 而不是一个, 模型按需读取. 
+6. 不是一次性update(像trace2skill), 目的: 可以学习meta skill, 一次更新模型基础能力弱可能很多问题根本没法采样到正确答案并且没有回炉修改机会, 只能按照cross batch的拉扯. 我们给answer, 不是只有reward. 
 
 ## 试点实验
 1. 使用notes/index.md的方式读取index, 直接使用MM-Lifelong自带的数据集划分作为training和testing set, 不使用旧`src/splits.py`的自定义连通分量划分
 2. 搭建我们的harness,  见Harness架构如何搭建, 使用OpenAI Agents SDK连接本地模型, 验证他保留了过往reasoning并且支持图片或视频输入
-3. 在训练集上跑我们的`"训练"过程`, 每个问题5个rollout, 一次4个问题, 一共3个epoch
-4. 监控训练过程的平均打分到wandb, 结束后在测试集上测试. 
+3. 在训练集上跑我们的`"训练"过程`, 每个问题5个rollout, 一次4个问题, 一共3个epoch. 为了测试我们的harness, 我们用一个快速的云端模型(gpt-5.6-luna)来验证我们的想法, 用.env中的lab api key来call openai官方的api, 如果lab的不行就换personal的api key, 只跑4次update, 这个是因为云端模型更快可以快速验证我们的harness, 如果出现错误, 回去用这个云端模型反复迭代. 通过后进入下一步. 
+4. 用本地的qwen 27b跑完整的训练过程, log到wandb**和**weave. 
 5. 使用`skills/initial/`作为初始SKILL版本, 通过和test相同的val接口在测试集跑一次, 与训练后的SKILL准确度对比
 
 
@@ -84,44 +85,69 @@ ORDER BY day;
 这几个的共同点是 PPR 那种相似度扩散做不了:带时间窗口的计数、聚合、join 之后的排序,都需要显式的关系代数操作,而 agent 写 SQL 正好能表达这些。
 
 ### Harness架构
-#### 工具列表: 
-## Agent 接口与 compaction
 
-### Harness 工具
+#### Prompt
+System Prompt包含简单的任务说明和当前全量Stage 2 database schema, **不需要**任何详细的任务步骤描述, 例如如何搜索如何继续. 起始状态使用一个SKILL目录；答题prompt只列出SKILL的name和description, 由模型通过`read_skill`按需读取. 反思阶段的guideline保持最简单, 具体的反思方法放在`META-SKILL.md`, 避免system prompt与可迭代的SKILL冲突. val不实现把初始SKILL内容直接放进system prompt的独立no-skill baseline；初始版本和训练后版本使用同一接口, 区别仅是分别读取`skills/initial/`和指定run的SKILL目录.
+
+#### Harness 工具
 
 - `clip_qa(video_id, start_s, end_s, question)`：建议片段不超过 10 分钟，超过 20 分钟直接拒绝。内部 agent 可调用 `sample_video`、`add_note`、`read_notes`。
 - `clip_qa` 返回 `answered|unknown`、答案和证据时间点；只有 `answered` 必须包含至少一个证据时间点，`unknown` 可以没有证据时间点。harness 将已有证据时间点转换为独立截图交给主 agent。
 - `sample_video`：接受时间、fps、是否返回 caption 的 `include_captions`，以及 0–1000 整数裁剪坐标；由模型决定是否返回覆盖请求区间的 caption，同时返回带时间标记的 4×3 contact sheet，每页 12 帧，所有帧完整分页。contact sheet 和证据截图只向模型暴露文件名，不暴露宿主机绝对路径。
 - `run_sql(sql)`：只读执行，30 秒硬超时；最多向模型返回 100 行并说明是否存在更多结果；每个单元格最多返回前 500 字符及原长度。所有执行错误作为 tool result 返回给模型处理。
-- `sql_qa(sql, question)`：和run_sql类似, 接受一个sql命令, 同时接受一个we
+- `sql_qa(sql, question)`：和run_sql类似, 接受一个sql命令, 同时接受一个问题, 这个sql命令和问题被提交执行, 但是结果不直接返回给模型, 而是由另一个single LLM call对于question进行回答和总结, 对于大面积搜索推荐agent使用这个工具, 以避免context过大. 
 - `semantic_search(query, n, table)`：只允许查询已生成 embedding 的表，返回 table、row_id、video_id、start/end、规范化文本预览及 cosine score。允许传入 threshold min/max 或 n-th 到 m-th 的 rank range；例如已经查看 top 10 后，可以直接查询第 10–20 名，不需要重新调用 top 20。
 - harness 使用当前全量 Stage 2 schema，包括 `object_states`、source mapping、evidence 表以及 `6h`/`video`/`scale` granularity；不使用旧 `src/schema.sql` 中的 `openie_triples` schema。读取画面时使用 `visual_clips.filename` 和 source offsets，不根据 row ID 拼接旧 clip 路径。
-- 主 agent 提供 `add_note`、`read_notes` 和 `agent_raise(reason)`；普通工具执行错误返回调用它的 agent 处理，`agent_raise(reason)` 保持为 agent 主动结束当前 rollout 的信号；正式运行中同一 rollout 最多按原设置重试 3 次。
-- 所有 agent loop 最大 100 turns；达到上限按整个 rollout 重试，不截断上下文或返回半成品。
-- SKILL部分不再是一个文件, 而是多个, 如何构建SKILL参考antrophic官方的SKILL(https://github.com/anthropics/skills/tree/main/skills/skill-creator), 注意, 虽然这个也可以被理解为META-SKILL但是和我们的不一样, 我们的META SKILL是如何反思, 这个是如何写SKILL, 是在反思完成后更新skill文件用的. 这意味着, 我们的skill不再是一个单独的md文件, 而是一个目录, 这个目录包括多个markdown文件, 每个文件对应一个特殊情况(比如: 查找特定时间任务), 包含介绍, 何时使用, 以及主要内容等. 内容可以包含SQL脚本示例 (类似于SKILL中的脚本文件, 但是我们不单独存储脚本而是放在markdown里面).
-- 为了实现上一点, 我们的harness需要
-  - rollout时, 模型不读取所有skill文件, 而是一个list, 列出可用skill和何时使用, 然后多了一个工具就是读取SKILL, 是具体SKILL名字, 然后工具返回SKILL内容
-  - 反思更新SKILL的时候, 模型可以增加文件, 修改文件, 和删除文件. 这个SKILL文件夹被单独的git仓库管理, 每次upadte之后(多有update, 不是单个patch), 都会commit一次, 然后反思的时候agent还可以看历史, 回滚修改 (安全问题, 不允许直接git回滚, 而是参考历史重新update). 这个是一个多轮的agent loop, 类似于直接受控操作文件系统. 注意: 这个META SKILL是注入主agent的message, 而不是单独的Agent. 
+- 主 agent 还提供 `add_note`、`read_notes`、`read_skill(name)` 和 `agent_raise(reason)`。
 
+#### Agent 停止、错误与 trace
+1. 主检索 agent、`clip_qa` 和 reflection 各自使用适配自身输出结构的 `submit_answer` tool；模型调用后退出对应 agent loop，不依赖 Agents SDK 的 `output_type` 结构化最终输出来结束 loop。
+2. skill updater 不使用 `submit_answer`；完成全部文件操作后调用专用 `stop` tool 退出。
+3. 所有 agent loop 的总轮数限制统一为 100。触发 100 时本次 trace 作废，并按正式模式重试整个 rollout，不截断上下文或返回半成品。
+4. 如果连续 3 次 agent completion 在排除 reasoning 后的 raw characters 完全一致，本次 trace 作废，并按正式模式重试整个 rollout。
+5. 所有 trace 都保存，包括因重复输出或达到 100 轮而作废的 trace。JSON trace 删除 base64 图片数据，图片独立保存为 JPG，并在 trace 中保留对应文件名。
+6. 普通 FunctionTool 执行错误统一以`{"error": "..."}`tool result返回调用它的agent处理，不直接使rollout或TaskGroup crash；`agent_raise(reason)`保持为agent主动结束当前rollout的信号。统一使用JSON是因为v18曾把SDK默认错误文本交给会执行JSON解码的reflection trace，导致`JSONDecodeError`并终止整批运行。
+7. 接近context limit时关闭工具并强制输出；除主检索agent的正式compaction流程外，其他agent不做compaction。
 
-### Compaction
+#### SKILL 目录与读取
+1. SKILL是包含多个Markdown文件的目录。每个普通SKILL对应一种特殊情况，包含YAML frontmatter（`name`、`description`，description即“何时使用”）、Introduction、When to use、Main content；SQL示例直接写在Markdown中，不单独保存脚本文件。结构参考Anthropic官方skill-creator。
+2. Anthropic的skill-creator是“如何写SKILL”；本项目的`META-SKILL.md`是“如何反思”，二者不是同一概念。skill updater不注入skill-creator完整正文，只使用根据其格式浓缩的手写规则。
+3. 首批文件位于`skills/initial/`：`general-retrieval.md`、`sql-schema.md`、`semantic-search.md`、`locating-time-intervals.md`、`counting-and-ordering.md`、`visual-verification.md`和`META-SKILL.md`；旧的单文件`SKILL.md`已删除。
+4. `general-retrieval.md`说明完整检索循环和何时读取其他SKILL；`sql-schema.md`说明DuckDB表、字段和连接关系；`semantic-search.md`说明语义检索及从候选结果转入SQL验证；`locating-time-intervals.md`说明根据时间线索定位和扩展时间窗口；`counting-and-ordering.md`说明去重、计数、聚合和排序；`visual-verification.md`说明何时以及如何调用`clip_qa`做画面核验；`META-SKILL.md`说明答题agent如何复盘、抽象经验以及更新、替换或删除旧经验。
+5. 每个run在`<run_dir>/skills/`持有独立Git仓库：训练启动时从`skills/initial/`复制并直接`git init`后做首次commit；它不是主代码仓库的worktree或branch。`META-SKILL.md`位于该独立仓库内，val读取指定run的该目录。
+6. rollout prompt只列出可用SKILL的`name`和`description`；`read_skill(name)`返回对应文件的完整内容。成功返回的原始Markdown保留在答题agent的同一对话中；工具错误返回统一error JSON。Reflection不建立trace投影，也不对成功的Markdown工具返回执行JSON解码。
+
+#### Compaction
 
 - 仅主检索 agent 使用 compaction；`clip_qa`、judge、reflection、summarizer 和 updater 不使用。
+- harness 的 `context_limit` 为 262,144；vLLM后端通过模型官方YaRN配置启用314,573 token上限、factor=1.2，作为client compaction size之上的20%缓冲。
 - 每次主 agent 响应完成后读取服务端 usage，计算 `remaining = notes/INFRA.txt.context_limit - input_tokens - output_tokens`。
 - 当 `remaining <= 50,000` 时，通过流式 runner 执行 `cancel(mode="after_turn")` 并排空事件，确保当前工具轮完整结束。
 - 在当前主检索 agent 的同一对话中追加固定 compaction 指令，要求它停止工具调用并总结当前对话。由原来的同一个 Agent instance 生成 trusted handoff，不 clone Agent，也不创建单独的 compactor agent。该输出作为新对话中的 trusted handoff，旧对话不再传入。
 - 第一次和第二次 compaction 后继续 rollout。第三次 compaction 输出生成后立即终止，状态设为 `compaction_limit`，分数设为 0，不调用 judge、不重试，直接进入重点分析绕圈原因的 reflection。
 - Reflection 永不 compaction；当其 remaining 小于等于 50k 时，禁止继续调用工具并强制输出最终 reflection 和 meta-reflection。
 
-#### "训练"过程:
-1. 我们定义batch size代表n个问题和每个问题m个平行rollout. 把SKILL.md放入prompt对于一整个batch做平行rollout, 得到20个结果, 这是用用一个额外的judge call来判断模型答案正确性(打分/5), 这个分数记作s. wandb log这个s. 这个s也是Qwen/Qwen3.8-27B-FP8产生. 
+### "训练"过程
+1. batch size代表n个问题和每个问题m个平行rollout。每个rollout在prompt中获得当前SKILL列表并按需读取；一个batch得到20个结果后，用额外的judge call判断答案正确性并打分（满分5），这个分数记作s并log。正式训练的judge同样使用`Qwen/Qwen3.8-27B-FP8`。
 2. 把正确答案和s(而不只是s)都给每一个rollout, 然后告诉他这是正确答案和你的分数(注意! 不是另一个agent, 是告诉答题agent自己), 同时插入META-SKILL.md (META-SKILL.md不是最开始放进去的). 保留答题时原来的同一个Agent instance和同一对话继续reflection, 不clone Agent, 不创建新的reflection agent, 也不把trace序列化后交给另一个agent. 你现在要做的就是去重新复盘这个结果, 包括重新回顾自己的trace和重新对数据库检索和探索, 找到你为什么对/为什么错的原因, 把这个原因总结出来, 记错relection, 同时这个反思过程有什么经验(帮助下一次反思), 记错meta-relection. 两个反思都要去掉具体内容变得抽象化 可以辅助任何问题而不是本次情况. 本次情况可以作为案例, 但是要去掉敏感信息防止数据泄露(比如具体某天中午午饭内容). 注意要模型不光总结新的经验, 还要让她注意什么时候要更新/替换/修改旧的经验. 不然经验会越变越大而且出现重复/冲突/相似的内容.
-3. 每一个问题的m个rollout的反思被另一个call总结起来, 然后模型生成一个新的SKILL.md和META-SKILL.md, 同上, 但是注意不要一味的添加, 也要值得去除/替换. 不然会冲突和越变越大. 
-4. 下一个batch带着新的SKILL.md和META-SKILL.md继续. 
+3. 每个问题的m个rollout反思由另一个call汇总，再由skill updater更新SKILL目录和`META-SKILL.md`。更新时既可以增加，也要删除、替换重复、冲突、过时或相似的内容。
+4. 下一个batch使用更新后的SKILL目录继续，形成跨batch的反复迭代，而不是一次性update。
 
+#### Skill updater agent loop
+1. updater是多轮agent loop，可以增加、修改和删除普通SKILL Markdown文件，也可以修改`META-SKILL.md`，但明确禁止删除`META-SKILL.md`。
+2. updater可以查看独立SKILL Git仓库的历史并读取旧版本，参考后重新写入当前文件；不向updater暴露或执行直接Git rollback。
+3. updater完成全部文件操作后调用专用`stop` tool退出；一轮完整update的所有文件操作只commit一次。
+4. 每个updater Git commit的body列出本次更新所依据的完整rollout ID（`epoch/batch/question/rollout/attempt`）以及总体修改原因。保存的SKILL中每个指导点后包含简短的`**Reason:** ...`；一条原因覆盖整个section时，可以只在section末尾记录一次，便于以后推翻或修改旧方案以及debug追溯。
+5. updater失败后在同一个SKILL worktree原地重试，不清理本次失败已经产生但尚未commit的修改；下一次attempt读取当前status和diff后继续完成同一轮update。
 
-#### Prompt
-System Prompt包含简单的任务说明和当前全量Stage 2 database schema, **不需要**任何详细的任务步骤描述, 例如如何搜索如何继续. 但是, 我们需要一个起始状态的SKILL目录来告诉模型怎么做检索, 同样的, 反思阶段给的guideline也应该保持最简单, 而具体的开始反思的guideline应该放在META-SKILL.md. 这样模型不会被我们的system prompt困住或者和SKILL和META-SKILL.md冲突, 而是可以自由修改. val不实现把初始SKILL内容直接放进system prompt的独立no-skill baseline；初始版本和训练后版本都在prompt中只列出SKILL的name和description, 并通过`read_skill`按需读取, 区别仅是分别读取`skills/initial/`和指定run的SKILL目录.
+### 训练与运行配置
+1. 正式训练每batch 4个问题、每个问题5个并行rollout，共20个并行rollout；一共3个epoch，每个epoch开始时重排训练问题顺序；服务并发上限为24。
+2. 主模型使用官方`Qwen/Qwen3.8-27B-FP8`。PD consumer运行在GPU 0,5，TP=2，端口8002，max-num-seqs 24，gpu-memory-utilization=0.90，不使用`--no-async-scheduling`，MTP speculative length为2，default chat-template kwargs保持`enable_thinking=true`和`preserve_thinking=true`；agent reasoning effort使用`medium`。改回27B是因为Next Flash在TP=2、gpu-memory-utilization=0.90下没有可用KV cache；官方FP8用于避开NVFP4重复reasoning问题；0.90为运行时动态加载encoder cache保留额外显存；TP=2是正式运行指定配置；MTP=2用于检查MTP=4是否造成吞吐过低。
+3. 正式训练client Docker暴露GPU 0,4,5，供W&B采集GPU指标；镜像使用`docker/training/Dockerfile`构建并安装`ffmpeg`，因为`sample_video`会调用`ffmpeg`。
+4. 一个batch的全部rollout都失败时跳过该batch的updater；连续两个batch的全部rollout都失败时终止训练。
+5. OpenAI SDK内部`max_retries`为3。`--attempts`独立应用于整个rollout、judge、reflection、summarizer和updater，这些阶段分别最多按该值重试，正式值为3。
+6. vision encoder producer与embedding服务共同运行在GPU 4，各使用gpu-memory-utilization=0.45；encoder端口8001、max-num-seqs 24。它与PD consumer并行运行，通过共享EC storage提供encoder cache。`ECExampleConnector` consumer使用当前TP worker的CUDA device加载cache。`infra/responses_epd_proxy.py`在端口8000保持`/v1/responses`请求和SSE输出原样，只先把`input_image`发送到encoder producer；encoder失败时不把请求发送给PD。共享cache放在`/raid`，并在活跃Responses请求数归零后清空。EPD用于消除vision encoder与prefill/decode的共置干扰：v18在47个纯文本running时吞吐正常，进入多模态后即使只有21 running、0 waiting，SM利用率仍周期性降到14–35%，并且同一窗口出现新的encoder cache miss。定期清空避免无淘汰的connector填满根盘；current CUDA device避免每个TP worker都把`cuda`解析为逻辑`cuda:0`；GPU 4共置避免encoder占用PD GPU。
+7. 初始SKILL与训练后SKILL的test使用相同的batch size和每题rollout数。
 
 ## 代码结构
 src/harness.py: 主harness架构, 包括tools定义
@@ -143,6 +169,8 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 8. 全程前台监控, 但是不要频繁查看, 刚开始时每30s看一次, 后面逐步改成10min, 30min, 1h. 每次不要直接查看日志, 不然你会看到很多噪音. 脚本的详细log不要输出到stdout而是log文件, stdout只输出你需要监控的信息, 并且你只看这些. 
 9. 用openai的agent sdk来写agent, 不要自己手搓harness, 用response api, 保留过往reasoning
 10. 你的运行过程中除非停止, 不然所有消息都默认是你的自言自语用户不会读, 需要用户读取的milestone和log记录在AGENT_STDOUT.txt给用户看, 比如cost, 你自己做的决定, etc. AGENT_STDOUT是你输出给用户看的重要信息, wandb是记录run的过程. 
+11. 不运行preflight或smoke test；直接启动正式运行，只用正式运行的结果和完整trace检查正确性。
+12. 之前把trace交给独立reflection agent的实现及其正式run结果全部作废；不恢复旧代码或旧run，从当前已删除的`src/`、`tests/`和`skills/initial/`状态按本计划重新实现，并使用新的正式run目录从头执行。
 
 ## 实现决定
 1. 所有文本转成ASCII并转成小写.做成归一化
@@ -157,52 +185,3 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 10. uv cache放到/raid.
 11. home目录满了时先清理home, 删除本次产生的无用内容.
 12. 过程中严谨访问未列出的目录和当前目录. 
-
-
-## Update to Plan
-
-### Agent 停止与循环检测
-1. 主检索 agent、`clip_qa` 和 reflection 各自增加一个适配自身输出结构的 `submit_answer` tool；模型通过调用它提交最终答案，调用后退出对应 agent loop。不再依赖 Agents SDK 的 `output_type` 结构化最终输出来结束 loop。
-2. skill updater 不使用 `submit_answer`；它完成全部文件操作后调用专用 `stop` tool 退出。
-3. 所有 agent loop 的总轮数限制统一为 100。触发 100 视为本次运行出问题：本次 trace 作废，并按现有正式模式规则重试整个 rollout。
-4. 如果连续 3 次 agent completion 在排除 reasoning 后的 raw characters 完全一致，本次 trace 作废，并按现有正式模式规则重试整个 rollout。
-5. 所有 trace 都必须保存，包括因重复输出或达到 100 轮而作废的 trace。JSON trace 删除 base64 图片数据，图片独立保存为 JPG，并在 trace 中保留对应文件名。
-6. 现有接近 context limit 时关闭工具、强制输出的逻辑保留不变。
-7. 正式运行中，所有普通 FunctionTool 执行错误以 `{"error": "..."}` tool result 返回给调用它的 agent 处理，不再让异常直接穿透并使 rollout 或 TaskGroup crash；`agent_raise` 保持为 agent 主动结束当前 rollout 的控制信号。统一使用 JSON 是因为 v18 已将 SDK 默认错误文本返回给 agent，但 reflection 的 rollout trace 会将普通工具返回解码为 JSON，默认文本导致 `JSONDecodeError` 并终止整批运行。
-
-### 训练配置
-1. 正式训练改为每 batch 4 个问题、每个问题 5 个并行 rollout，共 20 个并行 rollout；服务并发上限设为 24。每个 epoch 开始时重排训练问题顺序。
-2. 主模型使用官方 `Qwen/Qwen3.8-27B-FP8`。PD consumer 运行在 GPU 0,5，TP=2，端口 8002，max-num-seqs 24，gpu-memory-utilization=0.90，不使用 `--no-async-scheduling`，MTP speculative length 为 2，default chat-template kwargs 保持 `enable_thinking=true` 和 `preserve_thinking=true`；agent reasoning effort 使用 `medium`。改回 27B 是因为 Next Flash 在 TP=2、gpu-memory-utilization=0.90 下没有可用 KV cache；使用官方 FP8 避开此前 NVFP4 重复 reasoning 问题；0.90 为运行时动态加载 encoder cache 保留额外显存余量；TP=2 是本次正式运行指定的并行配置；MTP=2 用于检查 MTP=4 是否导致正式运行吞吐过低。
-3. harness 的 `context_limit` 保持 262,144，并保留接近该边界时的 compaction；vLLM 后端通过模型官方 YaRN 配置启用 314,573 token 上限、factor=1.2，作为 client compaction size 之上的 20% 缓冲。
-4. 正式训练 client Docker 暴露与 vLLM 相同的 GPU 0,4,5，供 W&B 采集 GPU 指标。
-5. 一个 batch 的全部 rollout 都失败时跳过该 batch 的 updater；连续两个 batch 的全部 rollout 都失败时终止训练。
-6. 保留 OpenAI SDK 内部重试，并将 `max_retries` 设为 3。
-7. 正式训练 client 使用 `docker/training/Dockerfile` 构建的派生镜像，并安装 `ffmpeg`；原因是 `sample_video` 会调用 `ffmpeg`。
-8. 按 vLLM Encoder Disaggregation 方案，将 vision encoder producer 与 embedding 服务共同运行在 GPU 4、各使用 gpu-memory-utilization=0.45，encoder 端口为 8001、max-num-seqs 为 24，并与 PD consumer 并行运行，通过共享 EC storage 向 PD consumer 提供 encoder cache；`ECExampleConnector` consumer 使用当前 TP worker 的 CUDA device 加载 cache；`infra/responses_epd_proxy.py` 在端口 8000 保持 `/v1/responses` 请求和 SSE 输出原样，只先把其中的 `input_image` 发送到 encoder producer，encoder 失败时不把请求发送给 PD；共享 cache 放在 `/raid`，并在活跃 Responses 请求数归零后清空。原因是 v18 在 47 个纯文本 running 请求时四张 PD GPU 为 100% SM，但进入多模态阶段后仍有 21 running、0 waiting 时 SM 多数降到 14–35%，且同一采样窗口出现新的 encoder cache miss；EPD 用于消除 vision encoder 与 prefill/decode 的共置干扰，同时避免无淘汰的 `ECExampleConnector` 填满根盘；当前 device 避免 safetensors 将每个 TP worker 的 `cuda` 都解析为逻辑 `cuda:0`；GPU 4 共置避免 encoder 占用 PD GPU。
-9. `--attempts` 独立应用于整个 rollout、judge、reflection、summarizer 和 updater；这些阶段分别最多按该值重试。正式值为 3，OpenAI SDK 内部 `max_retries=3` 另行保留。
-10. 初始SKILL与训练后SKILL的test使用相同的batch size和每题rollout数。
-
-### SKILL 目录
-1. SKILL 不再是单个 Markdown 文件，而是一个包含多个 Markdown 文件的目录；每个文件对应一种特殊情况，包含 YAML frontmatter（`name`、`description`，description 即“何时使用”）、Introduction、When to use、Main content；SQL 示例直接写在 Markdown 中，不单独保存脚本文件。结构参考 Anthropic 官方 skill-creator。
-2. Anthropic 的 skill-creator 是“如何写 SKILL”；本项目的 `META-SKILL.md` 仍然是“如何反思”。
-3. 首批文件位于 `skills/initial/`：`general-retrieval.md`、`sql-schema.md`、`semantic-search.md`、`locating-time-intervals.md`、`counting-and-ordering.md`、`visual-verification.md`，以及 `META-SKILL.md`。旧的单文件 `SKILL.md` 已删除。
-4. 首批文件职责：`general-retrieval.md` 说明完整检索循环和何时读取其他 SKILL；`sql-schema.md` 说明 DuckDB 表、字段和连接关系；`semantic-search.md` 说明语义检索及从候选结果转入 SQL 验证；`locating-time-intervals.md` 说明根据时间线索定位和扩展时间窗口；`counting-and-ordering.md` 说明去重、计数、聚合和排序；`visual-verification.md` 说明何时以及如何调用 `clip_qa` 做画面核验；`META-SKILL.md` 说明答题 agent 如何复盘、抽象经验以及更新、替换或删除旧经验。
-5. 每个 run 在 `<run_dir>/skills/` 内持有自己的 SKILL 独立 Git 仓库：训练启动时从 `skills/initial/` 复制并直接 `git init` 后做首次 commit；它不是主代码仓库的 worktree 或分支。`META-SKILL.md` 放在该独立仓库内。val 读取指定 run 的该目录。
-6. skill updater 不注入Anthropic skill-creator的完整正文，只提供根据其格式浓缩后的手写规则，指导它创建和修改上述SKILL文件；这些规则不替代本项目的`META-SKILL.md`，也不作为答题阶段的检索SKILL。
-
-### Rollout 读取 SKILL
-1. prompt 不再放入全部 SKILL 内容，只列出可用 SKILL 的 `name` 和 `description`。
-2. 新增 `read_skill(name)` tool，返回对应文件的完整内容。
-3. `read_skill` 成功返回的原始 Markdown 作为工具返回保留在答题 agent 的同一对话中；工具错误使用统一的 error JSON 返回。Reflection 不建立 trace 投影，也不对成功的 Markdown 工具返回执行 JSON 解码。
-
-### Skill updater agent loop
-1. Reflection 汇总完成后的 SKILL 更新改为多轮 agent loop；updater 可以增加、修改和删除普通 SKILL Markdown 文件，也可以修改 `META-SKILL.md`，但明确禁止删除 `META-SKILL.md`。
-2. updater 可以查看 Git 历史并读取旧版本内容，参考后重新写入当前文件；不向 updater 暴露或执行直接 Git rollback。
-3. 一轮完整 update 的所有文件操作完成后只 commit 一次。
-4. updater 完成全部文件操作后调用专用 `stop` tool 退出。
-5. 每个 updater Git commit 的 body 必须列出本次更新所依据的完整 rollout ID（`epoch/batch/question/rollout/attempt`）以及 updater 提交的总体修改原因。保存的 SKILL 中每个指导点后必须包含简短的 `**Reason:** ...`；如果一条原因覆盖整个 section，可以只在该 section 末尾记录一次。这样便于以后推翻或修改之前的方案以及 debug 追溯。
-6. updater失败后在同一个SKILL worktree原地重试，不清理本次失败已经产生但尚未commit的修改；下一次attempt读取当前status和diff后继续完成同一轮update。
-
-### 正式执行
-1. 不运行 preflight 或 smoke test；直接启动正式运行，并只用正式运行的结果和完整 trace 检查正确性。
-2. 之前把 trace 交给独立 reflection agent 的实现及其正式 run 结果全部作废，不恢复旧代码或旧 run；从当前已删除的 `src/`、`tests/` 和 `skills/initial/` 状态按本计划重新实现，并使用新的正式 run 目录从头执行。
