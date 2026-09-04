@@ -129,7 +129,7 @@ async def judge_answer(
     candidate_answer: str,
     attempts: int,
 ) -> int:
-    @function_tool(failure_error_function=None)
+    @function_tool(failure_error_function=tool_error_json)
     async def submit_judgment(score: int) -> str:
         """Submit an integer semantic-equivalence score from 0 through 5."""
         if not 0 <= score <= 5:
@@ -227,9 +227,9 @@ async def run_rollout(
     async with semaphore:
         for attempt in range(1, attempts + 1):
             attempt_dir = rollout_root / f"attempt-{attempt}"
-            if attempt_dir.exists():
+            if (attempt_dir / "error.json").exists():
                 continue
-            attempt_dir.mkdir(parents=True)
+            attempt_dir.mkdir(parents=True, exist_ok=True)
             rollout_id = (
                 f"{epoch}/{batch}/question-{question['index']}/"
                 f"rollout-{rollout}/attempt-{attempt}"
@@ -372,6 +372,18 @@ async def update_skills(
 ) -> dict[str, Any]:
     if output.exists():
         return json.loads(output.read_text())
+    latest_commit = run_git(skill_dir, ["log", "-1", "--format=%H%n%B"]).stdout
+    rollout_block = "Rollouts:\n" + "\n".join(rollout_ids) + "\n\nOverall reason:\n"
+    if rollout_block in latest_commit:
+        lines = latest_commit.splitlines()
+        payload = {
+            "reason": latest_commit.split(rollout_block, 1)[1].strip(),
+            "rollout_ids": rollout_ids,
+            "skill_commit": lines[0],
+        }
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        return payload
 
     @function_tool(failure_error_function=tool_error_json)
     async def list_skill_files() -> str:
@@ -411,10 +423,32 @@ async def update_skills(
 
     @function_tool(failure_error_function=tool_error_json)
     async def skill_diff() -> str:
-        """Read the current uncommitted diff in the independent skill repository."""
-        return run_git(skill_dir, ["diff", "--", "*.md"]).stdout
+        """Read tracked Markdown changes and full contents of new Markdown files."""
+        tracked = run_git(skill_dir, ["diff", "HEAD", "--", "*.md"]).stdout
+        untracked = run_git(
+            skill_dir, ["ls-files", "--others", "--exclude-standard", "--", "*.md"]
+        ).stdout.splitlines()
+        additions = [
+            f"\n--- untracked: {filename} ---\n{skill_path(skill_dir, filename).read_text()}"
+            for filename in untracked
+        ]
+        return tracked + "".join(additions)
 
-    @function_tool(failure_error_function=None)
+    @function_tool(failure_error_function=tool_error_json)
+    async def skill_state() -> str:
+        """List tracked modifications and untracked files in the skill repository."""
+        return json.dumps(
+            {
+                "modified": run_git(
+                    skill_dir, ["diff", "HEAD", "--name-only"]
+                ).stdout.splitlines(),
+                "untracked": run_git(
+                    skill_dir, ["ls-files", "--others", "--exclude-standard"]
+                ).stdout.splitlines(),
+            }
+        )
+
+    @function_tool(failure_error_function=tool_error_json)
     async def stop(reason: str) -> str:
         """Stop after all skill edits are complete."""
         return UpdaterStop(reason=reason).model_dump_json()
@@ -426,6 +460,7 @@ async def update_skills(
         delete_skill_file,
         skill_history,
         read_skill_version,
+        skill_state,
         skill_diff,
         stop,
     ]
@@ -441,7 +476,9 @@ async def update_skills(
                 "description plus Introduction, When to use, and Main content. Keep the set "
                 "concise by replacing duplicated, conflicting, obsolete, or similar guidance. "
                 "Every saved guidance point must include a short bold Reason explaining its "
-                "evidence; one Reason may cover a whole section."
+                "evidence; one Reason may cover a whole section. At the start of every attempt, "
+                "call skill_state and skill_diff before making another edit. Before stop, call "
+                "skill_state and skill_diff again and stop only after inspecting their results."
             ),
             model=harness.context.model,
             model_settings=harness.context.model_settings,
@@ -458,14 +495,17 @@ async def update_skills(
             )
             stopped = UpdaterStop.model_validate_json(str(result.final_output))
             diff_result = subprocess.run(
-                ["git", "diff", "--quiet"],
+                ["git", "diff", "--quiet", "HEAD"],
                 cwd=skill_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
             if diff_result.returncode not in (0, 1):
                 raise RuntimeError(diff_result.stderr.decode())
-            if diff_result.returncode == 0:
+            untracked = run_git(
+                skill_dir, ["ls-files", "--others", "--exclude-standard"]
+            ).stdout.splitlines()
+            if diff_result.returncode == 0 and not untracked:
                 raise RuntimeError("skill updater made no changes")
             for path in skill_dir.glob("*.md"):
                 content = path.read_text()
@@ -503,6 +543,13 @@ async def update_skills(
             write_error(output.parent / f"updater-attempt-{attempt}-error.json", error)
             if not retryable(error) and not isinstance(error, RuntimeError):
                 raise
+            prompt += (
+                "\n\nPrevious attempt error:\n"
+                + type(error).__name__
+                + ": "
+                + str(error)
+                + "\nInspect skill_state and skill_diff before continuing."
+            )
     raise RuntimeError("updater attempts exhausted")
 
 
@@ -577,6 +624,8 @@ async def main_async(args: argparse.Namespace) -> None:
                         if batch_result["status"] == "all_failed"
                         else 0
                     )
+                    if consecutive_failed_batches == 2:
+                        raise RuntimeError("two consecutive batches had no successful rollouts")
                     if args.max_updates is not None and completed_updates >= args.max_updates:
                         milestone(f"training stopped after {completed_updates} completed updates")
                         return
