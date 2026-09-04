@@ -1,57 +1,30 @@
 ---
 name: sql-schema
-description: Query the DuckDB schema and follow its evidence relationships. Use whenever a question needs exact filtering, joins, timelines, chains, source-video mapping, or retrieval of rows returned by semantic search.
+description: Use when writing DuckDB queries or joining indexed facts back to source evidence.
 ---
 
-# SQL Schema
+# Introduction
 
-## Introduction
+The schema separates timelines, summaries, facts, chains, state observations, and physical video mappings.
 
-The database has three logical timelines, `day`, `week`, and `month`. Logical `video_id` values identify those timelines; `source_video_id` identifies physical source files.
+# When to use
 
-**Reason:** Separating logical and physical identifiers prevents joins across unrelated clocks or files.
+Read this skill before nontrivial SQL, especially joins across chains, evidence tables, or source videos.
 
-## When to use
+# Main content
 
-Use this skill before writing SQL that crosses tables, follows evidence, or maps logical time back to a playable clip.
-
-**Reason:** The schema contains both summary rows and direct 30-second evidence, so the join path determines what a result actually proves.
-
-## Main content
-
-- `videos(video_id, scale, duration_s, source_count)` describes the three logical timelines.
-- `source_groups(source_group_id, video_id, name, timeline_start_s, timeline_end_s)` and `source_videos(source_video_id, video_id, source_group_id, filename, duration_s, timeline_start_s, timeline_end_s)` map physical files onto a logical timeline.
-- `episodes(row_id, video_id, source_video_id, start_s, end_s, granularity, text)` stores `30sec`, `3min`, `1h`, `6h`, `video`, and `scale` text levels.
-- `visual_clips(row_id, video_id, source_video_id, start_s, end_s, source_start_s, source_end_s, filename, text)` maps logical intervals to physical 30-second media.
-- `entities(row_id, video_id, name, normalized_name, first_seen_s, last_seen_s, frequency)` stores entity summaries.
-- `semantic_triples(row_id, video_id, caption_30sec_row_id, snapshot_s, subject, predicate, object, text)` points directly to 30-second caption evidence.
-- `topic_chains` and `topic_facts` hold topic summaries and facts. Join `topic_facts.chain_row_id = topic_chains.row_id`; use `topic_fact_evidence(fact_row_id, caption_30sec_row_id)` for direct evidence.
-- `event_chains`, `event_chain_entities`, and `event_steps` hold event sequences. Join `event_steps.chain_row_id = event_chains.row_id`; use `event_step_evidence(step_row_id, caption_30sec_row_id)` for direct evidence.
-- `object_states(row_id, video_id, source_video_id, episode_3min_row_id, caption_30sec_row_id, start_s, end_s, object, status, text)` links broader 3-minute context and the exact 30-second state evidence.
-- `graph_nodes` and `graph_edges` preserve typed relations. A `co_clip` edge can connect a 30-second evidence row to its `visual_clips` row.
-
-**Reason:** These are the actual tables and foreign-key-like columns in the current full index.
-
-## SQL patterns
-
-Fetch a semantic hit by its real primary key:
+- `episodes` contains `30sec`, `3min`, `1h`, `6h`, `video`, and `scale` text. Join by `row_id`; filter by `video_id` and `granularity`. **Reason:** Granularity determines whether a row is evidence or context.
+- `topic_facts` joins `topic_chains` through `chain_row_id`; `topic_fact_evidence` maps facts to actual 30-second episode IDs. `event_steps`, `event_chains`, and `event_step_evidence` follow the same pattern. **Reason:** Chain summaries must not be treated as direct evidence.
+- `object_states.episode_3min_row_id` supplies outer context and `caption_30sec_row_id` supplies the exact observation. **Reason:** Keeping both keys prevents imprecise state attribution.
+- `semantic_triples.caption_30sec_row_id` points directly to a 30-second episode. **Reason:** Subject-predicate-object facts remain traceable to their source interval.
+- `source_videos` maps logical seconds to a physical `filename` with `timeline_start_s` and `timeline_end_s`; `visual_clips` already stores both logical and source offsets. **Reason:** Physical filenames cannot be inferred from row IDs.
+- Use explicit join keys and inspect a few real rows before building aggregations. **Reason:** Similar column names across tables do not imply interchangeable identifiers.
 
 ```sql
-SELECT row_id, video_id, start_s, end_s, granularity, text
-FROM episodes
-WHERE row_id = ?;
+SELECT f.time_s, f.fact, e.start_s, e.end_s, e.text
+FROM topic_facts AS f
+JOIN topic_fact_evidence AS x ON x.fact_row_id = f.row_id
+JOIN episodes AS e ON e.row_id = x.caption_30sec_row_id
+WHERE f.video_id = 'month'
+ORDER BY f.time_s;
 ```
-
-Follow an object state to its exact caption and video clip:
-
-```sql
-SELECT s.object, s.status, e30.text, v.filename, v.source_start_s, v.source_end_s
-FROM object_states AS s
-JOIN episodes AS e30 ON e30.row_id = s.caption_30sec_row_id
-LEFT JOIN graph_edges AS g
-  ON g.src_row_id = s.caption_30sec_row_id AND g.edge_type = 'co_clip'
-LEFT JOIN visual_clips AS v ON v.row_id = g.dst_row_id
-WHERE s.row_id = ?;
-```
-
-**Reason:** Primary-key lookup and explicit evidence joins avoid relying on database row order or summary text as if it were direct evidence.

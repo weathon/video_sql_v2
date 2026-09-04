@@ -1,29 +1,20 @@
 ---
 name: general-retrieval
-description: Plan and execute the complete video-memory retrieval loop. Read this at the start of every question to choose the relevant SQL, semantic-search, time, counting, and visual-verification skills.
+description: Use at the start of any video-memory question to choose evidence sources and plan the retrieval loop.
 ---
 
-# General Retrieval
+# Introduction
 
-## Introduction
+Use a hypothesis-driven loop: identify what the answer must establish, retrieve candidate evidence, test competing interpretations, and stop only when the final answer is supported.
 
-Treat the answer as the end of an evidence chain. Identify the requested fact, time scope, entities, and operation before choosing tools, then preserve the row IDs, intervals, and source facts that support the answer.
+# When to use
 
-**Reason:** An explicit evidence chain keeps plausible recollection separate from facts retrieved from the indexed memory.
+Read this skill first for every question, then read the narrower skills that match the required operation.
 
-## When to use
+# Main content
 
-Use this skill for every question. Read the specialized skills whose descriptions match the question before performing their parts of the search.
-
-**Reason:** The catalog stays small while detailed instructions are loaded only when relevant.
-
-## Main content
-
-1. Classify the question into lookup, temporal localization, counting or ordering, and visual confirmation requirements.
-2. Use semantic search to discover candidate rows when the wording is uncertain; use SQL to filter, join, aggregate, and order exact candidates.
-3. Fetch the actual database rows behind semantic hits by `row_id`; never infer content from a score or index position.
-4. Use `sql_qa` when the SQL result should be interpreted by its dedicated single LLM call instead of being returned raw to this agent.
-5. Use `clip_qa` when the answer depends on appearance, action, state, sequence, or another fact that text rows do not establish.
-6. Revisit the search when sources conflict or the evidence covers only part of the question. Submit only the concise answer supported by the final evidence chain.
-
-**Reason:** This ordering separates candidate discovery, exact computation, and source verification so each claim remains traceable.
+1. Identify the logical timeline from the prompt and keep every query restricted to that `video_id`. **Reason:** Day, Week, and Month are independent timelines whose seconds are not interchangeable.
+2. Translate each clause of the question into an evidence requirement. Search broad summaries for orientation, then descend to 30-second rows and visual clips for decisive facts. **Reason:** High-level summaries locate candidates but can omit or merge details.
+3. Keep at least two plausible interpretations when wording is ambiguous. Use SQL, semantic retrieval, and video inspection to discriminate them. **Reason:** A plausible first hit is not proof that alternatives are false.
+4. Use `add_note` for intermediate facts with row IDs and times, then reread notes before answering. **Reason:** Multi-hop questions require stable bookkeeping across tool calls.
+5. Call `submit_answer` with the concise semantic answer after the evidence requirements are satisfied. **Reason:** Identifiers are evidence aids, not part of the evaluated answer unless the question asks for them.

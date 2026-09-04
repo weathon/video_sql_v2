@@ -1,27 +1,21 @@
 ---
 name: visual-verification
-description: Verify candidate facts against video with clip_qa. Use when text is ambiguous, when appearance or action matters, or when exact visual state and sequence must be confirmed.
+description: Use when the answer depends on appearance, spatial details, on-screen text, identity, or ambiguous text evidence.
 ---
 
-# Visual Verification
+# Introduction
 
-## Introduction
+`clip_qa` delegates bounded visual inspection and returns an answer plus evidence screenshots.
 
-Use indexed text to find a narrow candidate interval, then ask `clip_qa` a concrete visual question about that interval. Preserve the returned evidence timestamps.
+# When to use
 
-**Reason:** Video inspection is strongest as targeted verification and expensive as unguided timeline search.
+Use after locating candidate intervals when captions cannot establish a visual fact, or when important text evidence may be noisy.
 
-## When to use
+# Main content
 
-Use this skill for colors, objects, gestures, interactions, on-screen state, identity cues, visual order, or conflicts between textual sources. Prefer intervals under 10 minutes; intervals over 20 minutes are rejected.
-
-**Reason:** Focused intervals produce inspectable contact sheets and keep the visual agent centered on one claim.
-
-## Main content
-
-1. Resolve the logical interval to the matching `visual_clips` or physical source-video interval before calling `clip_qa`.
-2. Ask one falsifiable question that distinguishes the candidate answer from alternatives.
-3. If the returned status is `unknown`, narrow or shift the interval using database evidence instead of treating uncertainty as a negative fact.
-4. Use the independent screenshots produced for returned evidence timestamps to support the final claim.
-
-**Reason:** Explicit mapping, falsifiable questions, and timestamped screenshots make visual conclusions traceable to actual frames.
+1. Narrow intervals with SQL or semantic search before calling `clip_qa`; keep each request below ten minutes when possible. **Reason:** Focused intervals allow useful frame density and precise evidence.
+2. Ask one concrete visual question per call and include the distinction that must be resolved. **Reason:** Vague requests produce observations without a decision criterion.
+3. In the internal clip agent, sample coarsely to locate a moment, then resample a smaller interval at higher fps or crop a relevant region. **Reason:** Adaptive sampling preserves both coverage and fine detail.
+4. Request captions only when they help connect visible evidence to indexed narration. **Reason:** Captions consume context and can bias inspection toward text claims.
+5. Require returned evidence timestamps for an `answered` result and inspect the screenshots supplied to the main agent. **Reason:** The visual conclusion must trace to actual frames.
+6. Treat `unknown` as unresolved evidence and continue retrieval; do not convert it into a guessed answer. **Reason:** Absence in sampled frames is not proof of absence in the video.

@@ -1,40 +1,28 @@
 ---
 name: counting-and-ordering
-description: Compute exact counts, frequencies, rankings, and event order with SQL. Use for how-many, most/least, first/last, repeated-event, comparison, and ordered-list questions.
+description: Use for counts, totals, frequencies, rankings, durations, and ordered sequences.
 ---
 
-# Counting and Ordering
+# Introduction
 
-## Introduction
+Counting and ordering require explicit definitions of the unit, identity, scope, and deduplication key.
 
-Define the counted unit before aggregating. A single real event can appear in several summaries, chains, facts, triples, and clips.
+# When to use
 
-**Reason:** Counting index rows without defining an event identity systematically overcounts duplicated representations.
+Use whenever the answer depends on how many, how often, how long, most/least, first/last, or sequence order.
 
-## When to use
+# Main content
 
-Use this skill when the requested answer depends on `COUNT`, `SUM`, `MIN`, `MAX`, grouping, deduplication, ranking, or chronological ordering.
-
-**Reason:** These operations require explicit relational logic rather than similarity ranking.
-
-## Main content
-
-1. State whether one unit is a distinct 30-second evidence row, a chain step, a physical clip, a source video, or a deduplicated real-world occurrence.
-2. Resolve candidate rows to direct 30-second evidence IDs before deduplicating repeated summaries of the same occurrence.
-3. Filter the correct logical timeline and time interval before grouping.
-4. Use `COUNT(DISTINCT ...)` only on the identifier that matches the chosen unit; inspect grouped rows when near-duplicate events may remain.
-5. For ordered answers, select the supporting timestamp for each item and sort numerically by logical time before formatting the response.
-
-**Reason:** Explicit units, evidence-level deduplication, and numeric ordering make the computation reproducible from returned rows.
-
-## SQL patterns
+1. State the counted unit before querying: distinct object, event occurrence, interval, person, or state transition. **Reason:** Row counts often overcount repeated descriptions of one event.
+2. Inspect candidate rows and select a deduplication key such as a 30-second evidence row, chain step, object identity, or non-overlapping interval. **Reason:** Multiple tables and granularities can describe the same occurrence.
+3. Restrict the temporal and logical scope before aggregation. **Reason:** Aggregating first can mix independent timelines or unrelated episodes.
+4. For duration, merge overlapping intervals before summing; do not sum caption or fact-row durations blindly. **Reason:** Overlapping evidence creates duplicate time.
+5. For order, sort by numeric evidence time and retain ties until visual or textual evidence distinguishes them. **Reason:** SQL row order and chain wording are not chronological guarantees.
 
 ```sql
-SELECT caption_30sec_row_id, MIN(snapshot_s) AS first_time
-FROM semantic_triples
-WHERE video_id = ? AND predicate = ?
+SELECT caption_30sec_row_id, MIN(time_s) AS first_time, COUNT(*) AS fact_rows
+FROM topic_facts
+WHERE video_id = 'month' AND fact ILIKE '%target%'
 GROUP BY caption_30sec_row_id
 ORDER BY first_time;
 ```
-
-**Reason:** Grouping by direct evidence ID collapses multiple relational descriptions attached to the same 30-second occurrence.

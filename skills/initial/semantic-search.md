@@ -1,27 +1,20 @@
 ---
 name: semantic-search
-description: Use vector search to discover relevant indexed rows when exact wording is unknown. Read for paraphrases, fuzzy concepts, entity aliases, activities, states, and candidate video intervals.
+description: Use when exact SQL terms are unknown and semantic candidates must be found before relational verification.
 ---
 
-# Semantic Search
+# Introduction
 
-## Introduction
+Semantic search retrieves candidate row IDs from one embedded table; SQL then exposes full rows and relations.
 
-Semantic search is candidate discovery, not final proof. It embeds the query with `Qwen/Qwen3-VL-Embedding-8B`, scores the selected table, and returns real row IDs for SQL lookup.
+# When to use
 
-**Reason:** Similarity can locate paraphrases but cannot establish exact counts, ordering, or whether a summary is grounded in the required evidence.
+Use for paraphrases, visually described objects, activities with uncertain wording, or broad event discovery.
 
-## When to use
+# Main content
 
-Use it when exact SQL terms are unknown or when the same event may be described with different words. Search only the indexed tables: `episodes`, `entities`, `semantic_triples`, `topic_facts`, `event_steps`, `object_states`, and `visual_clips`.
-
-**Reason:** Restricting search to tables with aligned row-ID and vector files preserves the index-to-database mapping.
-
-## Main content
-
-1. Choose the table whose row meaning matches the question: episodes for time-bounded descriptions, entities for names, triples for relations, topic facts for recurring facts, event steps for sequences, object states for changing state, and visual clips for visual candidates.
-2. Issue several concise query variants when the question contains aliases, indirect descriptions, or multiple sub-events.
-3. Treat the returned score as ranking only. Use the returned `row_id` to retrieve the actual row and its evidence links with SQL.
-4. Apply exact logical timeline, time-window, and granularity filters before comparing or aggregating candidates.
-
-**Reason:** Matching row semantics first and verifying the underlying rows reduces false matches from broad natural-language similarity.
+1. Choose the narrowest relevant table: `episodes` for narrative context, `entities` for names, `semantic_triples` for relations, `topic_facts` for persistent topics, `event_steps` for ordered actions, `object_states` for state changes, and `visual_clips` for visual similarity. **Reason:** Each index represents a different evidence unit.
+2. Form queries around concrete observable semantics rather than copying the entire question. **Reason:** Dense retrieval works better when the target event is not diluted by answer-format language.
+3. Inspect successive rank ranges when the first results are near-duplicates; do not repeatedly request an overlapping top-N. **Reason:** Rank pagination expands coverage without wasting context.
+4. Treat scores as ranking signals, not truth. Fetch returned row IDs from DuckDB and verify time, timeline, granularity, and evidence links. **Reason:** Similar text can describe the wrong occurrence.
+5. After finding distinctive vocabulary or entities, switch to SQL to enumerate, join, count, or order all relevant occurrences. **Reason:** Vector ranking cannot prove completeness or relational constraints.
