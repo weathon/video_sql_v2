@@ -5,6 +5,7 @@ import base64
 import copy
 import json
 import math
+import multiprocessing
 import os
 import subprocess
 import tempfile
@@ -25,13 +26,13 @@ from pydantic import BaseModel, Field
 
 
 SEARCHABLE_TABLES = {
-    "episodes": "text",
-    "entities": "name",
-    "semantic_triples": "text",
-    "topic_facts": "fact",
-    "event_steps": "description",
-    "object_states": "text",
-    "visual_clips": "text",
+    "episodes": ("text", "start_s", "end_s"),
+    "entities": ("name", "first_seen_s", "last_seen_s"),
+    "semantic_triples": ("text", "snapshot_s", "snapshot_s"),
+    "topic_facts": ("fact", "time_s", "time_s"),
+    "event_steps": ("description", "start_s", "end_s"),
+    "object_states": ("text", "start_s", "end_s"),
+    "visual_clips": ("text", "start_s", "end_s"),
 }
 CONTEXT_LIMIT = 262_144
 COMPACTION_THRESHOLD = 50_000
@@ -110,6 +111,8 @@ class UpdaterContext:
 
 
 def json_tool_error(_ctx: RunContextWrapper[Any], error: Exception) -> str:
+    if isinstance(error, (InvalidTrace, AgentRaised, CompactionLimit)):
+        raise error
     return json.dumps({"error": str(error)}, ensure_ascii=False)
 
 
@@ -334,12 +337,35 @@ def query_database(database_path: Path, sql: str) -> tuple[list[str], list[tuple
     return columns, rows
 
 
-async def execute_sql(database_path: Path, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
-    task = asyncio.create_task(asyncio.to_thread(query_database, database_path, sql))
+def query_database_process(database_path: str, sql: str, sender: Any) -> None:
     try:
-        return await asyncio.wait_for(task, timeout=SQL_TIMEOUT_S)
-    except TimeoutError:
+        sender.send(("ok", query_database(Path(database_path), sql)))
+    except BaseException as error:
+        sender.send(("error", f"{type(error).__name__}: {error}"))
+    finally:
+        sender.close()
+
+
+async def execute_sql(database_path: Path, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
+    receiver, sender = multiprocessing.Pipe(duplex=False)
+    process = multiprocessing.Process(
+        target=query_database_process,
+        args=(str(database_path), sql, sender),
+    )
+    process.start()
+    sender.close()
+    ready = await asyncio.to_thread(receiver.poll, SQL_TIMEOUT_S)
+    if not ready:
+        process.terminate()
+        await asyncio.to_thread(process.join)
+        receiver.close()
         raise TimeoutError(f"SQL exceeded {SQL_TIMEOUT_S} seconds")
+    status, result = receiver.recv()
+    receiver.close()
+    await asyncio.to_thread(process.join)
+    if status == "error":
+        raise RuntimeError(result)
+    return result
 
 
 def clipped_cell(value: Any) -> dict[str, Any]:
@@ -429,7 +455,7 @@ def make_main_tools(context: RolloutContext) -> list[Any]:
         selected = order[rank_start - 1 : stop]
         hits = []
         connection = duckdb.connect(str(context.database_path), read_only=True)
-        text_column = SEARCHABLE_TABLES[table]
+        text_column, start_column, end_column = SEARCHABLE_TABLES[table]
         for position in selected:
             score = float(scores[position])
             if threshold_min is not None and score < threshold_min:
@@ -438,7 +464,8 @@ def make_main_tools(context: RolloutContext) -> list[Any]:
                 continue
             row_id = str(row_ids[position])
             row = connection.execute(
-                f"SELECT row_id, video_id, start_s, end_s, {text_column} FROM {table} WHERE row_id = ?",
+                f"SELECT row_id, video_id, {start_column}, {end_column}, {text_column} "
+                f"FROM {table} WHERE row_id = ?",
                 [row_id],
             ).fetchone()
             if row is None:
