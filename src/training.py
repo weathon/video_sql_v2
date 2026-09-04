@@ -6,6 +6,7 @@ import json
 import random
 import shutil
 import subprocess
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -161,13 +162,13 @@ async def run_rollout(config: HarnessConfig, index: Stage2Index, skills_dir: Pat
                 except Exception as reflection_exc:
                     err_path = rollout_dir / f"compaction-reflection-attempt-{reflection_attempt:02d}-error.txt"
                     err_path.parent.mkdir(parents=True, exist_ok=True)
-                    err_path.write_text(str(reflection_exc))
+                    err_path.write_text(traceback.format_exc())
                     if reflection_attempt + 1 == config.attempts:
                         raise
         except Exception as exc:
             err_path = rollout_dir / f"attempt-{attempt:02d}-error.txt"
             err_path.parent.mkdir(parents=True, exist_ok=True)
-            err_path.write_text(str(exc))
+            err_path.write_text(traceback.format_exc())
             if attempt + 1 == config.attempts:
                 raise
     if answer is None or answer_result is None or agent is None:
@@ -179,7 +180,7 @@ async def run_rollout(config: HarnessConfig, index: Stage2Index, skills_dir: Pat
         except Exception as exc:
             err_path = rollout_dir / f"judge-attempt-{judge_attempt:02d}-error.txt"
             err_path.parent.mkdir(parents=True, exist_ok=True)
-            err_path.write_text(str(exc))
+            err_path.write_text(traceback.format_exc())
             if judge_attempt + 1 == config.attempts:
                 raise
     for reflection_attempt in range(config.attempts):
@@ -192,7 +193,7 @@ async def run_rollout(config: HarnessConfig, index: Stage2Index, skills_dir: Pat
         except Exception as exc:
             err_path = rollout_dir / f"reflection-attempt-{reflection_attempt:02d}-error.txt"
             err_path.parent.mkdir(parents=True, exist_ok=True)
-            err_path.write_text(str(exc))
+            err_path.write_text(traceback.format_exc())
             if reflection_attempt + 1 == config.attempts:
                 raise
     raise RuntimeError("reflection stage exhausted without output")
