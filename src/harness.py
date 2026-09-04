@@ -5,7 +5,6 @@ import base64
 import copy
 import json
 import math
-import multiprocessing
 import os
 import subprocess
 import tempfile
@@ -20,6 +19,7 @@ import numpy as np
 from agents import Agent, ItemHelpers, ModelSettings, RunConfig, RunContextWrapper, Runner, function_tool
 from agents.items import MessageOutputItem
 from agents.models.openai_responses import OpenAIResponsesModel
+from agents.tool import ToolOutputImage, ToolOutputText
 from openai import AsyncOpenAI
 from PIL import Image, ImageDraw
 from pydantic import BaseModel, Field
@@ -368,44 +368,24 @@ def make_contact_sheets(
     return sheets
 
 
-def query_database(database_path: Path, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
-    connection = duckdb.connect(str(database_path), read_only=True)
+def query_database(connection: duckdb.DuckDBPyConnection, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
     cursor = connection.execute(sql)
     columns = [item[0] for item in cursor.description]
     rows = cursor.fetchall()
-    connection.close()
     return columns, rows
 
 
-def query_database_process(database_path: str, sql: str, sender: Any) -> None:
-    try:
-        sender.send(("ok", query_database(Path(database_path), sql)))
-    except BaseException as error:
-        sender.send(("error", f"{type(error).__name__}: {error}"))
-    finally:
-        sender.close()
-
-
 async def execute_sql(database_path: Path, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
-    receiver, sender = multiprocessing.Pipe(duplex=False)
-    process = multiprocessing.Process(
-        target=query_database_process,
-        args=(str(database_path), sql, sender),
-    )
-    process.start()
-    sender.close()
-    ready = await asyncio.to_thread(receiver.poll, SQL_TIMEOUT_S)
-    if not ready:
-        process.terminate()
-        await asyncio.to_thread(process.join)
-        receiver.close()
+    connection = duckdb.connect(str(database_path), read_only=True)
+    task = asyncio.create_task(asyncio.to_thread(query_database, connection, sql))
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=SQL_TIMEOUT_S)
+    except TimeoutError:
+        connection.interrupt()
+        await task
         raise TimeoutError(f"SQL exceeded {SQL_TIMEOUT_S} seconds")
-    status, result = receiver.recv()
-    receiver.close()
-    await asyncio.to_thread(process.join)
-    if status == "error":
-        raise RuntimeError(result)
-    return result
+    finally:
+        connection.close()
 
 
 def clipped_cell(value: Any) -> dict[str, Any]:
@@ -552,7 +532,9 @@ def make_main_tools(context: RolloutContext) -> list[Any]:
         context.raised_reason = reason
         raise AgentRaised(reason)
 
-    async def clip_qa_impl(video_id: str, start_s: float, end_s: float, question: str) -> list[dict[str, Any]]:
+    async def clip_qa_impl(
+        video_id: str, start_s: float, end_s: float, question: str
+    ) -> list[ToolOutputText | ToolOutputImage]:
         if video_id != context.video_id:
             raise ValueError(f"current logical timeline is {context.video_id}, not {video_id}")
         if end_s <= start_s:
@@ -574,7 +556,7 @@ def make_main_tools(context: RolloutContext) -> list[Any]:
             crop_y1: int = 0,
             crop_x2: int = 1000,
             crop_y2: int = 1000,
-        ) -> list[dict[str, Any]]:
+        ) -> list[ToolOutputText | ToolOutputImage]:
             """Return fully paginated 4x3 contact sheets for a timeline interval."""
             if not (0 <= crop_x1 < crop_x2 <= 1000 and 0 <= crop_y1 < crop_y2 <= 1000):
                 raise ValueError("crop coordinates must satisfy 0 <= min < max <= 1000")
@@ -591,7 +573,7 @@ def make_main_tools(context: RolloutContext) -> list[Any]:
                 crop_x2,
                 crop_y2,
             )
-            blocks: list[dict[str, Any]] = []
+            blocks: list[ToolOutputText | ToolOutputImage] = []
             caption_text = ""
             if include_captions:
                 columns, rows = await execute_sql(
@@ -603,12 +585,11 @@ def make_main_tools(context: RolloutContext) -> list[Any]:
                 caption_text = json.dumps({"columns": columns, "rows": rows}, ensure_ascii=False)
             for sheet in sheets:
                 blocks.append(
-                    {
-                        "type": "input_text",
-                        "text": f"{sheet.name}\n{caption_text}" if caption_text else sheet.name,
-                    }
+                    ToolOutputText(
+                        text=f"{sheet.name}\n{caption_text}" if caption_text else sheet.name
+                    )
                 )
-                blocks.append({"type": "input_image", "image_url": data_image(sheet), "detail": "auto"})
+                blocks.append(ToolOutputImage(image_url=data_image(sheet), detail="auto"))
             return blocks
 
         @function_tool(failure_error_function=json_tool_error)
@@ -659,13 +640,15 @@ def make_main_tools(context: RolloutContext) -> list[Any]:
         answer = clip_context.submitted
         if answer is None:
             raise ValueError("clip_qa did not call submit_answer")
-        blocks = [{"type": "input_text", "text": answer.model_dump_json()}]
+        blocks: list[ToolOutputText | ToolOutputImage] = [
+            ToolOutputText(text=answer.model_dump_json())
+        ]
         for timestamp_s in answer.evidence_timestamps_s:
             screenshot = clip_context.run_dir / "media" / f"evidence-{timestamp_s:.3f}.jpg"
             screenshot.parent.mkdir(parents=True, exist_ok=True)
             await asyncio.to_thread(frame_at, clip_context, timestamp_s, screenshot)
-            blocks.append({"type": "input_text", "text": screenshot.name})
-            blocks.append({"type": "input_image", "image_url": data_image(screenshot), "detail": "high"})
+            blocks.append(ToolOutputText(text=screenshot.name))
+            blocks.append(ToolOutputImage(image_url=data_image(screenshot), detail="high"))
         return blocks
 
     clip_qa = function_tool(
