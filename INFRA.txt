@@ -1,7 +1,7 @@
 Current formal infrastructure (no encoder disaggregation)
 
 The main Qwen service runs vision encoding, prefill, and decode together on
-physical GPUs 0,2,5,7. The embedding service runs on physical GPU 4. Both
+physical GPUs 0,2. The embedding service runs on physical GPU 4. Both
 containers use the project bridge network. Do not start containers with
 `--rm`; stop them after the run, inspect their logs, and remove them manually.
 
@@ -9,18 +9,18 @@ Create the project network once:
 
 docker network create video-sql-v2
 
-Main Qwen/Qwen3.8-Flash-Next-FP8 service:
+Main Inferact/Qwen3.8-27B-NVFP4 service:
 
-docker run --name qwen38-flash-next-fp8 \
+docker run --name qwen38-27b-nvfp4 \
     --network video-sql-v2 \
-    --gpus '"device=0,2,5,7"' \
+    --gpus '"device=0,2"' \
     --shm-size=32g \
-    -p 8000:8000 \
+    -p 8002:8000 \
     -e HF_HOME=/hf_cache \
     -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
     -v /raid/huggingface:/hf_cache \
     vllm/vllm-openai:qwen38-flash-next \
-    Qwen/Qwen3.8-Flash-Next-FP8 \
+    Inferact/Qwen3.8-27B-NVFP4 \
     --host 0.0.0.0 \
     --port 8000 \
     --max-model-len 314573 \
@@ -29,11 +29,11 @@ docker run --name qwen38-flash-next-fp8 \
     --gpu-memory-utilization 0.90 \
     --enable-prefix-caching \
     --no-enable-flashinfer-autotune \
-    --tensor-parallel-size 4 \
+    --tensor-parallel-size 2 \
     --enable-auto-tool-choice \
     --tool-call-parser qwen3_coder \
     --reasoning-parser qwen3 \
-    --speculative-config '{"method":"mtp","num_speculative_tokens":2}' \
+    --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
     --kv-transfer-config '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":236223201280,"lazy_offload":false}}' \
     --default-chat-template-kwargs '{"enable_thinking":true,"preserve_thinking":true}'
 
@@ -63,8 +63,8 @@ docker run --name egolife-qwen3-vl-embedding-8b \
 
 Stop after the run:
 
-docker stop qwen38-flash-next-fp8 egolife-qwen3-vl-embedding-8b
+docker stop qwen38-27b-nvfp4 egolife-qwen3-vl-embedding-8b
 
 After debugging and log inspection, remove the stopped containers manually:
 
-docker rm qwen38-flash-next-fp8 egolife-qwen3-vl-embedding-8b
+docker rm qwen38-27b-nvfp4 egolife-qwen3-vl-embedding-8b

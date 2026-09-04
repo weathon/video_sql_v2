@@ -60,7 +60,7 @@ def initialize_skill_repo(initial_skills: Path, skill_dir: Path) -> None:
         if not (skill_dir / ".git").is_dir():
             raise RuntimeError(f"existing skill directory is not a Git repository: {skill_dir}")
         return
-    shutil.copytree(initial_skills, skill_dir)
+    shutil.copytree(initial_skills, skill_dir, ignore=shutil.ignore_patterns(".git"))
     run_git(skill_dir, ["init"])
     run_git(skill_dir, ["config", "user.name", "codex"])
     run_git(skill_dir, ["config", "user.email", "codex@localhost"])
@@ -587,6 +587,7 @@ async def main_async(args: argparse.Namespace) -> None:
             "batch_size": args.batch_size,
             "rollouts": args.rollouts,
             "seed": args.seed,
+            "first_epoch_skip": args.first_epoch_skip,
             "main_git_hash": main_git_hash,
             "wandb_id": wandb_id,
         }
@@ -609,6 +610,8 @@ async def main_async(args: argparse.Namespace) -> None:
         for epoch in range(args.epochs):
             shuffled = list(questions)
             random.Random(args.seed + epoch).shuffle(shuffled)
+            if epoch == 0:
+                shuffled = shuffled[args.first_epoch_skip :]
             batches = [
                 shuffled[index : index + args.batch_size]
                 for index in range(0, len(shuffled), args.batch_size)
@@ -795,9 +798,10 @@ def main() -> None:
     parser.add_argument("--embedding-model", required=True)
     parser.add_argument("--attempts", type=int, default=3)
     parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=10)
     parser.add_argument("--rollouts", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--first-epoch-skip", type=int, default=0)
     parser.add_argument("--max-updates", type=int)
     args = parser.parse_args()
     asyncio.run(main_async(args))

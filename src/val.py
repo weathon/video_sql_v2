@@ -225,7 +225,7 @@ def main() -> None:
     parser.add_argument("--embedding-url", required=True)
     parser.add_argument("--embedding-model", required=True)
     parser.add_argument("--attempts", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=10)
     parser.add_argument("--rollouts", type=int, default=5)
     args = parser.parse_args()
     asyncio.run(main_async(args))
