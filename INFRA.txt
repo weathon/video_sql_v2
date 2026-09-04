@@ -56,7 +56,6 @@ docker run --rm --name qwen38-flash-next-fp8-epd-encoder \
 docker run --rm --name qwen38-flash-next-fp8-epd-pd \
     --network host \
     --gpus all \
-    --privileged \
     --ipc=host \
     -v /raid/huggingface:/root/.cache/huggingface \
     -v /raid/wg25r/video_sql_v2/formal_runs/next_flash_fp8_epd_shared:/epd_shared \
@@ -96,7 +95,6 @@ Current best choice: Qwen3.8 Flash Next NVFP4 on physical GPU 5 and 6:
 
 docker run --rm --name qwen38-flash-next-nvfp4-seq200 \
     --gpus all \
-    --privileged \
     --ipc=host \
     -p 8000:8000 \
     -v /raid/huggingface:/root/.cache/huggingface \
