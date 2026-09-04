@@ -369,7 +369,7 @@ def openai_client(config: HarnessConfig) -> AsyncOpenAI:
     if api_key is None and base_url and "127.0.0.1" in base_url:
         api_key = "local-vllm"
     if api_key is None:
-        for key in ("LAB_OPENAI_API_KEY", "OPENAI_LAB_API_KEY", "PERSONAL_OPENAI_API_KEY", "OPENAI_PERSONAL_API_KEY"):
+        for key in ("LAB_OPENAI_KEY", "LAB_OPENAI_API_KEY", "OPENAI_LAB_API_KEY", "PERSONAL_OPENAI_KEY", "PERSONAL_OPENAI_API_KEY", "OPENAI_PERSONAL_API_KEY"):
             if os.environ.get(key):
                 api_key = os.environ[key]
                 break
