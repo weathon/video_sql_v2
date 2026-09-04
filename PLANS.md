@@ -8,7 +8,7 @@
 3. 使用的Harness框架: https://github.com/openai/openai-agents-python
 5. Embedding模型: Qwen/Qwen3-VL-Embedding-8B (Use VL for both visual and text-only), start it using vllm
 6. 数据库引擎: https://github.com/duckdb/duckdb
-7. 本地模型: Inferact/Qwen3.8-27B-NVFP4, 使用参考在根目录`INFRA.txt`第一条
+7. 本地模型: Qwen/Qwen3.8-27B-FP8, 使用参考在根目录`INFRA.txt`第一条
 8. index: 试点和正式运行全部使用现有全量index `data/pilot/stage2/index.duckdb` 和 `data/pilot/stage2/embedding_index`(读取方式见notes/index.md), 不使用jiazhengli7/magic-video-artifacts
 9. notes/文件夹, 上一次失败过程积累的经验和踩坑, 可以参考, 但是不一定有用甚至可能跑偏, 冲突时以当前计划为准
 
@@ -129,7 +129,7 @@ System Prompt包含简单的任务说明和当前全量Stage 2 database schema, 
 - Reflection 永不 compaction；当其 remaining 小于等于 50k 时，禁止继续调用工具并强制输出最终 reflection 和 meta-reflection。
 
 ### "训练"过程
-1. batch size代表n个问题和每个问题m个平行rollout。每个rollout在prompt中获得当前SKILL列表并按需读取；一个batch得到50个结果后，用额外的judge call判断答案正确性并打分（满分5），这个分数记作s并log。judge只接收reference_answer和candidate_answer, 不接收问题、trace、证据；评分标准是最终答案语义等价, 忽略附带的video id、时间戳、row id等标识符。正式训练的judge同样使用`Inferact/Qwen3.8-27B-NVFP4`。
+1. batch size代表n个问题和每个问题m个平行rollout。每个rollout在prompt中获得当前SKILL列表并按需读取；一个batch得到50个结果后，用额外的judge call判断答案正确性并打分（满分5），这个分数记作s并log。judge只接收reference_answer和candidate_answer, 不接收问题、trace、证据；评分标准是最终答案语义等价, 忽略附带的video id、时间戳、row id等标识符。正式训练的judge同样使用`Qwen/Qwen3.8-27B-FP8`。
 2. 把正确答案和s(而不只是s)都给每一个rollout, 然后告诉他这是正确答案和你的分数(注意! 不是另一个agent, 是告诉答题agent自己), 同时插入META-SKILL.md (META-SKILL.md不是最开始放进去的). 保留答题时原来的同一个Agent instance和同一对话继续reflection, 不clone Agent, 不创建新的reflection agent, 也不把trace序列化后交给另一个agent. 你现在要做的就是去重新复盘这个结果, 包括重新回顾自己的trace和重新对数据库检索和探索, 找到你为什么对/为什么错的原因, 把这个原因总结出来, 记错relection, 同时这个反思过程有什么经验(帮助下一次反思), 记错meta-relection. 两个反思都要去掉具体内容变得抽象化 可以辅助任何问题而不是本次情况. 本次情况可以作为案例, 但是要去掉敏感信息防止数据泄露(比如具体某天中午午饭内容). 注意要模型不光总结新的经验, 还要让她注意什么时候要更新/替换/修改旧的经验. 不然经验会越变越大而且出现重复/冲突/相似的内容. reflection阶段保留答题时的全部工具(run_sql、sql_qa、semantic_search、clip_qa、add_note、read_notes、read_skill、agent_raise), 只把`submit_answer`换成`submit_reflection`.
 3. 每个问题的m个rollout反思由另一个call汇总，再由skill updater更新SKILL目录和`META-SKILL.md`。更新时既可以增加，也要删除、替换重复、冲突、过时或相似的内容。updater每个batch跑一次, 一次agent loop输入该batch全部10个问题的summary, commit一次。
 4. 下一个batch使用更新后的SKILL目录继续，形成跨batch的反复迭代，而不是一次性update。
@@ -145,7 +145,7 @@ System Prompt包含简单的任务说明和当前全量Stage 2 database schema, 
 1. 正式训练每batch 10个问题、每个问题5个并行rollout，共50个rollout；一共3个epoch，每个epoch开始时重排训练问题顺序，seed由run参数给出，默认0，第k个epoch用seed+k；服务并发上限为24。
 1a. 采样参数(temperature/top_p/top_k等)一律不设, 使用服务端/generation_config默认; 本地Qwen和云端gpt-5.6-luna都只传reasoning effort。
 1b. W&B entity/project为`3dsmile/video-sql-v2`, weave同project。
-2. 主模型使用`Inferact/Qwen3.8-27B-NVFP4`。独立encoder实例运行在GPU 5；负责prefill和decode的实例运行在GPU 0,2，TP=2；Responses EPD proxy使用主机端口8002。prefill/decode实例的max-num-seqs为24、gpu-memory-utilization为0.90，不使用`--no-async-scheduling`，MTP speculative length为3，default chat-template kwargs保持`enable_thinking=true`和`preserve_thinking=true`；agent reasoning effort使用`medium`。两个模型实例使用`ECExampleConnector`，共享的encoder cache位于Docker tmpfs volume中。
+2. 主模型使用`Qwen/Qwen3.8-27B-FP8`。独立encoder实例运行在GPU 5；负责prefill和decode的实例运行在GPU 0,2，TP=2；Responses EPD proxy使用主机端口8002。prefill/decode实例的max-num-seqs为24、gpu-memory-utilization为0.90，不使用`--no-async-scheduling`，MTP speculative length为3，default chat-template kwargs保持`enable_thinking=true`和`preserve_thinking=true`；agent reasoning effort使用`medium`。两个模型实例使用`ECExampleConnector`，共享的encoder cache位于Docker tmpfs volume中。
 3. 正式训练client Docker暴露GPU 0,2,4,5，供W&B采集三个模型服务的GPU指标；镜像使用`docker/training/Dockerfile`构建并安装`ffmpeg`，因为`sample_video`会调用`ffmpeg`。
 4. 一个batch的全部rollout都失败时跳过该batch的updater；连续两个batch的全部rollout都失败时终止训练。
 5. OpenAI SDK内部`max_retries`为3。`--attempts`独立应用于整个rollout、judge、reflection、summarizer和updater，这些阶段分别最多按该值重试，正式值为3。

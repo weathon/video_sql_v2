@@ -25,9 +25,9 @@ docker build \
     -t video-sql-vllm-epd:ec-tp-device \
     infra
 
-Inferact/Qwen3.8-27B-NVFP4 encoder service:
+Qwen/Qwen3.8-27B-FP8 encoder service:
 
-docker run --name qwen38-27b-nvfp4-epd-encoder \
+docker run --name qwen38-27b-fp8-epd-encoder \
     --network video-sql-v2 \
     --gpus '"device=5"' \
     --shm-size=32g \
@@ -35,7 +35,7 @@ docker run --name qwen38-27b-nvfp4-epd-encoder \
     -v /raid/huggingface:/hf_cache \
     -v video-sql-ec-cache:/epd_shared/cache \
     video-sql-vllm-epd:ec-tp-device \
-    Inferact/Qwen3.8-27B-NVFP4 \
+    Qwen/Qwen3.8-27B-FP8 \
     --host 0.0.0.0 \
     --port 8000 \
     --mm-encoder-only \
@@ -47,9 +47,9 @@ docker run --name qwen38-27b-nvfp4-epd-encoder \
     --enable-request-id-headers \
     --ec-transfer-config '{"ec_connector":"ECExampleConnector","ec_role":"ec_producer","ec_connector_extra_config":{"shared_storage_path":"/epd_shared/cache"}}'
 
-Inferact/Qwen3.8-27B-NVFP4 prefill/decode service:
+Qwen/Qwen3.8-27B-FP8 prefill/decode service:
 
-docker run --name qwen38-27b-nvfp4-epd-pd \
+docker run --name qwen38-27b-fp8-epd-pd \
     --network video-sql-v2 \
     --gpus '"device=0,2"' \
     --shm-size=32g \
@@ -58,7 +58,7 @@ docker run --name qwen38-27b-nvfp4-epd-pd \
     -v /raid/huggingface:/hf_cache \
     -v video-sql-ec-cache:/epd_shared/cache \
     video-sql-vllm-epd:ec-tp-device \
-    Inferact/Qwen3.8-27B-NVFP4 \
+    Qwen/Qwen3.8-27B-FP8 \
     --host 0.0.0.0 \
     --port 8000 \
     --max-model-len 314573 \
@@ -78,7 +78,7 @@ docker run --name qwen38-27b-nvfp4-epd-pd \
 
 Responses EPD proxy:
 
-docker run --name qwen38-27b-nvfp4-epd-proxy \
+docker run --name qwen38-27b-fp8-epd-proxy \
     --network video-sql-v2 \
     -p 8002:8000 \
     -v /raid/wg25r/video_sql_v2/infra:/video_sql_infra:ro \
@@ -87,8 +87,8 @@ docker run --name qwen38-27b-nvfp4-epd-proxy \
     /video_sql_infra/responses_epd_proxy.py \
     --host 0.0.0.0 \
     --port 8000 \
-    --encoder-url http://qwen38-27b-nvfp4-epd-encoder:8000 \
-    --pd-url http://qwen38-27b-nvfp4-epd-pd:8000
+    --encoder-url http://qwen38-27b-fp8-epd-encoder:8000 \
+    --pd-url http://qwen38-27b-fp8-epd-pd:8000
 
 Qwen/Qwen3-VL-Embedding-8B service:
 
@@ -116,9 +116,9 @@ docker run --name egolife-qwen3-vl-embedding-8b \
 
 Stop after the run:
 
-docker stop qwen38-27b-nvfp4-epd-proxy qwen38-27b-nvfp4-epd-encoder qwen38-27b-nvfp4-epd-pd egolife-qwen3-vl-embedding-8b
+docker stop qwen38-27b-fp8-epd-proxy qwen38-27b-fp8-epd-encoder qwen38-27b-fp8-epd-pd egolife-qwen3-vl-embedding-8b
 
 After debugging and log inspection, remove the stopped containers manually:
 
-docker rm qwen38-27b-nvfp4-epd-proxy qwen38-27b-nvfp4-epd-encoder qwen38-27b-nvfp4-epd-pd egolife-qwen3-vl-embedding-8b
+docker rm qwen38-27b-fp8-epd-proxy qwen38-27b-fp8-epd-encoder qwen38-27b-fp8-epd-pd egolife-qwen3-vl-embedding-8b
 docker volume rm video-sql-ec-cache
