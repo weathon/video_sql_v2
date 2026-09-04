@@ -8,8 +8,8 @@
 3. 使用的Harness框架: https://github.com/openai/openai-agents-python
 5. Embedding模型: Qwen/Qwen3-VL-Embedding-8B (Use VL for both visual and text-only), start it using vllm
 6. 数据库引擎: https://github.com/duckdb/duckdb
-7. 本地模型: Qwen/Qwen3.8-27B-FP8, 使用参考在notes/INFRA.txt第一条
-8. 预构建的index(只用作试点): jiazhengli7/magic-video-artifacts
+7. 本地模型: Qwen/Qwen3.8-Flash-Next-FP8, 使用参考在根目录`INFRA.txt`第一条
+8. index: 试点和正式运行全部使用现有全量index `data/pilot/stage2/index.duckdb` 和 `data/pilot/stage2/embedding_index`(读取方式见notes/index.md), 不使用jiazhengli7/magic-video-artifacts
 9. notes/文件夹, 上一次失败过程积累的经验和踩坑, 可以参考, 但是不一定有用甚至可能跑偏, 冲突时以当前计划为准
 
 
@@ -19,14 +19,14 @@
 3. 以往的index构建过于繁琐复杂, 我们使用一个简单的一次过的方式快速处理. 
 4. 我们让模型自己反思, 而不是把trace给另一个agent, 这样模型知道当时自己的错误原因(例如保留思维链). 
 5. 我们使用多个SKILL文件, 而不是一个, 模型按需读取. 
-6. 不是一次性update(像trace2skill), 目的: 可以学习meta skill, 一次更新模型基础能力弱可能很多问题根本没法采样到正确答案并且没有回炉修改机会, 只能按照cross batch的拉扯. 我们给answer, 不是只有reward. 
+6. 不是一次性update(像trace2skill), 目的: 可以学习meta skill, 一次更新模型基础能力弱可能很多问题根本没法采样到正确答案并且没有回炉修改机会, 只能按照cross batch的拉扯. 我们给answer, 不是只有reward. Batch Update也需要硬件资源可以跑的起这么多Batch.
 
 ## 试点实验
-1. 使用notes/index.md的方式读取index, 直接使用MM-Lifelong自带的数据集划分作为training和testing set, 不使用旧`src/splits.py`的自定义连通分量划分
-2. 搭建我们的harness,  见Harness架构如何搭建, 使用OpenAI Agents SDK连接本地模型, 验证他保留了过往reasoning并且支持图片或视频输入
-3. 在训练集上跑我们的`"训练"过程`, 每个问题5个rollout, 一次4个问题, 一共3个epoch. 为了测试我们的harness, 我们用一个快速的云端模型(gpt-5.6-luna)来验证我们的想法, 用.env中的lab api key来call openai官方的api, 如果lab的不行就换personal的api key, 只跑4次update, 这个是因为云端模型更快可以快速验证我们的harness, 如果出现错误, 回去用这个云端模型反复迭代. 通过后进入下一步. 
+1. 使用notes/index.md的方式读取index, 直接使用MM-Lifelong自带的数据集划分作为training和testing set, 不使用旧`src/splits.py`的自定义连通分量划分. 训练集=`month/train.json`(266题). 测试集从`month/val.json`、`day/test.json`、`week/test.json`各随机抽100条, 共300条, 固定seed; 抽样结果保存成文件提交到git, 初始SKILL和训练后SKILL测试使用同一份.
+2. 搭建我们的harness,  见Harness架构如何搭建, 使用OpenAI Agents SDK连接本地模型, 验证他保留了过往reasoning并且支持图片或视频输入. 验证方式: 不允许preflight, 正式跑一个batch之后停下来检查, 通过后从第二个batch接着跑
+3. 在训练集上跑我们的`"训练"过程`, 每个问题5个rollout, 一次4个问题, 一共3个epoch. 为了测试我们的harness, 我们用一个快速的云端模型(gpt-5.6-luna)来验证我们的想法, 用.env中的lab api key来call openai官方的api, 如果lab的不行就换personal的api key, 只跑4次update, 这个是因为云端模型更快可以快速验证我们的harness, 如果出现错误, 回去用这个云端模型反复迭代. 通过后进入下一步. 试点中所有LLM角色(主检索agent、clip_qa内部agent、sql_qa单次call、judge、summarizer、skill updater)都用gpt-5.6-luna, embedding仍用本地Qwen3-VL-Embedding-8B服务; compaction的context_limit和阈值与本地一样(262,144 / 50k); 试点直接用uv venv在宿主机跑, 不用Docker, 同样log到wandb和weave.
 4. 用本地的qwen 27b跑完整的训练过程, log到wandb**和**weave. 
-5. 使用`skills/initial/`作为初始SKILL版本, 通过和test相同的val接口在测试集跑一次, 与训练后的SKILL准确度对比
+5. 使用`skills/initial/`作为初始SKILL版本, 通过和test相同的val接口在测试集跑一次, 与训练后的SKILL准确度对比. 测试=300题 x 每题5个rollout, 只跑答题+judge, 不跑reflection/summarizer/updater. 准确度定义为所有rollout的judge平均分 s/5. 初始和训练后各自一个wandb run.
 
 
 ## 方法详情
@@ -87,7 +87,7 @@ ORDER BY day;
 ### Harness架构
 
 #### Prompt
-System Prompt包含简单的任务说明和当前全量Stage 2 database schema, **不需要**任何详细的任务步骤描述, 例如如何搜索如何继续. 起始状态使用一个SKILL目录；答题prompt只列出SKILL的name和description, 由模型通过`read_skill`按需读取. 反思阶段的guideline保持最简单, 具体的反思方法放在`META-SKILL.md`, 避免system prompt与可迭代的SKILL冲突. val不实现把初始SKILL内容直接放进system prompt的独立no-skill baseline；初始版本和训练后版本使用同一接口, 区别仅是分别读取`skills/initial/`和指定run的SKILL目录.
+System Prompt包含简单的任务说明和当前全量Stage 2 database schema, **不需要**任何详细的任务步骤描述, 例如如何搜索如何继续. 答题prompt给出问题文本和该题所属的逻辑时间轴(day/week/month), 不给question_type、clue_intervals、temporal_certificate. 起始状态使用一个SKILL目录；答题prompt只列出SKILL的name和description, 由模型通过`read_skill`按需读取. 反思阶段的guideline保持最简单, 具体的反思方法放在`META-SKILL.md`, 避免system prompt与可迭代的SKILL冲突. val不实现把初始SKILL内容直接放进system prompt的独立no-skill baseline；初始版本和训练后版本使用同一接口, 区别仅是分别读取`skills/initial/`和指定run的SKILL目录.
 
 #### Harness 工具
 
@@ -95,7 +95,7 @@ System Prompt包含简单的任务说明和当前全量Stage 2 database schema, 
 - `clip_qa` 返回 `answered|unknown`、答案和证据时间点；只有 `answered` 必须包含至少一个证据时间点，`unknown` 可以没有证据时间点。harness 将已有证据时间点转换为独立截图交给主 agent。
 - `sample_video`：接受时间、fps、是否返回 caption 的 `include_captions`，以及 0–1000 整数裁剪坐标；由模型决定是否返回覆盖请求区间的 caption，同时返回带时间标记的 4×3 contact sheet，每页 12 帧，所有帧完整分页。contact sheet 和证据截图只向模型暴露文件名，不暴露宿主机绝对路径。
 - `run_sql(sql)`：只读执行，30 秒硬超时；最多向模型返回 100 行并说明是否存在更多结果；每个单元格最多返回前 500 字符及原长度。所有执行错误作为 tool result 返回给模型处理。
-- `sql_qa(sql, question)`：和run_sql类似, 接受一个sql命令, 同时接受一个问题, 这个sql命令和问题被提交执行, 但是结果不直接返回给模型, 而是由另一个single LLM call对于question进行回答和总结, 对于大面积搜索推荐agent使用这个工具, 以避免context过大. 
+- `sql_qa(sql, question)`：和run_sql类似, 接受一个sql命令, 同时接受一个问题, 这个sql命令和问题被提交执行, 但是结果不直接返回给模型, 而是由另一个single LLM call对于question进行回答和总结, 对于大面积搜索推荐agent使用这个工具, 以避免context过大. 交给这个single call的结果不限制行数, 只限制总字符数: 超过50k字符的截断, 并在末尾写明已被截断; 30秒SQL超时同样适用.
 - `semantic_search(query, n, table)`：只允许查询已生成 embedding 的表，返回 table、row_id、video_id、start/end、规范化文本预览及 cosine score。允许传入 threshold min/max 或 n-th 到 m-th 的 rank range；例如已经查看 top 10 后，可以直接查询第 10–20 名，不需要重新调用 top 20。
 - harness 使用当前全量 Stage 2 schema，包括 `object_states`、source mapping、evidence 表以及 `6h`/`video`/`scale` granularity；不使用旧 `src/schema.sql` 中的 `openie_triples` schema。读取画面时使用 `visual_clips.filename` 和 source offsets，不根据 row ID 拼接旧 clip 路径。
 - 主 agent 还提供 `add_note`、`read_notes`、`read_skill(name)` 和 `agent_raise(reason)`。
@@ -121,16 +121,16 @@ System Prompt包含简单的任务说明和当前全量Stage 2 database schema, 
 
 - 仅主检索 agent 使用 compaction；`clip_qa`、judge、reflection、summarizer 和 updater 不使用。
 - harness 的 `context_limit` 为 262,144；vLLM后端通过模型官方YaRN配置启用314,573 token上限、factor=1.2，作为client compaction size之上的20%缓冲。
-- 每次主 agent 响应完成后读取服务端 usage，计算 `remaining = notes/INFRA.txt.context_limit - input_tokens - output_tokens`。
+- 每次主 agent 响应完成后读取服务端 usage，计算 `remaining = INFRA.txt.context_limit - input_tokens - output_tokens`。
 - 当 `remaining <= 50,000` 时，通过流式 runner 执行 `cancel(mode="after_turn")` 并排空事件，确保当前工具轮完整结束。
 - 在当前主检索 agent 的同一对话中追加固定 compaction 指令，要求它停止工具调用并总结当前对话。由原来的同一个 Agent instance 生成 trusted handoff，不 clone Agent，也不创建单独的 compactor agent。该输出作为新对话中的 trusted handoff，旧对话不再传入。
 - 第一次和第二次 compaction 后继续 rollout。第三次 compaction 输出生成后立即终止，状态设为 `compaction_limit`，分数设为 0，不调用 judge、不重试，直接进入重点分析绕圈原因的 reflection。
 - Reflection 永不 compaction；当其 remaining 小于等于 50k 时，禁止继续调用工具并强制输出最终 reflection 和 meta-reflection。
 
 ### "训练"过程
-1. batch size代表n个问题和每个问题m个平行rollout。每个rollout在prompt中获得当前SKILL列表并按需读取；一个batch得到20个结果后，用额外的judge call判断答案正确性并打分（满分5），这个分数记作s并log。正式训练的judge同样使用`Qwen/Qwen3.8-27B-FP8`。
-2. 把正确答案和s(而不只是s)都给每一个rollout, 然后告诉他这是正确答案和你的分数(注意! 不是另一个agent, 是告诉答题agent自己), 同时插入META-SKILL.md (META-SKILL.md不是最开始放进去的). 保留答题时原来的同一个Agent instance和同一对话继续reflection, 不clone Agent, 不创建新的reflection agent, 也不把trace序列化后交给另一个agent. 你现在要做的就是去重新复盘这个结果, 包括重新回顾自己的trace和重新对数据库检索和探索, 找到你为什么对/为什么错的原因, 把这个原因总结出来, 记错relection, 同时这个反思过程有什么经验(帮助下一次反思), 记错meta-relection. 两个反思都要去掉具体内容变得抽象化 可以辅助任何问题而不是本次情况. 本次情况可以作为案例, 但是要去掉敏感信息防止数据泄露(比如具体某天中午午饭内容). 注意要模型不光总结新的经验, 还要让她注意什么时候要更新/替换/修改旧的经验. 不然经验会越变越大而且出现重复/冲突/相似的内容.
-3. 每个问题的m个rollout反思由另一个call汇总，再由skill updater更新SKILL目录和`META-SKILL.md`。更新时既可以增加，也要删除、替换重复、冲突、过时或相似的内容。
+1. batch size代表n个问题和每个问题m个平行rollout。每个rollout在prompt中获得当前SKILL列表并按需读取；一个batch得到20个结果后，用额外的judge call判断答案正确性并打分（满分5），这个分数记作s并log。judge只接收reference_answer和candidate_answer, 不接收问题、trace、证据；评分标准是最终答案语义等价, 忽略附带的video id、时间戳、row id等标识符。正式训练的judge同样使用`Qwen/Qwen3.8-Flash-Next-FP8`。
+2. 把正确答案和s(而不只是s)都给每一个rollout, 然后告诉他这是正确答案和你的分数(注意! 不是另一个agent, 是告诉答题agent自己), 同时插入META-SKILL.md (META-SKILL.md不是最开始放进去的). 保留答题时原来的同一个Agent instance和同一对话继续reflection, 不clone Agent, 不创建新的reflection agent, 也不把trace序列化后交给另一个agent. 你现在要做的就是去重新复盘这个结果, 包括重新回顾自己的trace和重新对数据库检索和探索, 找到你为什么对/为什么错的原因, 把这个原因总结出来, 记错relection, 同时这个反思过程有什么经验(帮助下一次反思), 记错meta-relection. 两个反思都要去掉具体内容变得抽象化 可以辅助任何问题而不是本次情况. 本次情况可以作为案例, 但是要去掉敏感信息防止数据泄露(比如具体某天中午午饭内容). 注意要模型不光总结新的经验, 还要让她注意什么时候要更新/替换/修改旧的经验. 不然经验会越变越大而且出现重复/冲突/相似的内容. reflection阶段保留答题时的全部工具(run_sql、sql_qa、semantic_search、clip_qa、add_note、read_notes、read_skill、agent_raise), 只把`submit_answer`换成`submit_reflection`.
+3. 每个问题的m个rollout反思由另一个call汇总，再由skill updater更新SKILL目录和`META-SKILL.md`。更新时既可以增加，也要删除、替换重复、冲突、过时或相似的内容。updater每个batch跑一次, 一次agent loop输入该batch全部4个问题的summary, commit一次。
 4. 下一个batch使用更新后的SKILL目录继续，形成跨batch的反复迭代，而不是一次性update。
 
 #### Skill updater agent loop
@@ -141,9 +141,11 @@ System Prompt包含简单的任务说明和当前全量Stage 2 database schema, 
 5. updater失败后在同一个SKILL worktree原地重试，不清理本次失败已经产生但尚未commit的修改；下一次attempt读取当前status和diff后继续完成同一轮update。
 
 ### 训练与运行配置
-1. 正式训练每batch 4个问题、每个问题5个并行rollout，共20个并行rollout；一共3个epoch，每个epoch开始时重排训练问题顺序；服务并发上限为24。
-2. 主模型使用官方`Qwen/Qwen3.8-27B-FP8`。PD consumer运行在GPU 0,5，TP=2，端口8002，max-num-seqs 24，gpu-memory-utilization=0.90，不使用`--no-async-scheduling`，MTP speculative length为2，default chat-template kwargs保持`enable_thinking=true`和`preserve_thinking=true`；agent reasoning effort使用`medium`。改回27B是因为Next Flash在TP=2、gpu-memory-utilization=0.90下没有可用KV cache；官方FP8用于避开NVFP4重复reasoning问题；0.90为运行时动态加载encoder cache保留额外显存；TP=2是正式运行指定配置；MTP=2用于检查MTP=4是否造成吞吐过低。
-3. 正式训练client Docker暴露GPU 0,4,5，供W&B采集GPU指标；镜像使用`docker/training/Dockerfile`构建并安装`ffmpeg`，因为`sample_video`会调用`ffmpeg`。
+1. 正式训练每batch 4个问题、每个问题5个并行rollout，共20个并行rollout；一共3个epoch，每个epoch开始时重排训练问题顺序，seed由run参数给出，默认0，第k个epoch用seed+k；服务并发上限为24。
+1a. 采样参数(temperature/top_p/top_k等)一律不设, 使用服务端/generation_config默认; 本地Qwen和云端gpt-5.6-luna都只传reasoning effort。
+1b. W&B entity/project为`3dsmile/video-sql-v2`, weave同project。
+2. 主模型使用官方`Qwen/Qwen3.8-Flash-Next-FP8`。PD consumer运行在GPU 0,2,5,7，TP=4，端口8002，max-num-seqs 24，gpu-memory-utilization=0.90，不使用`--no-async-scheduling`，MTP speculative length为2，default chat-template kwargs保持`enable_thinking=true`和`preserve_thinking=true`；agent reasoning effort使用`medium`。Next Flash不使用TP=2，因为该配置此前没有可用KV cache；改用TP=4并保留官方FP8以避开NVFP4重复reasoning问题；MTP=2用于避免MTP=4造成吞吐过低。
+3. 正式训练client Docker暴露GPU 0,2,4,5,7，供W&B采集三个模型服务的GPU指标；镜像使用`docker/training/Dockerfile`构建并安装`ffmpeg`，因为`sample_video`会调用`ffmpeg`。
 4. 一个batch的全部rollout都失败时跳过该batch的updater；连续两个batch的全部rollout都失败时终止训练。
 5. OpenAI SDK内部`max_retries`为3。`--attempts`独立应用于整个rollout、judge、reflection、summarizer和updater，这些阶段分别最多按该值重试，正式值为3。
 6. vision encoder producer与embedding服务共同运行在GPU 4，各使用gpu-memory-utilization=0.45；encoder端口8001、max-num-seqs 24。它与PD consumer并行运行，通过共享EC storage提供encoder cache。`ECExampleConnector` consumer使用当前TP worker的CUDA device加载cache。`infra/responses_epd_proxy.py`在端口8000保持`/v1/responses`请求和SSE输出原样，只先把`input_image`发送到encoder producer；encoder失败时不把请求发送给PD。共享cache放在`/raid`，并在活跃Responses请求数归零后清空。EPD用于消除vision encoder与prefill/decode的共置干扰：v18在47个纯文本running时吞吐正常，进入多模态后即使只有21 running、0 waiting，SM利用率仍周期性降到14–35%，并且同一窗口出现新的encoder cache miss。定期清空避免无淘汰的connector填满根盘；current CUDA device避免每个TP worker都把`cuda`解析为逻辑`cuda:0`；GPU 4共置避免encoder占用PD GPU。
@@ -163,13 +165,13 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 2. 每次开始运行前, 使用REVIEW.md审查代码
 3. 使用git做记录, 以方便回滚, 实验结果需要配对的git hash, 注意修改.gitignore防止不需要的文件进入历史. git操作时, 不要用系统默认用户名, 创建一个虚拟的name=codex email=codex@localhost来分别作者
 4. 保持代码简洁干净, 不要过度设计和抽象, 这是科研代码
-5. 代码必须在batch level可重新开始
+5. 代码必须在batch level可重新开始. 中断后重启时, 未完成的batch重用已保存的已完成rollout(含reflection), 只补跑缺失的, 然后继续该batch的summarizer和updater
 6. 所有run必须log到wandb
 7. 本台机器有8xB200和2TB RAM, 性能强劲, 但是不要用很多GPU, 单个GPU经常跑不满, 所以尝试用单个GPU负载. 
 8. 全程前台监控, 但是不要频繁查看, 刚开始时每30s看一次, 后面逐步改成10min, 30min, 1h. 每次不要直接查看日志, 不然你会看到很多噪音. 脚本的详细log不要输出到stdout而是log文件, stdout只输出你需要监控的信息, 并且你只看这些. 
 9. 用openai的agent sdk来写agent, 不要自己手搓harness, 用response api, 保留过往reasoning
 10. 你的运行过程中除非停止, 不然所有消息都默认是你的自言自语用户不会读, 需要用户读取的milestone和log记录在AGENT_STDOUT.txt给用户看, 比如cost, 你自己做的决定, etc. AGENT_STDOUT是你输出给用户看的重要信息, wandb是记录run的过程. 
-11. 不运行preflight或smoke test；直接启动正式运行，只用正式运行的结果和完整trace检查正确性。
+11. 不运行preflight或smoke test；直接启动正式运行，只用正式运行的结果和完整trace检查正确性。不允许preflight是因为不要跑没用的测试浪费时间; 只要跑的东西后面可以接着用就没有问题, 比如正式跑一个batch, 停下来检查, 然后从第二个batch开始接着跑。
 12. 之前把trace交给独立reflection agent的实现及其正式run结果全部作废；不恢复旧代码或旧run，从当前已删除的`src/`、`tests/`和`skills/initial/`状态按本计划重新实现，并使用新的正式run目录从头执行。
 
 ## 实现决定
