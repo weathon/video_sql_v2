@@ -409,6 +409,11 @@ async def update_skills(
         skill_path(skill_dir, filename)
         return run_git(skill_dir, ["show", f"{commit}:{filename}"]).stdout
 
+    @function_tool(failure_error_function=tool_error_json)
+    async def skill_diff() -> str:
+        """Read the current uncommitted diff in the independent skill repository."""
+        return run_git(skill_dir, ["diff", "--", "*.md"]).stdout
+
     @function_tool(failure_error_function=None)
     async def stop(reason: str) -> str:
         """Stop after all skill edits are complete."""
@@ -421,6 +426,7 @@ async def update_skills(
         delete_skill_file,
         skill_history,
         read_skill_version,
+        skill_diff,
         stop,
     ]
     prompt = json.dumps(summaries, ensure_ascii=False)
@@ -451,7 +457,15 @@ async def update_skills(
                 False,
             )
             stopped = UpdaterStop.model_validate_json(str(result.final_output))
-            if run_git(skill_dir, ["diff", "--quiet"]).returncode == 0:
+            diff_result = subprocess.run(
+                ["git", "diff", "--quiet"],
+                cwd=skill_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if diff_result.returncode not in (0, 1):
+                raise RuntimeError(diff_result.stderr.decode())
+            if diff_result.returncode == 0:
                 raise RuntimeError("skill updater made no changes")
             for path in skill_dir.glob("*.md"):
                 content = path.read_text()
@@ -589,6 +603,14 @@ async def main_async(args: argparse.Namespace) -> None:
                 ]
                 results = await asyncio.gather(*tasks)
                 successful = [result for result in results if result["status"] != "failed"]
+                for result in successful:
+                    wandb_run.log(
+                        {
+                            "train/rollout_score": result["score"],
+                            "train/question_index": result["question_index"],
+                            "train/rollout_id": result["rollout_id"],
+                        }
+                    )
                 if not successful:
                     consecutive_failed_batches += 1
                     batch_root.mkdir(parents=True, exist_ok=True)
