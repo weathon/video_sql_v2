@@ -3,35 +3,21 @@ name = "video-sql-v2"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-  "anyascii",
-  "duckdb",
-  "faster-whisper==1.2.1",
-  "httpx",
-  "numpy",
-  "nvidia-cublas-cu12==12.8.3.14",
-  "nvidia-cudnn-cu12==9.7.1.26",
-  "openai",
-  "openai-agents",
-  "pillow",
-  "pydantic",
-  "pytest",
-  "pytest-asyncio",
-  "pyyaml>=6.0.3",
-  "torch==2.11.0",
-  "torchcodec==0.16.0",
-  "wandb",
-  "weave>=0.53.8",
+    "duckdb",
+    "httpx",
+    "numpy",
+    "openai",
+    "openai-agents",
+    "pillow",
+    "pydantic",
+    "python-dotenv",
+    "wandb",
+    "weave",
 ]
 
-[[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cu130" }
-torchcodec = { index = "pytorch-cu130" }
+[dependency-groups]
+dev = ["pytest"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-asyncio_mode = "auto"
+
