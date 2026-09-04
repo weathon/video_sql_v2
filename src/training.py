@@ -476,8 +476,9 @@ async def update_skills(
                 "META-SKILL.md. Ordinary skills require YAML frontmatter with name and "
                 "description plus Introduction, When to use, and Main content. Keep the set "
                 "concise by replacing duplicated, conflicting, obsolete, or similar guidance. "
-                "Every saved guidance point must include a short bold Reason explaining its "
-                "evidence; one Reason may cover a whole section. At the start of every attempt, "
+                "Every saved guidance point must include a short reason using the exact syntax "
+                "`**Reason:** explanation`; one Reason may cover a whole section. At the start "
+                "of every attempt, "
                 "call skill_state and skill_diff before making another edit. Before stop, call "
                 "skill_state and skill_diff again and stop only after inspecting their results."
             ),
