@@ -94,7 +94,7 @@ ORDER BY day;
 - `sample_video`：接受时间、fps 和 0–1000 整数裁剪坐标；返回覆盖请求区间的 caption 和带时间标记的 4×3 contact sheet，每页 12 帧，所有帧完整分页。contact sheet 和证据截图只向模型暴露文件名，不暴露宿主机绝对路径。
 - `run_sql(sql)`：只读执行，30 秒硬超时；最多向模型返回 100 行并说明是否存在更多结果；每个单元格最多返回前 500 字符及原长度。所有执行错误作为 tool result 返回给模型处理。
 - `sql_qa(sql, question)`：和run_sql类似, 接受一个sql命令, 同时接受一个we
-- `semantic_search(query, n, table)`：只允许查询已生成 embedding 的表，返回 table、row_id、video_id、start/end、规范化文本预览及 cosine score。
+- `semantic_search(query, n, table)`：只允许查询已生成 embedding 的表，返回 table、row_id、video_id、start/end、规范化文本预览及 cosine score。允许传入 threshold min/max 或 n-th 到 m-th 的 rank range；例如已经查看 top 10 后，可以直接查询第 10–20 名，不需要重新调用 top 20。
 - 主 agent 提供 `add_note`、`read_notes` 和 `agent_raise(reason)`；普通工具执行错误返回调用它的 agent 处理，`agent_raise(reason)` 保持为 agent 主动结束当前 rollout 的信号；正式运行中同一 rollout 最多按原设置重试 3 次。
 - 所有 agent loop 最大 100 turns；达到上限按整个 rollout 重试，不截断上下文或返回半成品。
 - SKILL部分不再是一个文件, 而是多个, 如何构建SKILL参考antrophic官方的SKILL(https://github.com/anthropics/skills/tree/main/skills/skill-creator), 注意, 虽然这个也可以被理解为META-SKILL但是和我们的不一样, 我们的META SKILL是如何反思, 这个是如何写SKILL, 是在反思完成后更新skill文件用的. 这意味着, 我们的skill不再是一个单独的md文件, 而是一个目录, 这个目录包括多个markdown文件, 每个文件对应一个特殊情况(比如: 查找特定时间任务), 包含介绍, 何时使用, 以及主要内容等. 内容可以包含SQL脚本示例 (类似于SKILL中的脚本文件, 但是我们不单独存储脚本而是放在markdown里面).
