@@ -188,4 +188,4 @@ notes/ 记录给你自己的note, 包括注意事项和踩过的坑, 被context 
 11. home目录满了时先清理home, 删除本次产生的无用内容.
 12. 过程中严谨访问未列出的目录和当前目录. 
 13. 正式容器不使用`--privileged`、`--network host`或`--gpus all`; 使用项目专用bridge network, 并且每个容器只暴露计划分配给它的GPU.
-14. 所有timeline/run都必须对模型完全隔离: agent-facing prompt、schema、tool参数、tool返回、skill内容和数据库视图只能暴露当前任务自己的世界; 不能暴露其它timeline/video/split的存在、名称、数量或可查询性.
+14. 所有timeline/run都必须对模型完全隔离: 后面直接创建day/week/month三个独立数据库, 每次run只连接当前任务自己的数据库; agent-facing prompt、schema、tool参数、tool返回和skill内容不能暴露其它timeline/video/split的存在、名称、数量或可查询性.
