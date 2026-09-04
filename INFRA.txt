@@ -54,6 +54,7 @@ docker run --name egolife-qwen3-vl-embedding-8b \
     --host 0.0.0.0 \
     --port 8000 \
     --gpu-memory-utilization 0.45 \
+    --mm-processor-cache-gb 0 \
     --trust-remote-code \
     --allowed-local-media-path /workspace/video_sql_v2/data/pilot/clips \
     --renderer-num-workers 4 \

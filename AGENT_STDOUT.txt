@@ -2,3 +2,4 @@
 2026-09-03: Created the seven required initial skill files. Confirmed the cached official dataset splits contain 266 Month training questions and 623/200/200 Month/Day/Week evaluation questions.
 2026-09-03: Confirmed physical GPUs 0,2,4,5,7 are available for the planned services. The embedding, EPD encoder, PD consumer, and proxy services are not yet running.
 2026-09-04: Blocked starting the embedding service with the exact INFRA.txt command. vLLM rejected Qwen/Qwen3-VL-Embedding-8B because pooling models cannot use --renderer-num-workers > 1 while the multimodal processor cache is enabled. I did not change the service arguments.
+2026-09-04: User approved disabling the embedding service multimodal processor cache. Runtime embedding calls only generate text query vectors; existing video embeddings are loaded from data/pilot/stage2/embedding_index. INFRA.txt now keeps --renderer-num-workers 4 and adds --mm-processor-cache-gb 0.
