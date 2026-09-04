@@ -743,6 +743,7 @@ async def run_main_with_compaction(
             context,
             context.model_bundle,
             trace_dir / f"compaction-{compactions:02d}.json",
+            allow_forced_submit=False,
         )
         agent.tools = original_tools
         compactions += 1
