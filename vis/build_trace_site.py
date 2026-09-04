@@ -40,7 +40,8 @@ def encode_media(job):
     subprocess.run(
         [
             "ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(source),
-            "-vf", "scale='min(640,iw)':-2", "-c:v", "libwebp", "-quality", "38",
+            "-vf", "scale='min(800,iw)':-2", "-c:v", "libaom-av1", "-still-picture", "1",
+            "-crf", "42", "-cpu-used", "6", "-pix_fmt", "yuv420p",
             str(target),
         ],
         check=True,
@@ -93,7 +94,7 @@ def main():
             error_path = attempt_dir / "error.json"
             error = clean(json.loads(error_path.read_text())) if error_path.exists() else None
             for name, source in sorted(media_by_name.items()):
-                relative = Path(epoch) / batch / question_dir / rollout_dir / attempt_dir.name / f"{Path(name).stem}.webp"
+                relative = Path(epoch) / batch / question_dir / rollout_dir / attempt_dir.name / f"{Path(name).stem}.avif"
                 media_jobs.append((source, DIST / "media" / relative))
                 match = re.match(r"(?:contact|evidence)-([0-9.]+)", name)
                 rollout_media.append({
