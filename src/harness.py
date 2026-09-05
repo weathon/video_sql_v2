@@ -943,6 +943,7 @@ class VideoSQLHarness:
         reference_answer: str,
         score: int,
     ) -> ReflectionSubmission:
+        agent = session.agent.clone()
         tool_calls = 0
 
         class ReflectionHooks(AgentHooks):
@@ -962,21 +963,21 @@ class VideoSQLHarness:
                 meta_reflection=meta_reflection,
             ).model_dump_json()
 
-        session.agent.tools = [
+        agent.tools = [
             tool
             for tool in self.answer_tools
             if tool.name != self.submit_answer_tool.name
         ] + [submit_reflection]
-        session.agent.tool_use_behavior = StopAtTools(
+        agent.tool_use_behavior = StopAtTools(
             stop_at_tool_names=["submit_reflection"]
         )
-        session.agent.hooks = ReflectionHooks()
-        session.agent.model_settings = dataclasses.replace(
+        agent.hooks = ReflectionHooks()
+        agent.model_settings = dataclasses.replace(
             self.context.model_settings, tool_choice="required"
         )
-        session.agent.reset_tool_choice = False
-        reflection_tools = session.agent.tools
-        reflection_behavior = session.agent.tool_use_behavior
+        agent.reset_tool_choice = False
+        reflection_tools = agent.tools
+        reflection_behavior = agent.tool_use_behavior
         meta_skill = (self.context.skill_dir / "META-SKILL.md").read_text()
         if session.status == "compaction_limit":
             reflection_prompt = (
@@ -997,13 +998,13 @@ class VideoSQLHarness:
             "meta-reflection.\n\nMETA-SKILL:\n"
             + meta_skill
         )
-        base_instructions = session.agent.instructions
+        base_instructions = agent.instructions
         input_items = session.history + [{"role": "user", "content": reflection_prompt}]
         compactions = 0
         while True:
             result, threshold, _ = await run_stream(
                 self.context,
-                session.agent,
+                agent,
                 input_items,
                 "reflection",
                 True,
@@ -1014,12 +1015,12 @@ class VideoSQLHarness:
                 return ReflectionSubmission.model_validate_json(str(result.final_output))
             if not threshold:
                 raise InvalidTrace("reflection ended without submit_reflection")
-            session.agent.tools = []
-            session.agent.tool_use_behavior = "run_llm_again"
-            session.agent.model_settings = self.context.model_settings
+            agent.tools = []
+            agent.tool_use_behavior = "run_llm_again"
+            agent.model_settings = self.context.model_settings
             compact_result, _, _ = await run_stream(
                 self.context,
-                session.agent,
+                agent,
                 result.to_input_list() + [{
                     "role": "user",
                     "content": (
@@ -1034,27 +1035,27 @@ class VideoSQLHarness:
                 False,
             )
             compactions += 1
-            session.agent.instructions = (
+            agent.instructions = (
                 base_instructions + "\n\nReflection handoff:\n"
                 + str(compact_result.final_output)
             )
-            session.agent.tool_use_behavior = reflection_behavior
-            session.agent.model_settings = dataclasses.replace(
+            agent.tool_use_behavior = reflection_behavior
+            agent.model_settings = dataclasses.replace(
                 self.context.model_settings, tool_choice="required"
             )
             if compactions == 3:
                 if tool_calls < 2:
                     raise InvalidTrace("reflection exhausted three compactions before two tool calls")
-                session.agent.tools = [submit_reflection]
+                agent.tools = [submit_reflection]
                 forced, _, _ = await run_stream(
                     self.context,
-                    session.agent,
+                    agent,
                     reflection_prompt + "\n\n" + FORCED_REFLECTION_INSTRUCTION,
                     "reflection-forced",
                     False,
                 )
                 return ReflectionSubmission.model_validate_json(str(forced.final_output))
-            session.agent.tools = reflection_tools
+            agent.tools = reflection_tools
             input_items = [{
                 "role": "user",
                 "content": reflection_prompt + f"\nReflection tool calls completed: {tool_calls}. "
