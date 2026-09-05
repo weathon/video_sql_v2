@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,40 +11,40 @@
   <aside class="sidebar">
     <a class="brand" href="#rollouts"><span class="logo">↗</span> trace<span class="brand-light">/lab</span></a>
     <div class="workspace-label">EXPERIMENT WORKSPACE</div>
-    <nav aria-label="主要导航">
+    <nav aria-label="Main navigation">
       <button class="nav active" data-view="rollouts"><span>▦</span> Rollout explorer <small id="navCount"></small></button>
       <button class="nav" data-view="skills"><span>⌘</span> Skill evolution <small id="versionCount"></small></button>
     </nav>
-    <div class="side-section"><span class="eyebrow">THIS RUN</span><strong id="model"></strong><p id="runName"></p><span class="snapshot-label">◷ 本地数据快照</span></div>
-    <div class="side-section"><span class="eyebrow">READ THE TRACE</span><p>从回答到工具证据，<br>再到技能如何改变。</p><div class="legend"><i class="dot green"></i> 高分 <i class="dot amber"></i> 部分得分 <i class="dot red"></i> 零分</div></div>
-    <footer><span class="eyebrow">DATA EXPORTED · UTC</span><p id="built"></p><button id="reload" class="text-button">↻ 重新载入导出数据</button></footer>
+    <div class="side-section"><span class="eyebrow">THIS RUN</span><strong id="model"></strong><p id="runName"></p><span class="snapshot-label">◷ Local data snapshot</span></div>
+    <div class="side-section"><span class="eyebrow">READ THE TRACE</span><p>From answers to evidence.<br>From reflection to better skills.</p><div class="legend"><i class="dot green"></i> 4–5 <i class="dot amber"></i> 1–3 <i class="dot red"></i> 0</div></div>
+    <footer><span class="eyebrow">DATA EXPORTED · UTC</span><p id="built"></p><button id="reload" class="text-button">↻ Reload exported data</button></footer>
   </aside>
   <main>
     <header class="topbar"><span>Workspace <span class="slash">/</span> <b id="breadcrumb">Rollout explorer</b></span><span class="local-tag">● LOCAL EXPLORER</span></header>
     <div class="page">
-      <section class="page-heading"><div><span class="eyebrow accent">OBSERVE. INSPECT. UNDERSTAND.</span><h1 id="heading">Every step tells a story<span>.</span></h1><p id="subtitle">探索 rollout 的回答、推理和工具往返，追溯技能更新。</p></div><div class="heading-mark" aria-hidden="true">✳</div></section>
-      <section id="metrics" class="metrics" aria-label="运行概览"></section>
+      <section class="page-heading"><div><span class="eyebrow accent">OBSERVE. INSPECT. UNDERSTAND.</span><h1 id="heading">Every step tells a story<span>.</span></h1><p id="subtitle">Explore answers, reasoning, and tool calls. Follow how skills evolve.</p></div><div class="heading-mark" aria-hidden="true">✳</div></section>
+      <section id="metrics" class="metrics" aria-label="Run overview"></section>
       <section id="rolloutView">
-        <div class="section-heading"><h2>Batch landscape</h2><span>点击 batch 筛选 · 柱高为已评分 rollout 的平均分</span></div>
+        <div class="section-heading"><h2>Batch landscape</h2><span>Click a batch to filter · Bars show mean score</span></div>
         <div id="landscape" class="landscape"></div>
-        <div class="explorer-heading"><div><h2>Rollout explorer <span id="resultCount" class="count"></span></h2><p>选择一条轨迹，沿着证据向下探索。</p></div><button class="text-button" id="clearFilters">清除筛选 ↗</button></div>
+        <div class="explorer-heading"><div><h2>Rollout explorer <span id="resultCount" class="count"></span></h2><p>Pick a rollout. Follow the evidence.</p></div><button class="text-button" id="clearFilters">Reset filters ↗</button></div>
         <div class="filters">
-          <label class="search-box"><span>⌕</span><input id="search" type="search" placeholder="搜索题目、回答、Q ID…" aria-label="搜索 rollout"><kbd>/</kbd></label>
-          <select id="scoreFilter" aria-label="得分筛选"><option value="all">全部得分</option><option value="none">无结果</option></select>
-          <select id="toolFilter" aria-label="工具筛选"><option value="all">全部工具</option></select>
-          <select id="sort" aria-label="排序"><option value="original">Batch 顺序</option><option value="low">得分从低到高</option><option value="high">得分从高到低</option><option value="calls">工具调用最多</option></select>
+          <label class="search-box"><span>⌕</span><input id="search" type="search" placeholder="Search questions, answers, Q IDs…" aria-label="Search rollouts"><kbd>/</kbd></label>
+          <select id="scoreFilter" aria-label="Filter by score"><option value="all">All scores</option><option value="none">No result</option></select>
+          <select id="toolFilter" aria-label="Filter by tool"><option value="all">All tools</option></select>
+          <select id="sort" aria-label="Sort order"><option value="original">Batch order</option><option value="low">Score: low to high</option><option value="high">Score: high to low</option><option value="calls">Most tool calls</option></select>
         </div>
-        <div class="explorer-grid"><section class="rollout-browser"><div class="list-header"><span>QUESTION / ROLLOUT</span><span>SCORE</span></div><div id="rolloutList"></div><div id="pagination" class="pagination"></div></section><section id="detail" class="detail" aria-live="polite"><div class="empty">选择一条 rollout 查看实际执行记录。</div></section></div>
+        <div class="explorer-grid"><section class="rollout-browser"><div class="list-header"><span>QUESTION / ROLLOUT</span><span>SCORE</span></div><div id="rolloutList"></div><div id="pagination" class="pagination"></div></section><section id="detail" class="detail" aria-live="polite"><div class="empty">Select a rollout to inspect its execution.</div></section></div>
       </section>
       <section id="skillView" hidden>
-        <div class="section-heading"><h2>Skill evolution</h2><span>快照为对应 batch 更新后的技能；首个快照作为比较基线。</span></div>
+        <div class="section-heading"><h2>Skill evolution</h2><span>Post-update snapshots · First snapshot is the comparison baseline.</span></div>
         <div id="versionTimeline" class="version-timeline"></div>
         <div id="updateContext"></div>
-        <div class="skill-grid"><section class="skill-browser"><label class="search-box"><span>⌕</span><input id="skillSearch" type="search" placeholder="搜索技能名或内容" aria-label="搜索技能"></label><div id="skillList"></div></section><section class="skill-content"><div id="skillHeader"></div><div id="skillBody"></div></section></div>
+        <div class="skill-grid"><section class="skill-browser"><label class="search-box"><span>⌕</span><input id="skillSearch" type="search" placeholder="Search skill name or content" aria-label="Search skills"></label><div id="skillList"></div></section><section class="skill-content"><div id="skillHeader"></div><div id="skillBody"></div></section></div>
       </section>
     </div>
   </main>
-  <dialog id="lightbox"><button id="closeImage" aria-label="关闭图片">×</button><img id="largeImage" alt="轨迹媒体原图"><p id="imageCaption"></p></dialog>
+  <dialog id="lightbox"><button id="closeImage" aria-label="Close image">×</button><img id="largeImage" alt="Original trace media"><p id="imageCaption"></p></dialog>
   <script>window.BOARD_CACHE={};</script>
   <script src="data/index.js"></script>
   <script src="board.js"></script>

@@ -15,7 +15,7 @@ function loadData(key) {
     const script = document.createElement('script');
     script.src = 'data/' + key + '.js';
     script.onload = () => { script.remove(); resolve(window.BOARD_CACHE[key]); };
-    script.onerror = () => { script.remove(); reject(new Error('无法加载导出文件：' + script.src)); };
+    script.onerror = () => { script.remove(); reject(new Error('Cannot load exported file: ' + script.src)); };
     document.head.append(script);
   });
   pending.set(key, promise);
@@ -53,8 +53,8 @@ function renderList() {
   const pages = Math.max(1, Math.ceil(rows.length/30));
   state.page = Math.min(state.page, pages-1);
   $('resultCount').textContent = rows.length;
-  $('rolloutList').innerHTML = rows.slice(state.page*30,(state.page+1)*30).map(r => `<button class="rollout-row ${state.selected===r.id?'active':''}" data-rollout="${esc(r.id)}" aria-pressed="${state.selected===r.id}"><div><span class="row-id">${esc(r.batch.replace('epoch-','E').replace('/batch-',' / B'))} · Q${r.question_id} / R${r.rollout}</span><span class="row-question">${esc(r.question===null?'没有 answer trace，题目不可用':r.question)}</span><span class="row-meta">${r.calls} calls · ${r.traces} segments${r.errors?` · ${r.errors} errors`:''}${r.score===null?' · no result':''}</span></div><span class="score ${scoreClass(r.score)}">${r.score===null?'—':r.score}</span></button>`).join('') || '<div class="empty">没有匹配的 rollout。<br>调整搜索词或清除筛选。</div>';
-  $('pagination').innerHTML = `<button data-page="-1" ${state.page===0?'disabled':''} aria-label="上一页">←</button><span>${state.page+1} / ${pages} · ${rows.length} results</span><button data-page="1" ${state.page>=pages-1?'disabled':''} aria-label="下一页">→</button>`;
+  $('rolloutList').innerHTML = rows.slice(state.page*30,(state.page+1)*30).map(r => `<button class="rollout-row ${state.selected===r.id?'active':''}" data-rollout="${esc(r.id)}" aria-pressed="${state.selected===r.id}"><div><span class="row-id">${esc(r.batch.replace('epoch-','E').replace('/batch-',' / B'))} · Q${r.question_id} / R${r.rollout}</span><span class="row-question">${esc(r.question===null?'Question unavailable: no answer trace':r.question)}</span><span class="row-meta">${r.calls} calls · ${r.traces} segments${r.errors?` · ${r.errors} errors`:''}${r.score===null?' · no result':''}</span></div><span class="score ${scoreClass(r.score)}">${r.score===null?'—':r.score}</span></button>`).join('') || '<div class="empty">No matching rollouts.<br>Try another query or reset the filters.</div>';
+  $('pagination').innerHTML = `<button data-page="-1" ${state.page===0?'disabled':''} aria-label="Previous">←</button><span>${state.page+1} / ${pages} · ${rows.length} results</span><button data-page="1" ${state.page>=pages-1?'disabled':''} aria-label="Next">→</button>`;
 }
 
 async function selectRollout(id) {
@@ -63,13 +63,13 @@ async function selectRollout(id) {
   state.mediaPage = 0;
   history.replaceState(null,'','#rollout='+encodeURIComponent(id));
   renderList();
-  $('detail').innerHTML = '<div class="empty">正在载入这条轨迹…</div>';
+  $('detail').innerHTML = '<div class="empty">Loading this rollout…</div>';
   const detail = await loadData(id);
   if (request !== selectionRequest) return;
   currentDetail = detail;
   const row = data.rollouts.find(r => r.id===id);
   const siblings = data.rollouts.filter(r => r.batch===row.batch && r.question_id===row.question_id);
-  $('detail').innerHTML = `<div class="detail-top"><div class="detail-eyebrow"><span>Q${row.question_id} / R${row.rollout} · ${esc(row.batch)}</span><span class="score ${scoreClass(row.score)}">${row.score===null?'—':row.score}</span></div><h3>${esc(row.question===null?'没有 answer trace，题目不可用':row.question)}</h3><div class="detail-meta"><span>${esc(row.status)}</span><span>${row.calls} tool calls</span><span>${detail.media.length} media</span></div><div class="siblings"><span>同题对比</span>${siblings.map(r => `<button data-rollout="${esc(r.id)}" class="${r.id===id?'active':''}">R${r.rollout} · ${r.score===null?'—':r.score}</button>`).join('')}</div></div><div class="tabs" role="tablist">${[['answer','回答 & 反思'],['trace','执行轨迹'],['media','媒体证据'],['learning','学习链路']].map(([key,label]) => `<button data-tab="${key}" role="tab" aria-selected="${state.tab===key}" class="${state.tab===key?'active':''}">${label}</button>`).join('')}</div><div id="detailBody" class="detail-body"></div>`;
+  $('detail').innerHTML = `<div class="detail-top"><div class="detail-eyebrow"><span>Q${row.question_id} / R${row.rollout} · ${esc(row.batch)}</span><span class="score ${scoreClass(row.score)}">${row.score===null?'—':row.score}</span></div><h3>${esc(row.question===null?'Question unavailable: no answer trace':row.question)}</h3><div class="detail-meta"><span>${esc(row.status)}</span><span>${row.calls} tool calls</span><span>${detail.media.length} media</span></div><div class="siblings"><span>Same question</span>${siblings.map(r => `<button data-rollout="${esc(r.id)}" class="${r.id===id?'active':''}">R${r.rollout} · ${r.score===null?'—':r.score}</button>`).join('')}</div></div><div class="tabs" role="tablist">${[['answer','Answer & reflection'],['trace','Execution trace'],['media','Media evidence'],['learning','Learning path']].map(([key,label]) => `<button data-tab="${key}" role="tab" aria-selected="${state.tab===key}" class="${state.tab===key?'active':''}">${label}</button>`).join('')}</div><div id="detailBody" class="detail-body"></div>`;
   renderDetail();
 }
 
@@ -80,34 +80,34 @@ function renderDetail() {
   const body = $('detailBody');
   if (state.tab==='answer') {
     const r = detail.result;
-    body.innerHTML = (r ? `<div class="answer-grid"><article class="answer-card"><span class="label">MODEL ANSWER</span><p>${esc(r.answer)}</p></article><article class="answer-card reference"><span class="label">REFERENCE ANSWER</span><p>${esc(r.reference_answer)}</p></article></div><details open><summary>Reflection · 任务反思</summary><div class="prose">${esc(r.reflection)}</div></details>${r.meta_reflection ? `<details><summary>Meta reflection · 反思方法</summary><div class="prose">${esc(r.meta_reflection)}</div></details>`:''}<p class="trace-links"><a href="${data.source+row.id}/result.json" target="_blank" rel="noopener">查看原始 result.json ↗</a></p>` : '<div class="empty">导出时没有 result.json；不推断运行状态或得分。</div>') + detail.errors.map(e => `<details><summary>错误记录 · ${esc(e.path.split('/').slice(-2).join('/'))}</summary><pre class="error">${esc(pretty(e.error))}</pre></details>`).join('');
+    body.innerHTML = (r ? `<div class="answer-grid"><article class="answer-card"><span class="label">MODEL ANSWER</span><p>${esc(r.answer)}</p></article><article class="answer-card reference"><span class="label">REFERENCE ANSWER</span><p>${esc(r.reference_answer)}</p></article></div><details open><summary>Reflection</summary><div class="prose">${esc(r.reflection)}</div></details>${r.meta_reflection ? `<details><summary>Meta reflection</summary><div class="prose">${esc(r.meta_reflection)}</div></details>`:''}<p class="trace-links"><a href="${data.source+row.id}/result.json" target="_blank" rel="noopener">Open original result.json ↗</a></p>` : '<div class="empty">No result.json at export time. Status and score are unknown.</div>') + detail.errors.map(e => `<details><summary>Error record · ${esc(e.path.split('/').slice(-2).join('/'))}</summary><pre class="error">${esc(pretty(e.error))}</pre></details>`).join('');
   } else if (state.tab==='trace') {
     const groups = [...new Set(detail.traces.map(t => t.group))];
-    body.innerHTML = `<div class="trace-toolbar"><select id="traceGroup" aria-label="轨迹阶段"><option value="all">全部阶段</option>${groups.map(g => `<option>${esc(g)}</option>`).join('')}</select><select id="eventType" aria-label="事件类型"><option value="all">全部事件</option><option value="function_call">工具输入</option><option value="function_call_output">工具返回</option><option value="reasoning">推理</option></select><input id="traceSearch" type="search" placeholder="在已展开片段中搜索…" aria-label="搜索已展开事件"></div><div id="traceList"></div>`;
+    body.innerHTML = `<div class="trace-toolbar"><select id="traceGroup" aria-label="Trace stage"><option value="all">All stages</option>${groups.map(g => `<option>${esc(g)}</option>`).join('')}</select><select id="eventType" aria-label="Event type"><option value="all">All events</option><option value="function_call">Tool inputs</option><option value="function_call_output">Tool outputs</option><option value="reasoning">Reasoning</option></select><input id="traceSearch" type="search" placeholder="Search expanded segments…" aria-label="Search expanded events"></div><div id="traceList"></div>`;
     renderTraces(detail.traces, $('traceList'));
     $('traceGroup').onchange = () => document.querySelectorAll('#traceList>.trace').forEach(t => { t.hidden=$('traceGroup').value!=='all' && t.dataset.group!==$('traceGroup').value; });
     $('eventType').onchange = filterEvents;
     $('traceSearch').oninput = filterEvents;
   } else if (state.tab==='media') {
     const start=state.mediaPage*24;
-    body.innerHTML = `<p class="media-note">原始媒体 · 按文件路径排序 · 点击查看完整图像</p><div class="media-grid">${detail.media.slice(start,start+24).map(path => `<button class="media-tile" data-image="${esc(data.source+path)}" data-caption="${esc(path)}"><img loading="lazy" src="${esc(data.source+path)}" alt="${esc(path.split('/').at(-1))}"><span>${esc(path.split('/').slice(-3).join('/'))}</span></button>`).join('')}</div>${detail.media.length===0?'<div class="empty">这条 rollout 没有媒体文件。</div>':`<div class="pagination"><button data-media-page="-1" ${state.mediaPage===0?'disabled':''}>← 上一页</button><span>${start+1}–${Math.min(start+24,detail.media.length)} / ${detail.media.length}</span><button data-media-page="1" ${start+24>=detail.media.length?'disabled':''}>下一页 →</button></div>`}`;
+    body.innerHTML = `<p class="media-note">原始媒体 · 按文件路径Sort order · 点击查看完整图像</p><div class="media-grid">${detail.media.slice(start,start+24).map(path => `<button class="media-tile" data-image="${esc(data.source+path)}" data-caption="${esc(path)}"><img loading="lazy" src="${esc(data.source+path)}" alt="${esc(path.split('/').at(-1))}"><span>${esc(path.split('/').slice(-3).join('/'))}</span></button>`).join('')}</div>${detail.media.length===0?'<div class="empty">No media files for this rollout.</div>':`<div class="pagination"><button data-media-page="-1" ${state.mediaPage===0?'disabled':''}>← Previous</button><span>${start+1}–${Math.min(start+24,detail.media.length)} / ${detail.media.length}</span><button data-media-page="1" ${start+24>=detail.media.length?'disabled':''}>Next →</button></div>`}`;
   } else {
     const batch = data.batches.find(b => b.id===row.batch);
     const version = data.versions.findIndex(v => v.id===row.batch.replace('/','-'));
-    body.innerHTML = `<span class="label">ROLLOUT → QUESTION SUMMARY → SKILL UPDATE</span>${detail.summary?`<details open><summary>同题 rollout 的学习总结</summary><div class="prose">${esc(detail.summary.summary)}</div></details>`:'<p class="prose">没有保存同题总结。</p>'}<div id="summaryTraces"></div>${batch.update?`<details><summary>Batch updater 的更新说明</summary><div class="prose">${esc(batch.update.reason)}</div></details>`:'<p class="prose">这个 batch 尚无 updater 结果文件。</p>'}${version>=0?`<button class="small-button" data-skill-version="${version}">查看此 batch 更新后的技能 →</button>`:''}`;
+    body.innerHTML = `<span class="label">ROLLOUT → QUESTION SUMMARY → SKILL UPDATE</span>${detail.summary?`<details open><summary>Learning summary across this question’s rollouts</summary><div class="prose">${esc(detail.summary.summary)}</div></details>`:'<p class="prose">No saved question summary.</p>'}<div id="summaryTraces"></div>${batch.update?`<details><summary>Batch updater’s change rationale</summary><div class="prose">${esc(batch.update.reason)}</div></details>`:'<p class="prose">No updater result file for this batch.</p>'}${version>=0?`<button class="small-button" data-skill-version="${version}">Explore skills after this batch →</button>`:''}`;
     renderTraces(detail.summary_traces, $('summaryTraces'));
   }
 }
 
 function renderTraces(records, target) {
-  target.innerHTML = records.map(t => `<details class="trace" data-key="${esc(t.key)}" data-group="${esc(t.group)}"><summary><span class="trace-summary-name">${esc(t.attempt)} ${esc(t.file)}</span><small>${t.events} events · ${t.complete?'complete':'incomplete'}</small></summary><div class="trace-body"><span class="label">展开以载入完整事件</span></div></details>`).join('') || '<div class="empty">没有保存 trace 片段。</div>';
+  target.innerHTML = records.map(t => `<details class="trace" data-key="${esc(t.key)}" data-group="${esc(t.group)}"><summary><span class="trace-summary-name">${esc(t.attempt)} ${esc(t.file)}</span><small>${t.events} events · ${t.complete?'complete':'incomplete'}</small></summary><div class="trace-body"><span class="label">Expand to load all events</span></div></details>`).join('') || '<div class="empty">No saved trace segments.</div>';
   target.querySelectorAll('details.trace').forEach(node => {
     node.addEventListener('toggle', async () => {
       if (!node.open || node.dataset.loaded) return;
       node.dataset.loaded='loading';
       const trace = await loadData(node.dataset.key);
       const calls = new Map(trace.history.filter(e => e.type==='function_call').map(e => [e.call_id,e.name]));
-      node.querySelector('.trace-body').innerHTML = `<div class="trace-links"><a href="${esc(data.source+node.dataset.key)}" target="_blank" rel="noopener">原始 JSON（含 raw_responses）↗</a></div>` + trace.history.map((e,i) => {
+      node.querySelector('.trace-body').innerHTML = `<div class="trace-links"><a href="${esc(data.source+node.dataset.key)}" target="_blank" rel="noopener">Original JSON (including raw_responses) ↗</a></div>` + trace.history.map((e,i) => {
         const type=e.type || e.role;
         const isCall=type==='function_call', isOutput=type==='function_call_output';
         const name=isCall?e.name:isOutput?(calls.has(e.call_id)?calls.get(e.call_id):'unmatched call_id'):type;
@@ -119,7 +119,7 @@ function renderTraces(records, target) {
         const label=`${String(i+1).padStart(2,'0')} · ${type} · ${name}${e.call_id?' · '+e.call_id:''}`;
         const text=`<pre>${esc(content)}</pre>`;
         // Raw JSON text stays intact, including error returns and source truncation markers.
-        return `<article class="event ${isCall?'call':isOutput?'output':type==='user'?'user':''}" data-type="${esc(type)}"><div class="event-label">${esc(label)}</div>${type==='reasoning'||type==='user'?`<details><summary>${type==='reasoning'?'展开完整推理':'展开输入提示'}</summary>${text}</details>`:text}</article>`;
+        return `<article class="event ${isCall?'call':isOutput?'output':type==='user'?'user':''}" data-type="${esc(type)}"><div class="event-label">${esc(label)}</div>${type==='reasoning'||type==='user'?`<details><summary>${type==='reasoning'?'Expand full reasoning':'Expand input prompt'}</summary>${text}</details>`:text}</article>`;
       }).join('') + (trace.final_output===null?'':`<details><summary>Final output</summary><pre class="prose">${esc(pretty(trace.final_output))}</pre></details>`);
       node.dataset.loaded='true';
       if ($('eventType')) filterEvents();
@@ -146,7 +146,7 @@ function showView(view) {
   $('skillView').hidden=view!=='skills';
   $('breadcrumb').textContent=view==='skills'?'Skill evolution':'Rollout explorer';
   $('heading').innerHTML=view==='skills'?'Watch the learning unfold<span>.</span>':'Every step tells a story<span>.</span>';
-  $('subtitle').textContent=view==='skills'?'查看每个 batch 后的技能内容、差异，以及产生更新的真实记录。':'探索 rollout 的回答、推理和工具往返，追溯技能更新。';
+  $('subtitle').textContent=view==='skills'?'Inspect skill versions, line-by-line changes, and the traces behind each update.':'Explore answers, reasoning, and tool calls. Follow how skills evolve.';
   document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active',b.dataset.view===view));
   if (view==='skills') renderSkills();
   else { renderList(); history.replaceState(null,'',state.selected?'#rollout='+encodeURIComponent(state.selected):'#rollouts'); }
@@ -155,15 +155,15 @@ function showView(view) {
 function renderSkills() {
   const version=data.versions[state.version];
   history.replaceState(null,'','#skills='+encodeURIComponent(version.id));
-  $('versionTimeline').innerHTML=data.versions.map((v,i) => `<button class="version ${i===state.version?'active':''}" data-version="${i}" aria-pressed="${i===state.version}"><strong>${v.id==='skills'?'Current files':v.id.replace('epoch-','E').replace('-batch-',' / B')}</strong><span>${v.baseline?'首个保存快照':Object.keys(v.changes).length+' files changed'}</span></button>`).join('');
+  $('versionTimeline').innerHTML=data.versions.map((v,i) => `<button class="version ${i===state.version?'active':''}" data-version="${i}" aria-pressed="${i===state.version}"><strong>${v.id==='skills'?'Current files':v.id.replace('epoch-','E').replace('-batch-',' / B')}</strong><span>${v.baseline?'First saved snapshot':Object.keys(v.changes).length+' files changed'}</span></button>`).join('');
   const batch=data.batches.find(b => b.id.replace('/','-')===version.id);
-  $('updateContext').innerHTML=`<article class="update-card"><span class="label">${version.id==='skills'?'CURRENT FILE CONTENTS':'POST-UPDATE SNAPSHOT'}</span><div class="prose">${version.id==='skills'?'当前 skills/ 文件内容，与最后一个保存快照比较。':batch&&batch.update?esc(batch.update.reason):'此快照没有对应的 updater 结果。'}</div>${batch&&batch.update?`<div class="update-actions"><button class="text-button" data-show-batch="${esc(batch.id)}">查看这个 batch 的 rollouts ↗</button><span>commit ${esc(batch.update.skill_commit)}</span></div><details><summary>展开 updater 执行记录</summary><div id="updaterTraces"></div></details>`:''}</article>`;
+  $('updateContext').innerHTML=`<article class="update-card"><span class="label">${version.id==='skills'?'CURRENT FILE CONTENTS':'POST-UPDATE SNAPSHOT'}</span><div class="prose">${version.id==='skills'?'Current skills/ contents, compared with the last saved snapshot.':batch&&batch.update?esc(batch.update.reason):'No matching updater result for this snapshot.'}</div>${batch&&batch.update?`<div class="update-actions"><button class="text-button" data-show-batch="${esc(batch.id)}">Explore this batch’s rollouts ↗</button><span>commit ${esc(batch.update.skill_commit)}</span></div><details><summary>Inspect updater execution</summary><div id="updaterTraces"></div></details>`:''}</article>`;
   if ($('updaterTraces')) renderTraces(batch.traces,$('updaterTraces'));
   const names=[...new Set([...Object.keys(version.files),...Object.keys(version.changes)])];
   const query=$('skillSearch').value.trim().toLowerCase();
   const shown=names.filter(name => `${name} ${Object.hasOwn(version.files,name)?version.files[name]:''}`.toLowerCase().includes(query));
   if (!names.includes(state.skill)) state.skill=Object.keys(version.changes)[0] || names[0];
-  $('skillList').innerHTML=shown.map(name => `<button class="skill-item ${state.skill===name?'active':''}" data-skill="${esc(name)}"><span>${esc(name.replace('.md',''))}</span>${Object.hasOwn(version.changes,name)?'<span class="change-dot" title="相较上一版本有变化">●</span>':''}</button>`).join('') || '<div class="empty">没有匹配的技能。</div>';
+  $('skillList').innerHTML=shown.map(name => `<button class="skill-item ${state.skill===name?'active':''}" data-skill="${esc(name)}"><span>${esc(name.replace('.md',''))}</span>${Object.hasOwn(version.changes,name)?'<span class="change-dot" title="Changed since previous version">●</span>':''}</button>`).join('') || '<div class="empty">No matching skills.</div>';
   renderSkillContent();
 }
 
@@ -171,10 +171,10 @@ function renderSkillContent() {
   const version=data.versions[state.version], name=state.skill;
   const changed=Object.hasOwn(version.changes,name);
   const present=Object.hasOwn(version.files,name);
-  $('skillHeader').innerHTML=`<strong>${esc(name)}</strong><p>${version.baseline?'首个保存快照；没有更早的快照用于比较。':changed?'相较上一保存版本有变化。':'与上一保存版本内容相同。'}</p><div class="skill-controls"><button class="small-button ${state.skillMode==='diff'?'active':''}" data-skill-mode="diff">± 版本差异</button><button class="small-button ${state.skillMode==='content'?'active':''}" data-skill-mode="content">完整内容</button></div>`;
-  if (state.skillMode==='content') $('skillBody').innerHTML=present?`<pre class="skill-markdown">${esc(version.files[name])}</pre>`:'<div class="empty">此版本已删除该技能。</div>';
-  else if (version.baseline) $('skillBody').innerHTML='<div class="empty">首个保存快照，未将全部内容误记为新增。<br>点击「完整内容」阅读技能。</div>';
-  else if (!changed) $('skillBody').innerHTML='<div class="empty">该技能与上一版本没有差异。</div>';
+  $('skillHeader').innerHTML=`<strong>${esc(name)}</strong><p>${version.baseline?'First saved snapshot; no earlier snapshot to compare.':changed?'Changed since the previous saved version.':'Identical to the previous saved version.'}</p><div class="skill-controls"><button class="small-button ${state.skillMode==='diff'?'active':''}" data-skill-mode="diff">± Changes</button><button class="small-button ${state.skillMode==='content'?'active':''}" data-skill-mode="content">Full content</button></div>`;
+  if (state.skillMode==='content') $('skillBody').innerHTML=present?`<pre class="skill-markdown">${esc(version.files[name])}</pre>`:'<div class="empty">This skill was deleted in this version.</div>';
+  else if (version.baseline) $('skillBody').innerHTML='<div class="empty">No earlier snapshot to compare.<br>Read this skill in the Full content view.</div>';
+  else if (!changed) $('skillBody').innerHTML='<div class="empty">No changes to this skill since the previous version.</div>';
   else $('skillBody').innerHTML=`<pre class="diff">${version.changes[name].split('\n').map(line => `<span class="${line.startsWith('+')?'add':line.startsWith('-')?'remove':line.startsWith('@@')?'hunk':''}">${esc(line)}</span>`).join('')}</pre>`;
 }
 
@@ -200,7 +200,7 @@ $('runName').textContent=data.run;
 $('built').textContent=data.built.replace('T',' ').slice(0,19);
 $('navCount').textContent=data.rollouts.length;
 $('versionCount').textContent=data.versions.length-1;
-for (const score of [...new Set(data.rollouts.filter(r=>r.score!==null).map(r=>r.score))].sort((a,b)=>a-b)) $('scoreFilter').insertAdjacentHTML('beforeend',`<option value="${score}">得分 ${score}</option>`);
+for (const score of [...new Set(data.rollouts.filter(r=>r.score!==null).map(r=>r.score))].sort((a,b)=>a-b)) $('scoreFilter').insertAdjacentHTML('beforeend',`<option value="${score}">Score ${score}</option>`);
 for (const tool of Object.keys(data.tools).sort()) $('toolFilter').insertAdjacentHTML('beforeend',`<option value="${esc(tool)}">${esc(tool)}</option>`);
 for (const id of ['search','scoreFilter','toolFilter','sort']) $(id).addEventListener(id==='search'?'input':'change',()=>{state.page=0;renderList();});
 $('skillSearch').oninput=renderSkills;
