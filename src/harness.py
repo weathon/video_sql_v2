@@ -539,16 +539,43 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any, Any]:
             normalize_text(question) + "\n\nSQL result:\n" + serialized,
         )
 
-    @function_tool(failure_error_function=tool_error_json)
+    def semantic_search_error(tool_context: Any, error: Exception) -> str:
+        return json.dumps(
+            {
+                "error": str(error),
+                "arguments": tool_context.tool_arguments,
+                "expected_schema": semantic_search.params_json_schema,
+                "correction": (
+                    "For argument validation errors, correct the arguments and retry semantic_search. "
+                    "Use JSON null for unbounded min_score/max_score, not the string 'None'. "
+                    "Use one of the table names in the schema."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    @function_tool(failure_error_function=semantic_search_error)
     async def semantic_search(
         query: str,
-        table: str,
+        table: Literal[
+            "episodes", "entities", "semantic_triples", "topic_facts",
+            "event_steps", "object_states", "visual_clips",
+        ],
         n: int,
         rank_start: int,
-        min_score: float | None,
-        max_score: float | None,
+        min_score: float | None = None,
+        max_score: float | None = None,
     ) -> str:
-        """Search one embedded table. rank_start is one-based and n is the number of ranks."""
+        """Search one embedded table. rank_start is one-based and n is the number of ranks.
+
+        Args:
+            query: Semantic search text.
+            table: One of the embedded tables listed in the schema.
+            n: Number of ranks to return, greater than zero.
+            rank_start: First rank to return, starting at one.
+            min_score: Inclusive lower score bound; JSON null means no lower bound.
+            max_score: Inclusive upper score bound; JSON null means no upper bound.
+        """
         if table not in SEARCH_TABLES:
             raise ValueError(f"table must be one of {sorted(SEARCH_TABLES)}")
         if n <= 0 or rank_start <= 0:
