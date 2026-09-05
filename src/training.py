@@ -484,6 +484,11 @@ async def update_skills(
                 "does not exist. You may edit META-SKILL.md and ROOT-SKILL.md, but never delete "
                 "either. ROOT-SKILL.md is always shown to the retrieval agent and tells it "
                 "when to load which skills; maintain its routing guidance when skills change. "
+                "Write established lessons only from reflections that found the correct answer "
+                "through evidence. For unresolved reflections, decide how to handle their very "
+                "small proposed patches; any retained possible error cause must remain explicitly "
+                "uncertain and unverified, not become a confirmed rule. Keep this requirement "
+                "in META-SKILL.md when editing it. "
                 "Consider each batch update a small learning-rate step with gradient clipping: "
                 "prefer a few localized, evidence-supported edits and preserve useful existing "
                 "guidance. Consider narrowing or qualifying a rule before replacing a whole "
@@ -673,6 +678,12 @@ async def main_async(args: argparse.Namespace) -> None:
                 ]
                 results = await asyncio.gather(*tasks)
                 successful = [result for result in results if result["status"] != "failed"]
+                fully_correct_portion = sum(result["score"] > 4 for result in successful) / len(results)
+                wandb_run.log({
+                    "train/epoch": epoch,
+                    "train/batch": batch_index,
+                    "train/fully_correct_portion": fully_correct_portion,
+                })
                 for result in successful:
                     wandb_run.log(
                         {
@@ -685,7 +696,10 @@ async def main_async(args: argparse.Namespace) -> None:
                     consecutive_failed_batches += 1
                     batch_root.mkdir(parents=True, exist_ok=True)
                     batch_result_path.write_text(
-                        json.dumps({"status": "all_failed"}, indent=2) + "\n"
+                        json.dumps({
+                            "status": "all_failed",
+                            "fully_correct_portion": fully_correct_portion,
+                        }, indent=2) + "\n"
                     )
                     milestone(
                         f"epoch={epoch} batch={batch_index} all {len(results)} rollouts failed"
@@ -772,6 +786,7 @@ async def main_async(args: argparse.Namespace) -> None:
                     "successful_rollouts": len(successful),
                     "failed_rollouts": len(results) - len(successful),
                     "mean_score": sum(scores) / len(scores),
+                    "fully_correct_portion": fully_correct_portion,
                     "skill_commit": update["skill_commit"],
                 }
                 batch_result_path.write_text(
@@ -790,7 +805,8 @@ async def main_async(args: argparse.Namespace) -> None:
                 )
                 milestone(
                     f"epoch={epoch} batch={batch_index} update={completed_updates} "
-                    f"successful={len(successful)} mean_score={batch_payload['mean_score']:.4f}"
+                    f"successful={len(successful)} mean_score={batch_payload['mean_score']:.4f} "
+                    f"fully_correct_portion={fully_correct_portion:.4f}"
                 )
                 if args.max_updates is not None and completed_updates >= args.max_updates:
                     milestone(f"training stopped after {completed_updates} completed updates")
@@ -813,8 +829,8 @@ def main() -> None:
     parser.add_argument("--embedding-model", required=True)
     parser.add_argument("--attempts", type=int, default=3)
     parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=10)
-    parser.add_argument("--rollouts", type=int, default=5)
+    parser.add_argument("--batch-size", type=int, default=3)
+    parser.add_argument("--rollouts", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--first-epoch-skip", type=int, default=0)
     parser.add_argument("--max-updates", type=int)
