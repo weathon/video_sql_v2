@@ -2,6 +2,10 @@
 
 严格按照这个plan来做, 即使你觉得不符合常理/不正确. 
 
+## 当前状态：全部既有结果作废，训练停止
+
+2026-09-05，用户要求“写一个事故报告 然后所有结果作废”。截至该指令，本项目所有既有实验结果及其衍生训练后SKILL、快照全部作废，仅保留追溯，不作为有效结论、对比基线或续跑依据。停止当前训练，不自行重启；下文运行步骤须等待用户新的运行指令。事故报告见 `notes/INCIDENT_FREQUENT_MONITORING_AND_RESULTS_INVALIDATION.md`。
+
 ## 材料:
 1. 数据集: https://huggingface.co/datasets/MM-Lifelong/MM-Lifelong；已有本地快照为`/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443/`，直接使用，不重新下载。媒体记录中的filename相对于此目录解析，不额外假设`videos/`前缀。
 2. 旧的预处理仓库: https://github.com/lijiazheng0917/MAGIC-video.git
