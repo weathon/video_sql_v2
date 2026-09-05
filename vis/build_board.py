@@ -2,7 +2,6 @@
 """Export the continuation run for the framework-free, file:// compatible board."""
 import difflib
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 
