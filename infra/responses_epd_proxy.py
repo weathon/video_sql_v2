@@ -83,11 +83,14 @@ async def responses(request: Request):
         app.state.active_requests += 1
     streaming = False
     try:
-        async with asyncio.TaskGroup() as group:
-            for index, image in enumerate(images):
-                group.create_task(
-                    prime_image(image, request_data["model"], f"{request_id}:{index}")
-                )
+        try:
+            async with asyncio.TaskGroup() as group:
+                for index, image in enumerate(images):
+                    group.create_task(
+                        prime_image(image, request_data["model"], f"{request_id}:{index}")
+                    )
+        except* HTTPException as errors:
+            raise errors.exceptions[0]
         response = await session.post(
             f"{app.state.pd_url}/v1/responses",
             json=request_data,
