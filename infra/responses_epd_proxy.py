@@ -1,7 +1,9 @@
 import argparse
 import asyncio
+import shutil
 import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import aiohttp
 import uvicorn
@@ -53,11 +55,14 @@ async def stream_response(response: aiohttp.ClientResponse) -> AsyncIterator[byt
             yield chunk
     finally:
         response.release()
+        app.state.active_requests -= 1
 
 
 @app.on_event("startup")
 async def startup() -> None:
     global session
+    app.state.cache_lock = asyncio.Lock()
+    app.state.active_requests = 0
     session = aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=100_000),
         connector=aiohttp.TCPConnector(limit=0),
@@ -74,27 +79,58 @@ async def responses(request: Request):
     request_data = await request.json()
     request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
     images = extract_input_images(request_data)
-    await asyncio.gather(
-        *(
-            prime_image(image, request_data["model"], f"{request_id}:{index}")
-            for index, image in enumerate(images)
+    async with app.state.cache_lock:
+        app.state.active_requests += 1
+    streaming = False
+    try:
+        async with asyncio.TaskGroup() as group:
+            for index, image in enumerate(images):
+                group.create_task(
+                    prime_image(image, request_data["model"], f"{request_id}:{index}")
+                )
+        response = await session.post(
+            f"{app.state.pd_url}/v1/responses",
+            json=request_data,
+            headers={"x-request-id": request_id},
         )
-    )
-    response = await session.post(
-        f"{app.state.pd_url}/v1/responses",
-        json=request_data,
-        headers={"x-request-id": request_id},
-    )
-    media_type = response.headers["Content-Type"].split(";", 1)[0]
-    if request_data.get("stream"):
-        return StreamingResponse(
-            stream_response(response),
-            status_code=response.status,
-            media_type=media_type,
-        )
-    body = await response.read()
-    response.release()
-    return Response(content=body, status_code=response.status, media_type=media_type)
+        media_type = response.headers["Content-Type"].split(";", 1)[0]
+        if request_data.get("stream"):
+            streaming = True
+            return StreamingResponse(
+                stream_response(response),
+                status_code=response.status,
+                media_type=media_type,
+            )
+        body = await response.read()
+        response.release()
+        return Response(content=body, status_code=response.status, media_type=media_type)
+    finally:
+        if not streaming:
+            app.state.active_requests -= 1
+
+
+def delete_shared_encoder_cache() -> dict:
+    before = shutil.disk_usage(app.state.cache_dir).used
+    removed = 0
+    for path in app.state.cache_dir.iterdir():
+        shutil.rmtree(path)
+        removed += 1
+    after = shutil.disk_usage(app.state.cache_dir).used
+    print(f"encoder cache cleanup: entries={removed} used_bytes={before}->{after}", flush=True)
+    return {"removed_entries": removed, "used_bytes_before": before, "used_bytes_after": after}
+
+
+@app.post("/clear_encoder_cache")
+async def clear_encoder_cache():
+    async with app.state.cache_lock:
+        if app.state.active_requests:
+            raise HTTPException(status_code=409, detail="encoder cache is in use")
+        for url in (app.state.encoder_url, app.state.pd_url):
+            async with session.post(f"{url}/reset_encoder_cache") as response:
+                body = await response.text()
+                print(f"reset_encoder_cache: server={url} status={response.status} body={body}", flush=True)
+                response.raise_for_status()
+        return await asyncio.to_thread(delete_shared_encoder_cache)
 
 
 @app.get("/v1/models")
@@ -126,7 +162,9 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--encoder-url", required=True)
     parser.add_argument("--pd-url", required=True)
+    parser.add_argument("--cache-dir", type=Path, required=True)
     arguments = parser.parse_args()
     app.state.encoder_url = arguments.encoder_url
     app.state.pd_url = arguments.pd_url
+    app.state.cache_dir = arguments.cache_dir
     uvicorn.run(app, host=arguments.host, port=arguments.port)
