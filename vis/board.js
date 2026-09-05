@@ -90,7 +90,7 @@ function renderDetail() {
     $('traceSearch').oninput = filterEvents;
   } else if (state.tab==='media') {
     const start=state.mediaPage*24;
-    body.innerHTML = `<p class="media-note">原始媒体 · 按文件路径Sort order · 点击查看完整图像</p><div class="media-grid">${detail.media.slice(start,start+24).map(path => `<button class="media-tile" data-image="${esc(data.source+path)}" data-caption="${esc(path)}"><img loading="lazy" src="${esc(data.source+path)}" alt="${esc(path.split('/').at(-1))}"><span>${esc(path.split('/').slice(-3).join('/'))}</span></button>`).join('')}</div>${detail.media.length===0?'<div class="empty">No media files for this rollout.</div>':`<div class="pagination"><button data-media-page="-1" ${state.mediaPage===0?'disabled':''}>← Previous</button><span>${start+1}–${Math.min(start+24,detail.media.length)} / ${detail.media.length}</span><button data-media-page="1" ${start+24>=detail.media.length?'disabled':''}>Next →</button></div>`}`;
+    body.innerHTML = `<p class="media-note">Original media · Ordered by file path · Click to inspect full size</p><div class="media-grid">${detail.media.slice(start,start+24).map(path => `<button class="media-tile" data-image="${esc(data.source+path)}" data-caption="${esc(path)}"><img loading="lazy" src="${esc(data.source+path)}" alt="${esc(path.split('/').at(-1))}"><span>${esc(path.split('/').slice(-3).join('/'))}</span></button>`).join('')}</div>${detail.media.length===0?'<div class="empty">No media files for this rollout.</div>':`<div class="pagination"><button data-media-page="-1" ${state.mediaPage===0?'disabled':''}>← Previous</button><span>${start+1}–${Math.min(start+24,detail.media.length)} / ${detail.media.length}</span><button data-media-page="1" ${start+24>=detail.media.length?'disabled':''}>Next →</button></div>`}`;
   } else {
     const batch = data.batches.find(b => b.id===row.batch);
     const version = data.versions.findIndex(v => v.id===row.batch.replace('/','-'));
@@ -206,6 +206,7 @@ for (const id of ['search','scoreFilter','toolFilter','sort']) $(id).addEventLis
 $('skillSearch').oninput=renderSkills;
 $('clearFilters').onclick=()=>{state.batch=null;state.page=0;$('search').value='';$('scoreFilter').value='all';$('toolFilter').value='all';$('sort').value='original';renderOverview();renderList();};
 $('reload').onclick=()=>location.reload();
+document.querySelector('.brand').onclick=event=>{event.preventDefault();showView('rollouts');window.scrollTo({top:0,behavior:'smooth'});};
 $('closeImage').onclick=()=>$('lightbox').close();
 $('lightbox').onclick=event=>{if(event.target===$('lightbox')) $('lightbox').close();};
 document.addEventListener('keydown',event=>{if(event.key==='/'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)){event.preventDefault();$(state.view==='skills'?'skillSearch':'search').focus();}});
