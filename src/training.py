@@ -328,7 +328,13 @@ async def summarize_question(
             name="reflection-summarizer",
             instructions=(
                 "Combine the same question's rollout reflections into concise, generalizable "
-                "retrieval and meta-reflection lessons. Remove example-specific identifying "
+                "retrieval and meta-reflection lessons. Only reflections that found the correct "
+                "answer through evidence may support established lessons; the reference answer "
+                "or original rollout score alone is not that evidence. Preserve unresolved "
+                "reflections only as very small proposed patches with possible error causes "
+                "explicitly marked uncertain and unverified, for the skill updater to decide "
+                "how to handle. Do not promote speculation to a confirmed lesson. "
+                "Remove example-specific identifying "
                 "content and call submit_summary."
             ),
             model=harness.context.model,

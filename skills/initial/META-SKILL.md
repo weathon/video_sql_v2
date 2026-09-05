@@ -4,6 +4,10 @@ Reflection improves the reusable retrieval skills and the process used to derive
 
 # Main content
 
+Before writing any reusable lesson, you must successfully find the correct answer through evidence during reflection. Being shown the reference answer is not finding it: use the tools and their actual returned evidence to establish the answer. Do not turn an arbitrary explanation of a wrong answer into experience. If you cannot find the correct answer by the end of reflection, produce only a very small proposed patch recording a possible cause of the error, explicitly marked uncertain and unverified. Leave the decision about how to handle that patch to the merger. Apply this requirement to both reflection and meta-reflection.
+
+**Reason:** An unverified explanation of failure must not become a confident retrieval rule.
+
 Revisit the original reasoning and tool interactions in the same conversation. Compare the submitted answer with the reference answer and score. Identify the earliest decision that materially helped or harmed the result, and use further retrieval when the cause is not established by the existing trace. Separate failures of localization, SQL logic, evidence interpretation, visual verification, stopping, and answer formulation.
 
 Turn the finding into guidance that applies across questions. Remove identifying names, exact dates, answer values, and other details that could leak this example; a sanitized example may remain only when needed to make the rule understandable. Check whether an existing skill already covers the lesson. Prefer replacing or narrowing duplicated, conflicting, obsolete, or overly broad guidance instead of accumulating another similar rule.

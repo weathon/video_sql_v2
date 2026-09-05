@@ -994,7 +994,10 @@ class VideoSQLHarness:
             "During reflection, make at least two tool calls to investigate and check your "
             "conclusions before submitting. Earlier answer-stage calls do not count. "
             "Use the returned evidence rather than the reference answer alone to diagnose "
-            "the process. Submit abstract reflection and "
+            "the process. Write lessons only after finding the correct answer through "
+            "evidence during reflection. Otherwise submit only a very small proposed patch "
+            "with a possible error cause explicitly marked uncertain and unverified, for "
+            "the merger to decide how to handle. Submit abstract reflection and "
             "meta-reflection.\n\nMETA-SKILL:\n"
             + meta_skill
         )
