@@ -157,7 +157,7 @@ System Prompt包含简单的任务说明、当前隔离运行库的完整SCHEMA�
 3. 正式训练client Docker暴露GPU 0,2,4,5，供W&B采集三个模型服务的GPU指标；镜像使用`docker/training/Dockerfile`构建并安装`ffmpeg`，因为`sample_video`会调用`ffmpeg`。
 4. 一个batch的全部rollout都失败时跳过该batch的updater；连续两个batch的全部rollout都失败时终止训练。
 5. OpenAI SDK内部`max_retries`为3。`--attempts`独立应用于整个rollout、judge、reflection、summarizer和updater，这些阶段分别最多按该值重试，正式值为3。
-6. 使用vLLM Disaggregated Encoder，部署为一个encoder实例和一个prefill/decode实例；encoder cache位于内存。
+6. 使用vLLM Disaggregated Encoder，部署为一个encoder实例和一个prefill/decode实例；encoder cache位于内存。训练启动时及每批rollout全部结束后自动清理共享encoder cache，同时重置两端内部encoder cache；有请求正在使用时拒绝清理。
 7. 初始SKILL与训练后SKILL的test使用相同的batch size和每题rollout数。
 8. 本次从头训练：从`skills/initial/`初始化新的run，不继承旧run的训练后SKILL，epoch 0不跳过问题；保留旧run和已有数据，不重新下载数据集或重建index。
 

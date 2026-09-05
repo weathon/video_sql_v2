@@ -32,6 +32,7 @@ docker run --name qwen38-27b-fp8-epd-encoder \
     --gpus '"device=5"' \
     --shm-size=32g \
     -e HF_HOME=/hf_cache \
+    -e VLLM_SERVER_DEV_MODE=1 \
     -v /raid/huggingface:/hf_cache \
     -v video-sql-ec-cache:/epd_shared/cache \
     video-sql-vllm-epd:ec-tp-device \
@@ -55,6 +56,7 @@ docker run --name qwen38-27b-fp8-epd-pd \
     --shm-size=32g \
     -e HF_HOME=/hf_cache \
     -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
+    -e VLLM_SERVER_DEV_MODE=1 \
     -v /raid/huggingface:/hf_cache \
     -v video-sql-ec-cache:/epd_shared/cache \
     video-sql-vllm-epd:ec-tp-device \
@@ -82,13 +84,21 @@ docker run --name qwen38-27b-fp8-epd-proxy \
     --network video-sql-v2 \
     -p 8002:8000 \
     -v /raid/wg25r/video_sql_v2/infra:/video_sql_infra:ro \
+    -v video-sql-ec-cache:/epd_shared/cache \
     --entrypoint python3 \
     vllm/vllm-openai:qwen38-flash-next \
     /video_sql_infra/responses_epd_proxy.py \
     --host 0.0.0.0 \
     --port 8000 \
     --encoder-url http://qwen38-27b-fp8-epd-encoder:8000 \
-    --pd-url http://qwen38-27b-fp8-epd-pd:8000
+    --pd-url http://qwen38-27b-fp8-epd-pd:8000 \
+    --cache-dir /epd_shared/cache
+
+Training clears the shared encoder cache at startup and after each batch's
+rollouts finish. The proxy rejects cleanup while requests are active, resets
+both servers' internal encoder caches, then removes the shared cache files.
+VLLM_SERVER_DEV_MODE exposes the reset_encoder_cache endpoint on the private
+project network. Model and sampling settings are unchanged.
 
 Qwen/Qwen3-VL-Embedding-8B service:
 

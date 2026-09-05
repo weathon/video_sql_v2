@@ -627,6 +627,12 @@ async def main_async(args: argparse.Namespace) -> None:
     completed_updates = 0
     consecutive_failed_batches = 0
     try:
+        cleanup_url = args.base_url.rstrip("/").removesuffix("/v1") + "/clear_encoder_cache"
+        milestone(f"clearing encoder cache: {cleanup_url}")
+        async with httpx2.AsyncClient(timeout=100_000) as client:
+            response = await client.post(cleanup_url)
+            milestone(f"encoder cache cleanup status={response.status_code} body={response.text}")
+            response.raise_for_status()
         for epoch in range(args.epochs):
             shuffled = list(questions)
             random.Random(args.seed + epoch).shuffle(shuffled)
@@ -677,6 +683,11 @@ async def main_async(args: argparse.Namespace) -> None:
                     for rollout in range(args.rollouts)
                 ]
                 results = await asyncio.gather(*tasks)
+                milestone(f"clearing encoder cache: {cleanup_url}")
+                async with httpx2.AsyncClient(timeout=100_000) as client:
+                    response = await client.post(cleanup_url)
+                    milestone(f"encoder cache cleanup status={response.status_code} body={response.text}")
+                    response.raise_for_status()
                 successful = [result for result in results if result["status"] != "failed"]
                 fully_correct_portion = sum(result["score"] > 4 for result in successful) / len(results)
                 wandb_run.log({
