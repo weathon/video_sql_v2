@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import httpx2
 import openai
 import wandb
 import weave
@@ -88,6 +89,7 @@ def retryable(error: BaseException) -> bool:
                 ModelBehaviorError,
                 ValidationError,
                 UserError,
+                httpx2.RemoteProtocolError,
                 openai.APIConnectionError,
                 openai.APITimeoutError,
                 openai.RateLimitError,
