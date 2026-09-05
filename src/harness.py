@@ -943,7 +943,7 @@ class VideoSQLHarness:
         reference_answer: str,
         score: int,
     ) -> ReflectionSubmission:
-        agent = session.agent.clone()
+        agent = session.agent
         tool_calls = 0
 
         class ReflectionHooks(AgentHooks):
