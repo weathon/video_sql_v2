@@ -1009,6 +1009,8 @@ class VideoSQLHarness:
                 True,
             )
             if result.final_output is not None:
+                if tool_calls < 2:
+                    raise InvalidTrace("reflection ended before two reflection-stage tool calls")
                 return ReflectionSubmission.model_validate_json(str(result.final_output))
             if not threshold:
                 raise InvalidTrace("reflection ended without submit_reflection")
