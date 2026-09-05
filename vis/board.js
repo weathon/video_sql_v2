@@ -117,7 +117,7 @@ function renderTraces(records, target) {
         else if (type==='reasoning') content = JSON.stringify({content:e.content,summary:e.summary},null,2);
         else content=pretty(e.content);
         const label=`${String(i+1).padStart(2,'0')} · ${type} · ${name}${e.call_id?' · '+e.call_id:''}`;
-        const text=`<pre>${esc(content)}</pre>`;
+        const text=`<pre>${esc(pretty(content))}</pre>`;
         // Raw JSON text stays intact, including error returns and source truncation markers.
         return `<article class="event ${isCall?'call':isOutput?'output':type==='user'?'user':''}" data-type="${esc(type)}"><div class="event-label">${esc(label)}</div>${type==='reasoning'||type==='user'?`<details><summary>${type==='reasoning'?'Expand full reasoning':'Expand input prompt'}</summary>${text}</details>`:text}</article>`;
       }).join('') + (trace.final_output===null?'':`<details><summary>Final output</summary><pre class="prose">${esc(pretty(trace.final_output))}</pre></details>`);

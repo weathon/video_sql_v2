@@ -15,6 +15,7 @@ import httpx
 import numpy as np
 from agents import (
     Agent,
+    AgentHooks,
     ModelSettings,
     OpenAIResponsesModel,
     RunConfig,
@@ -189,7 +190,7 @@ def completion_characters(response: Any) -> str:
 def read_skill_catalog(skill_dir: Path) -> list[dict[str, str]]:
     skills = []
     for path in sorted(skill_dir.glob("*.md")):
-        if path.name == "META-SKILL.md":
+        if path.name in {"META-SKILL.md", "ROOT-SKILL.md"}:
             continue
         lines = path.read_text().splitlines()
         if not lines or lines[0] != "---":
@@ -866,6 +867,8 @@ class VideoSQLHarness:
         base_instructions = (
             "Answer the user's question by retrieving evidence from the memory database. "
             "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
+            + "\n\nROOT-SKILL (skill loading guidance):\n"
+            + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
         )
         agent = Agent(
             name="memory-retrieval",
@@ -940,7 +943,18 @@ class VideoSQLHarness:
         reference_answer: str,
         score: int,
     ) -> ReflectionSubmission:
-        @function_tool(failure_error_function=None)
+        tool_calls = 0
+
+        class ReflectionHooks(AgentHooks):
+            async def on_tool_end(self, context, agent, tool, result) -> None:
+                nonlocal tool_calls
+                if tool.name not in {"submit_reflection", "agent_raise"}:
+                    tool_calls += 1
+
+        @function_tool(
+            failure_error_function=None,
+            is_enabled=lambda context, agent: tool_calls >= 2,
+        )
         async def submit_reflection(reflection: str, meta_reflection: str) -> str:
             """Submit both abstract reflections and stop the reflection loop."""
             return ReflectionSubmission(
@@ -956,6 +970,13 @@ class VideoSQLHarness:
         session.agent.tool_use_behavior = StopAtTools(
             stop_at_tool_names=["submit_reflection"]
         )
+        session.agent.hooks = ReflectionHooks()
+        session.agent.model_settings = dataclasses.replace(
+            self.context.model_settings, tool_choice="required"
+        )
+        session.agent.reset_tool_choice = False
+        reflection_tools = session.agent.tools
+        reflection_behavior = session.agent.tool_use_behavior
         meta_skill = (self.context.skill_dir / "META-SKILL.md").read_text()
         if session.status == "compaction_limit":
             reflection_prompt = (
@@ -969,29 +990,74 @@ class VideoSQLHarness:
             )
         reflection_prompt += (
             "Reflect on your own answer process in this same conversation. "
-            "You may continue using retrieval tools. Submit abstract reflection and "
+            "During reflection, make at least two tool calls to investigate and check your "
+            "conclusions before submitting. Earlier answer-stage calls do not count. "
+            "Use the returned evidence rather than the reference answer alone to diagnose "
+            "the process. Submit abstract reflection and "
             "meta-reflection.\n\nMETA-SKILL:\n"
             + meta_skill
         )
-        result, threshold, _ = await run_stream(
-            self.context,
-            session.agent,
-            session.history + [{"role": "user", "content": reflection_prompt}],
-            "reflection",
-            True,
-        )
-        if threshold:
-            session.agent.tools = [submit_reflection]
-            forced, _, _ = await run_stream(
+        base_instructions = session.agent.instructions
+        input_items = session.history + [{"role": "user", "content": reflection_prompt}]
+        compactions = 0
+        while True:
+            result, threshold, _ = await run_stream(
                 self.context,
                 session.agent,
-                result.to_input_list()
-                + [{"role": "user", "content": FORCED_REFLECTION_INSTRUCTION}],
-                "reflection-forced",
+                input_items,
+                "reflection",
+                True,
+            )
+            if result.final_output is not None:
+                return ReflectionSubmission.model_validate_json(str(result.final_output))
+            if not threshold:
+                raise InvalidTrace("reflection ended without submit_reflection")
+            session.agent.tools = []
+            session.agent.tool_use_behavior = "run_llm_again"
+            session.agent.model_settings = self.context.model_settings
+            compact_result, _, _ = await run_stream(
+                self.context,
+                session.agent,
+                result.to_input_list() + [{
+                    "role": "user",
+                    "content": (
+                        "Stop calling tools. Compact this reflection into a handoff preserving "
+                        "the question, submitted/reference answers, score, original reasoning "
+                        "and tool evidence, reflection-stage checks and returned evidence, "
+                        "competing explanations, unresolved issues, and next checks. "
+                        "Do not submit the final reflection yet."
+                    ),
+                }],
+                "reflection-compaction",
                 False,
             )
-            return ReflectionSubmission.model_validate_json(str(forced.final_output))
-        return ReflectionSubmission.model_validate_json(str(result.final_output))
+            compactions += 1
+            session.agent.instructions = (
+                base_instructions + "\n\nReflection handoff:\n"
+                + str(compact_result.final_output)
+            )
+            session.agent.tool_use_behavior = reflection_behavior
+            session.agent.model_settings = dataclasses.replace(
+                self.context.model_settings, tool_choice="required"
+            )
+            if compactions == 3:
+                if tool_calls < 2:
+                    raise InvalidTrace("reflection exhausted three compactions before two tool calls")
+                session.agent.tools = [submit_reflection]
+                forced, _, _ = await run_stream(
+                    self.context,
+                    session.agent,
+                    reflection_prompt + "\n\n" + FORCED_REFLECTION_INSTRUCTION,
+                    "reflection-forced",
+                    False,
+                )
+                return ReflectionSubmission.model_validate_json(str(forced.final_output))
+            session.agent.tools = reflection_tools
+            input_items = [{
+                "role": "user",
+                "content": reflection_prompt + f"\nReflection tool calls completed: {tool_calls}. "
+                "Continue from the reflection handoff.",
+            }]
 
     async def close(self) -> None:
         await self.context.client.close()

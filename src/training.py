@@ -408,8 +408,8 @@ async def update_skills(
     @function_tool(failure_error_function=tool_error_json)
     async def delete_skill_file(filename: str) -> str:
         """Delete an obsolete ordinary skill file."""
-        if filename == "META-SKILL.md":
-            raise ValueError("META-SKILL.md cannot be deleted")
+        if filename in {"META-SKILL.md", "ROOT-SKILL.md"}:
+            raise ValueError(f"{filename} cannot be deleted")
         skill_path(skill_dir, filename).unlink()
         return json.dumps({"deleted": filename})
 
@@ -475,8 +475,15 @@ async def update_skills(
                 "Update the skill directory from the supplied abstract summaries. Use the file "
                 "tools across as many turns as needed, then call stop. You may add, replace, or "
                 "delete ordinary skills. Read current skills only with read_skill_file; read_skill "
-                "does not exist. You may edit META-SKILL.md, but never delete "
-                "META-SKILL.md. Ordinary skills require YAML frontmatter with name and "
+                "does not exist. You may edit META-SKILL.md and ROOT-SKILL.md, but never delete "
+                "either. ROOT-SKILL.md is always shown to the retrieval agent and tells it "
+                "when to load which skills; maintain its routing guidance when skills change. "
+                "Consider each batch update a small learning-rate step with gradient clipping: "
+                "prefer a few localized, evidence-supported edits and preserve useful existing "
+                "guidance. Consider narrowing or qualifying a rule before replacing a whole "
+                "skill; broad rewrites and many simultaneous additions are best reserved for "
+                "consistent evidence across rollouts. This is advice about update size, not "
+                "a hard edit budget. Ordinary skills require YAML frontmatter with name and "
                 "description plus Introduction, When to use, and Main content. Keep the set "
                 "concise by replacing duplicated, conflicting, obsolete, or similar guidance. "
                 "Every saved guidance point must include a short reason using the exact syntax "
@@ -514,7 +521,7 @@ async def update_skills(
                 raise RuntimeError("skill updater made no changes")
             for path in skill_dir.glob("*.md"):
                 content = path.read_text()
-                if path.name != "META-SKILL.md" and (
+                if path.name not in {"META-SKILL.md", "ROOT-SKILL.md"} and (
                     not content.startswith("---\n")
                     or "name: " not in content
                     or "description: " not in content
