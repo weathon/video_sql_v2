@@ -92,7 +92,7 @@ System Prompt包含简单的任务说明、当前隔离运行库的完整SCHEMA�
 #### Harness 工具
 
 - `clip_qa(start_s, end_s, question)`：片段超过20分钟直接拒绝，起止时间必须非负且递增。内部agent可调用`sample_video`、`add_clip_note`、`read_clip_notes`和`submit_clip_answer`；不向模型暴露video_id。
-- `clip_qa` 返回 `answered|unknown`、答案和证据时间点；只有 `answered` 必须包含至少一个证据时间点，`unknown` 可以没有证据时间点。harness 将已有证据时间点转换为独立截图交给主 agent。
+- `clip_qa` 返回 `answered|unknown`、答案和证据时间点；只有 `answered` 必须包含至少一个证据时间点，`unknown` 可以没有证据时间点。harness将answered结果的证据时间点转换为独立截图交给主agent。
 - `sample_video`：接受时间、fps、是否返回 caption 的 `include_captions`，以及 0–1000 整数裁剪坐标；由模型决定是否返回覆盖请求区间的 caption，同时返回带时间标记的 4×3 contact sheet，每页 12 帧，所有帧完整分页。contact sheet 和证据截图只向模型暴露文件名，不暴露宿主机绝对路径。
 - `run_sql(sql)`：只读执行，30 秒硬超时；最多向模型返回 100 行并说明是否存在更多结果；每个单元格最多返回前 500 字符及原长度。所有执行错误作为 tool result 返回给模型处理。
 - `sql_qa(sql, question)`：和run_sql类似, 接受一个sql命令, 同时接受一个问题, 这个sql命令和问题被提交执行, 但是结果不直接返回给模型, 而是由另一个single LLM call对于question进行回答和总结, 对于大面积搜索推荐agent使用这个工具, 以避免context过大. 交给这个single call的结果不限制行数, 只限制总字符数: 超过50k字符的截断, 并在末尾写明已被截断; 30秒SQL超时同样适用.
@@ -130,7 +130,7 @@ System Prompt包含简单的任务说明、当前隔离运行库的完整SCHEMA�
 - Reflection阶段至少完成2次工具调用才允许提交；答题阶段调用和submit_reflection本身不计入。未满足最低调用次数时，不得强制产出有效reflection。
 
 ### "训练"过程
-1. batch size代表n个问题和每个问题m个平行rollout。每个rollout在prompt中获得当前SKILL列表并按需读取；一个batch得到30个结果后，用额外的judge call判断答案正确性并打分（满分5），这个分数记作s并log。judge只接收reference_answer和candidate_answer, 不接收问题、trace、证据；评分标准是最终答案语义等价, 忽略附带的video id、时间戳、row id等标识符。正式训练的judge同样使用`Qwen/Qwen3.8-27B-FP8`。
+1. batch size代表n个问题和每个问题m个平行rollout。每个rollout在prompt中获得当前SKILL列表并按需读取；每个rollout答题后立即用额外的judge call判断答案正确性并打分（满分5），再进入reflection；这个分数记作s并log。完整batch汇集30个rollout结果，epoch末不足3题的batch按实际题数运行。judge只接收reference_answer和candidate_answer, 不接收问题、trace、证据；评分标准是最终答案语义等价, 忽略附带的video id、时间戳、row id等标识符。正式训练的judge同样使用`Qwen/Qwen3.8-27B-FP8`。
 2. 把正确答案和s(而不只是s)都给每一个rollout, 然后告诉他这是正确答案和你的分数(注意! 不是另一个agent, 是告诉答题agent自己), 同时插入META-SKILL.md (META-SKILL.md不是最开始放进去的). 保留答题时原来的同一个Agent instance和同一对话继续reflection, 不clone Agent, 不创建新的reflection agent, 也不把trace序列化后交给另一个agent. 你现在要做的就是去重新复盘这个结果, 包括重新回顾自己的trace和重新对数据库检索和探索, 找到你为什么对/为什么错的原因, 把这个原因总结出来, 记错relection, 同时这个反思过程有什么经验(帮助下一次反思), 记错meta-relection. 两个反思都要去掉具体内容变得抽象化 可以辅助任何问题而不是本次情况. 本次情况可以作为案例, 但是要去掉敏感信息防止数据泄露(比如具体某天中午午饭内容). 注意要模型不光总结新的经验, 还要让她注意什么时候要更新/替换/修改旧的经验. 不然经验会越变越大而且出现重复/冲突/相似的内容. reflection阶段保留答题时的全部工具(run_sql、sql_qa、semantic_search、clip_qa、add_note、read_notes、read_skill、agent_raise), 只把`submit_answer`换成`submit_reflection`.
 2a. Reflection prompt和`META-SKILL.md`要求：必须在reflection过程中通过实际检索证据成功找到正确答案，才可以写入经验；获得reference answer本身不算找到答案，不能把随意推测的错误原因写成经验。如果最终没能找到正确答案，只产生一个极小的patch，记录可能的错误原因并明确包含不确定性，由merger决定怎么处理。汇总和updater必须保留这种不确定性，不得将其改写成已证实经验。
 3. 每个问题的m个rollout反思由另一个call汇总，再由skill updater更新SKILL目录和`META-SKILL.md`。更新时既可以增加，也要删除、替换重复、冲突、过时或相似的内容。updater每个batch跑一次, 一次agent loop输入该batch全部3个问题的summary, commit一次。
