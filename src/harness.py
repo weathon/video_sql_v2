@@ -3,7 +3,7 @@ import base64
 import dataclasses
 import json
 import math
-import tempfile
+import re
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -22,10 +22,11 @@ from agents import (
     StopAtTools,
     ToolOutputImage,
     ToolOutputText,
+    ToolsToFinalOutputResult,
     function_tool,
 )
 from openai import AsyncOpenAI
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageOps
 from pydantic import BaseModel
 
 from src.normalize import normalize_text
@@ -35,6 +36,8 @@ OPENAI_BASE_URL = "https://api.openai.com/v1"
 CONTEXT_LIMIT = 1_050_000
 COMPACTION_THRESHOLD = 178_000
 MAX_TURNS = 100
+FRAME_SIZE = (854, 480)
+CLIP_IMAGE_LIMIT = 1024
 SEARCH_TABLES = {
     "episodes": "text",
     "entities": "name",
@@ -80,7 +83,7 @@ class AnswerSubmission(BaseModel):
 class ClipSubmission(BaseModel):
     status: Literal["answered", "unknown"]
     answer: str
-    evidence_times_s: list[float]
+    evidence_frame_ids: list[str]
 
 
 @dataclass
@@ -212,6 +215,10 @@ def execute_sql(
     try:
         cursor = connection.execute(sql, parameters)
         columns = [column[0] for column in cursor.description]
+        if len(columns) != len(set(columns)):
+            raise ValueError(
+                f"duplicate SQL column names: {columns}; use distinct AS aliases"
+            )
         if row_limit is None:
             raw_rows = cursor.fetchall()
             has_more = False
@@ -323,185 +330,122 @@ async def run_one_call(
     return str(result.final_output)
 
 
-def source_for_time(context: HarnessContext, time_s: float) -> dict[str, Any]:
-    for source in context.sources:
-        if source["timeline_start_s"] <= time_s < source["timeline_end_s"]:
-            return source
-    if time_s == context.sources[-1]["timeline_end_s"]:
-        return context.sources[-1]
-    raise ValueError(f"no source media at time {time_s}")
+def render_frame(frame: dict[str, Any]) -> list[ToolOutputText | ToolOutputImage]:
+    left, top, right, bottom = frame["crop"]
+    with Image.open(frame["original_path"]) as original:
+        width, height = original.size
+        cropped = original.convert("RGB").crop((
+            math.floor(width * left / 1000),
+            math.floor(height * top / 1000),
+            math.ceil(width * right / 1000),
+            math.ceil(height * bottom / 1000),
+        ))
+        rendered = ImageOps.contain(cropped, FRAME_SIZE)
+        rendered.save(frame["image_path"], quality=90)
+    return [
+        ToolOutputText(text=json.dumps({
+            "frame_id": frame["frame_id"],
+            "time_s": frame["time_s"],
+            "filename": frame["image_path"].name,
+            "crop": frame["crop"],
+        })),
+        ToolOutputImage(
+            image_url="data:image/jpeg;base64,"
+            + base64.b64encode(frame["image_path"].read_bytes()).decode(),
+            detail="high",
+        ),
+    ]
 
 
-async def extract_evidence_frame(
-    context: HarnessContext, time_s: float, call_id: str
-) -> Path:
-    source = source_for_time(context, time_s)
-    local_time = time_s - source["timeline_start_s"]
-    output = (
-        context.run_dir
-        / "media"
-        / f"evidence-{time_s:.3f}-{call_id}-{uuid.uuid4().hex}.jpg"
-    )
-    process = await asyncio.create_subprocess_exec(
-        "ffmpeg",
-        "-v",
-        "error",
-        "-ss",
-        f"{local_time:.6f}",
-        "-i",
-        source["path"],
-        "-frames:v",
-        "1",
-        "-q:v",
-        "2",
-        str(output),
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await process.communicate()
-    if process.returncode != 0:
-        raise RuntimeError(stderr.decode())
-    with Image.open(output) as image:
-        image.load()
-    return output
-
-
-async def sample_contact_sheets(
+async def sample_frames(
     context: HarnessContext,
-    clip_start_s: float,
-    clip_end_s: float,
     start_s: float,
     end_s: float,
     fps: float,
-    include_captions: bool,
-    crop_left: int,
-    crop_top: int,
-    crop_right: int,
-    crop_bottom: int,
+    crop: tuple[int, int, int, int],
     call_id: str,
-) -> list[ToolOutputText | ToolOutputImage]:
-    if not clip_start_s <= start_s < end_s <= clip_end_s:
-        raise ValueError("sample interval must lie inside the clip_qa interval")
-    if fps <= 0:
-        raise ValueError("fps must be positive")
-    if not (
-        0 <= crop_left < crop_right <= 1000
-        and 0 <= crop_top < crop_bottom <= 1000
-    ):
-        raise ValueError("crop coordinates must satisfy 0 <= left < right <= 1000 and 0 <= top < bottom <= 1000")
+    remaining_images: int,
+) -> list[dict[str, Any]]:
+    if not context.sources[0]["timeline_start_s"] <= start_s < end_s <= context.sources[-1]["timeline_end_s"]:
+        raise ValueError("sample interval extends beyond available source media")
+    if not math.isfinite(fps) or fps <= 0:
+        raise ValueError("fps must be finite and positive")
+    if remaining_images == 0:
+        raise ValueError("clip image limit reached; remaining_images=0")
     media_root = context.run_dir / "media"
-    frame_records: list[tuple[float, Path]] = []
-    with tempfile.TemporaryDirectory(dir=media_root) as temporary:
-        temporary_root = Path(temporary)
-        for source_index, source in enumerate(context.sources):
-            overlap_start = max(start_s, source["timeline_start_s"])
-            overlap_end = min(end_s, source["timeline_end_s"])
-            if overlap_start >= overlap_end:
-                continue
-            local_start = overlap_start - source["timeline_start_s"]
-            duration = overlap_end - overlap_start
-            pattern = temporary_root / f"{source_index:06d}-%08d.jpg"
-            video_filter = (
-                f"crop=iw*{crop_right - crop_left}/1000:"
-                f"ih*{crop_bottom - crop_top}/1000:"
-                f"iw*{crop_left}/1000:ih*{crop_top}/1000,"
-                f"scale=480:-2,fps={fps}"
-            )
-            process = await asyncio.create_subprocess_exec(
-                "ffmpeg",
-                "-v",
-                "error",
-                "-ss",
-                f"{local_start:.6f}",
-                "-t",
-                f"{duration:.6f}",
-                "-i",
-                source["path"],
-                "-vf",
-                video_filter,
-                "-q:v",
-                "3",
-                str(pattern),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await process.communicate()
-            if process.returncode != 0:
-                raise RuntimeError(stderr.decode())
-            source_frames = sorted(temporary_root.glob(f"{source_index:06d}-*.jpg"))
-            for frame_index, frame_path in enumerate(source_frames):
-                frame_records.append(
-                    (min(overlap_start + frame_index / fps, overlap_end), frame_path)
-                )
-        if not frame_records:
-            raise RuntimeError("ffmpeg returned no frames")
-        outputs: list[ToolOutputText | ToolOutputImage] = []
-        page_paths = []
-        for page_index in range(math.ceil(len(frame_records) / 12)):
-            canvas = Image.new("RGB", (1920, 900), "black")
-            draw = ImageDraw.Draw(canvas)
-            page_records = frame_records[page_index * 12 : (page_index + 1) * 12]
-            for cell_index, (time_s, frame_path) in enumerate(page_records):
-                with Image.open(frame_path) as frame:
-                    rendered = ImageOps.contain(frame.convert("RGB"), (480, 270))
-                x = (cell_index % 4) * 480 + (480 - rendered.width) // 2
-                y = (cell_index // 4) * 300 + (270 - rendered.height) // 2
-                canvas.paste(rendered, (x, y))
-                draw.text(
-                    ((cell_index % 4) * 480 + 8, (cell_index // 4) * 300 + 276),
-                    f"{time_s:.3f}s",
-                    fill="white",
-                )
-            page_path = (
-                media_root
-                / (
-                    f"contact-{start_s:.3f}-{end_s:.3f}-fps{fps:.4f}-"
-                    f"crop{crop_left}-{crop_top}-{crop_right}-{crop_bottom}-"
-                    f"captions{int(include_captions)}-{call_id}-page{page_index:04d}.jpg"
-                )
-            )
-            canvas.save(page_path, quality=90)
-            with Image.open(page_path) as rendered_page:
-                rendered_page.load()
-            page_paths.append(page_path)
-        captions: list[dict[str, Any]] = []
-        if include_captions:
-            caption_result = execute_sql(
-                context.database,
-                (
-                    "SELECT row_id, start_s, end_s, text FROM episodes "
-                    "WHERE granularity = '30sec' "
-                    f"AND end_s > {float(start_s)} AND start_s < {float(end_s)} "
-                    "ORDER BY start_s"
-                ),
-                None,
-                None,
-                None,
-            )
-            captions = caption_result["rows"]
-        outputs.append(
-            ToolOutputText(
-                text=json.dumps(
-                    {
-                        "pages": [path.name for path in page_paths],
-                        "frame_count": len(frame_records),
-                        "captions": captions,
-                    },
-                    ensure_ascii=False,
-                )
-            )
+    sample_dir = media_root / f"sample-{call_id}-{uuid.uuid4().hex}"
+    sample_dir.mkdir()
+    frames = []
+    for source_index, source in enumerate(context.sources):
+        overlap_start = max(start_s, source["timeline_start_s"])
+        overlap_end = min(end_s, source["timeline_end_s"])
+        if overlap_start >= overlap_end:
+            continue
+        local_start = overlap_start - source["timeline_start_s"]
+        local_end = overlap_end - source["timeline_start_s"]
+        pattern = sample_dir / f"source-{source_index:06d}-%08d.png"
+        # select keeps the source PTS; fps would replace it with a synthetic clock.
+        video_filter = (
+            f"trim=start={local_start:.6f}:end={local_end:.6f},"
+            f"select='isnan(prev_selected_t)+"
+            f"gt(floor((t-{local_start:.6f})*{fps}),"
+            f"floor((prev_selected_t-{local_start:.6f})*{fps}))',showinfo"
         )
-        for page_path in page_paths:
-            encoded = base64.b64encode(page_path.read_bytes()).decode()
-            if not encoded:
-                raise RuntimeError(f"empty image encoding: {page_path}")
-            outputs.append(
-                ToolOutputImage(
-                    image_url=f"data:image/jpeg;base64,{encoded}",
-                    detail="high",
-                )
+        command = [
+            "ffmpeg", "-hide_banner", "-nostdin", "-nostats", "-v", "info",
+            "-copyts", "-start_at_zero",
+            "-ss", f"{local_start:.6f}", "-t", f"{overlap_end - overlap_start:.6f}",
+            "-threads", "1", "-i", source["path"],
+            "-map", "0:v:0", "-vf", video_filter,
+            "-filter_threads", "1", "-fps_mode", "passthrough",
+            # Decode one extra frame to detect excess; never return a partial sample.
+            "-frames:v", str(remaining_images - len(frames) + 1),
+            "-threads", "1", str(pattern),
+        ]
+        log_path = sample_dir / f"ffmpeg-{source_index:06d}.log"
+        (sample_dir / f"ffmpeg-{source_index:06d}.json").write_text(
+            json.dumps(command, ensure_ascii=False, indent=2) + "\n"
+        )
+        print(
+            f"sample_video start={overlap_start} end={overlap_end} fps={fps} "
+            f"remaining_images={remaining_images - len(frames)} log={log_path}",
+            flush=True,
+        )
+        with log_path.open("wb") as log:
+            process = await asyncio.create_subprocess_exec(
+                *command, stdout=asyncio.subprocess.DEVNULL, stderr=log,
             )
-        return outputs
+            await process.wait()
+        if process.returncode != 0:
+            print(f"ffmpeg exit={process.returncode} log={log_path}", flush=True)
+            raise RuntimeError(f"ffmpeg exit={process.returncode}; see {log_path.name}")
+        source_frames = sorted(sample_dir.glob(f"source-{source_index:06d}-*.png"))
+        if len(frames) + len(source_frames) > remaining_images:
+            raise ValueError(
+                f"sample exceeds clip image limit; remaining_images={remaining_images}. "
+                "Request a shorter interval or a lower fps."
+            )
+        log_text = log_path.read_text()
+        time_base_match = re.search(r"config in time_base: (\d+)/(\d+)", log_text)
+        timestamps = re.findall(r"\bn:\s*(\d+)\s+pts:\s*(-?\d+)\s+pts_time:", log_text)
+        if time_base_match is None or len(timestamps) != len(source_frames):
+            raise RuntimeError(f"ffmpeg frame/PTS mismatch; see {log_path.name}")
+        time_base_num, time_base_den = map(int, time_base_match.groups())
+        for frame_index, (frame_path, (sequence, pts)) in enumerate(zip(source_frames, timestamps)):
+            if int(sequence) != frame_index:
+                raise RuntimeError(f"ffmpeg frame sequence mismatch; see {log_path.name}")
+            time_s = source["timeline_start_s"] + int(pts) * time_base_num / time_base_den
+            frame_id = uuid.uuid4().hex
+            frames.append({
+                "frame_id": frame_id,
+                "time_s": time_s,
+                "original_path": frame_path,
+                "image_path": media_root / f"frame-{frame_id}.jpg",
+                "crop": crop,
+            })
+    if not frames:
+        raise RuntimeError("ffmpeg returned no frames")
+    return frames
 
 
 def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
@@ -520,8 +464,6 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             execute_sql, context.database, sql, None, None, None
         )
         serialized = json.dumps(result, ensure_ascii=False)
-        if len(serialized) > 50_000:
-            serialized = serialized[:50_000] + "\n[SQL result truncated at 50000 characters]"
         return await run_one_call(
             context,
             "sql-qa",
@@ -672,11 +614,13 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
     @function_tool(failure_error_function=tool_error_json)
     async def clip_qa(start_s: float, end_s: float, question: str) -> list[Any]:
         """Inspect at most 20 minutes of source media and return an answer with evidence images."""
-        if start_s < 0 or end_s <= start_s:
-            raise ValueError("clip interval must be non-negative and increasing")
+        if not math.isfinite(start_s) or not math.isfinite(end_s) or start_s < 0 or end_s <= start_s:
+            raise ValueError("clip interval must be finite, non-negative and increasing")
         if end_s - start_s > 1200:
             raise ValueError("clip_qa rejects intervals longer than 20 minutes")
         call_id = uuid.uuid4().hex
+        frames: dict[str, dict[str, Any]] = {}
+        images_lock = asyncio.Lock()
 
         @function_tool(failure_error_function=tool_error_json)
         async def sample_video(
@@ -689,21 +633,92 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             crop_right: int,
             crop_bottom: int,
         ) -> list[Any]:
-            """Return fully paginated 4 by 3 contact sheets for a subinterval."""
-            return await sample_contact_sheets(
-                context,
-                start_s,
-                end_s,
-                sample_start_s,
-                sample_end_s,
-                fps,
-                include_captions,
-                crop_left,
-                crop_top,
-                crop_right,
-                crop_bottom,
-                call_id,
-            )
+            """Return individual frames, their IDs and actual source times.
+
+            Crop coordinates refer to the original full frame, in 0-1000 units.
+            Full frame: left=0, top=0, right=1000, bottom=1000.
+            Require 0 <= left < right <= 1000 and 0 <= top < bottom <= 1000.
+            Sampling and crops share a cumulative 1024-image limit per clip_qa.
+            An over-budget request returns an error without partial images.
+            """
+            if not start_s <= sample_start_s < sample_end_s <= end_s:
+                raise ValueError("sample interval must lie inside the clip_qa interval")
+            if not (
+                0 <= crop_left < crop_right <= 1000
+                and 0 <= crop_top < crop_bottom <= 1000
+            ):
+                raise ValueError("crop coordinates must satisfy 0 <= left < right <= 1000 and 0 <= top < bottom <= 1000")
+            async with images_lock:
+                new_frames = await sample_frames(
+                    context, sample_start_s, sample_end_s, fps,
+                    (crop_left, crop_top, crop_right, crop_bottom),
+                    call_id, CLIP_IMAGE_LIMIT - len(frames),
+                )
+                captions = []
+                if include_captions:
+                    result = await asyncio.to_thread(
+                        execute_sql,
+                        context.database,
+                        "SELECT row_id, start_s, end_s, text FROM episodes "
+                        "WHERE granularity = '30sec' AND end_s > ? AND start_s < ? "
+                        "ORDER BY start_s",
+                        None, [sample_start_s, sample_end_s], None,
+                    )
+                    captions = result["rows"]
+                count = len(frames) + len(new_frames)
+                outputs: list[Any] = [ToolOutputText(text=json.dumps({
+                    "frame_count": len(new_frames),
+                    "images_used": count,
+                    "remaining_images": CLIP_IMAGE_LIMIT - count,
+                    "captions": captions,
+                }, ensure_ascii=False))]
+                for frame in new_frames:
+                    outputs.extend(await asyncio.to_thread(render_frame, frame))
+                frames.update({frame["frame_id"]: frame for frame in new_frames})
+                return outputs
+
+        @function_tool(failure_error_function=tool_error_json)
+        async def crop_frame(
+            frame_id: str,
+            crop_left: int,
+            crop_top: int,
+            crop_right: int,
+            crop_bottom: int,
+        ) -> list[Any]:
+            """Crop a sampled frame using its saved original resolution.
+
+            Coordinates always refer to the original full frame, even when frame_id
+            names an earlier crop. Units are 0-1000; full frame is 0,0,1000,1000.
+            Require 0 <= left < right <= 1000 and 0 <= top < bottom <= 1000.
+            Each returned crop consumes one image from this clip's shared budget.
+            """
+            if not (
+                0 <= crop_left < crop_right <= 1000
+                and 0 <= crop_top < crop_bottom <= 1000
+            ):
+                raise ValueError("crop coordinates must satisfy 0 <= left < right <= 1000 and 0 <= top < bottom <= 1000")
+            async with images_lock:
+                if frame_id not in frames:
+                    raise ValueError("frame_id must refer to an image returned in this clip_qa")
+                if len(frames) == CLIP_IMAGE_LIMIT:
+                    raise ValueError("clip image limit reached; remaining_images=0")
+                original = frames[frame_id]
+                new_id = uuid.uuid4().hex
+                frame = {
+                    "frame_id": new_id,
+                    "time_s": original["time_s"],
+                    "original_path": original["original_path"],
+                    "image_path": context.run_dir / "media" / f"frame-{new_id}.jpg",
+                    "crop": (crop_left, crop_top, crop_right, crop_bottom),
+                }
+                outputs = await asyncio.to_thread(render_frame, frame)
+                count = len(frames) + 1
+                outputs.append(ToolOutputText(text=json.dumps({
+                    "images_used": count,
+                    "remaining_images": CLIP_IMAGE_LIMIT - count,
+                })))
+                frames[new_id] = frame
+                return outputs
 
         @function_tool(failure_error_function=tool_error_json)
         async def add_clip_note(note: str) -> str:
@@ -725,30 +740,45 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         async def submit_clip_answer(
             status: Literal["answered", "unknown"],
             answer: str,
-            evidence_times_s: list[float],
+            evidence_frame_ids: list[str],
         ) -> str:
-            """Submit the visual answer and stop the visual loop."""
-            if status == "answered" and not evidence_times_s:
-                raise ValueError("answered requires at least one evidence timestamp")
-            if any(not start_s <= time_s <= end_s for time_s in evidence_times_s):
-                raise ValueError("evidence timestamps must lie inside the clip interval")
+            """Submit the visual answer citing frame IDs returned by sample_video or crop_frame."""
+            if status == "answered" and not evidence_frame_ids:
+                raise ValueError("answered requires at least one evidence frame")
+            if any(frame_id not in frames for frame_id in evidence_frame_ids):
+                raise ValueError("evidence_frame_ids must refer to images returned in this clip_qa")
             return ClipSubmission(
                 status=status,
                 answer=answer,
-                evidence_times_s=evidence_times_s,
+                evidence_frame_ids=evidence_frame_ids,
             ).model_dump_json()
+
+        def finish_clip(_run_context: Any, tool_results: list[Any]) -> ToolsToFinalOutputResult:
+            for result in tool_results:
+                if result.tool.name == "submit_clip_answer":
+                    payload = json.loads(result.output)
+                    if "error" not in payload:
+                        submission = ClipSubmission.model_validate(payload)
+                        return ToolsToFinalOutputResult(
+                            is_final_output=True,
+                            final_output=submission.model_dump_json(),
+                        )
+            return ToolsToFinalOutputResult(is_final_output=False)
 
         clip_agent = Agent(
             name="clip-qa",
             instructions=(
                 "Answer the visual question by sampling the supplied interval. "
-                "Use sample_video, notes when useful, and submit_clip_answer. "
+                "Use sample_video, crop_frame for fine details, notes when useful, and "
+                "submit_clip_answer with evidence_frame_ids from returned images. "
+                f"Sampling and crops share {CLIP_IMAGE_LIMIT} images across this entire investigation. "
+                "Each image is at most 854 by 480 pixels; crop_frame reads its original resolution. "
                 "Do not infer an answered result without visible evidence."
             ),
             model=context.model,
             model_settings=context.model_settings,
-            tools=[sample_video, add_clip_note, read_clip_notes, submit_clip_answer],
-            tool_use_behavior=StopAtTools(stop_at_tool_names=["submit_clip_answer"]),
+            tools=[sample_video, crop_frame, add_clip_note, read_clip_notes, submit_clip_answer],
+            tool_use_behavior=finish_clip,
         )
         clip_result, _, _ = await run_stream(
             context,
@@ -767,28 +797,31 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                     {
                         "status": submission.status,
                         "answer": submission.answer,
-                        "evidence_times_s": submission.evidence_times_s,
+                        "evidence_times_s": [
+                            frames[frame_id]["time_s"]
+                            for frame_id in submission.evidence_frame_ids
+                        ],
                     },
                     ensure_ascii=False,
                 )
             )
         ]
         if submission.status == "answered":
-            for time_s in submission.evidence_times_s:
-                evidence = await extract_evidence_frame(context, time_s, call_id)
+            for frame_id in submission.evidence_frame_ids:
+                frame = frames[frame_id]
+                evidence = frame["image_path"]
                 outputs.append(
-                    ToolOutputText(
-                        text=json.dumps(
-                            {"evidence_time_s": time_s, "filename": evidence.name}
-                        )
-                    )
+                    ToolOutputText(text=json.dumps({
+                        "frame_id": frame_id,
+                        "evidence_time_s": frame["time_s"],
+                        "filename": evidence.name,
+                        "crop": frame["crop"],
+                    }))
                 )
-                encoded = base64.b64encode(evidence.read_bytes()).decode()
-                if not encoded:
-                    raise RuntimeError(f"empty evidence image encoding: {evidence}")
                 outputs.append(
                     ToolOutputImage(
-                        image_url=f"data:image/jpeg;base64,{encoded}",
+                        image_url="data:image/jpeg;base64,"
+                        + base64.b64encode(evidence.read_bytes()).decode(),
                         detail="high",
                     )
                 )

@@ -23,6 +23,8 @@ from wandb.sdk.lib.runid import generate_id
 
 from src.harness import (
     AgentRaised,
+    CLIP_IMAGE_LIMIT,
+    FRAME_SIZE,
     InvalidTrace,
     OPENAI_BASE_URL,
     VideoSQLHarness,
@@ -268,6 +270,8 @@ async def main_async(args: argparse.Namespace) -> None:
             "batch_size": args.batch_size,
             "rollouts": args.rollouts,
             "concurrency": args.batch_size * args.rollouts,
+            "frame_size": list(FRAME_SIZE),
+            "clip_image_limit": CLIP_IMAGE_LIMIT,
             "skill_dir": str(args.skill_dir),
             "main_git_hash": main_git_hash,
             "wandb_id": wandb_id,
