@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import httpx
 import httpx2
 import openai
 import wandb
@@ -61,6 +62,7 @@ def retryable(error: BaseException) -> bool:
                 ValidationError,
                 UserError,
                 httpx2.RemoteProtocolError,
+                httpx.RemoteProtocolError,
                 openai.APIConnectionError,
                 openai.APITimeoutError,
                 openai.RateLimitError,
