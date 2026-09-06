@@ -15,7 +15,6 @@ import httpx
 import numpy as np
 from agents import (
     Agent,
-    AgentHooks,
     ModelSettings,
     OpenAIResponsesModel,
     RunConfig,
@@ -63,10 +62,6 @@ Stop calling tools. Produce a trusted handoff that preserves the question, estab
 unresolved branches, useful row IDs and time intervals, and the exact next investigation steps.
 Do not answer the question in this handoff.
 """.strip()
-FORCED_REFLECTION_INSTRUCTION = """
-Stop calling retrieval tools now. Submit the best abstract retrieval reflection and abstract
-meta-reflection supported by the conversation so far.
-""".strip()
 
 
 class AgentRaised(Exception):
@@ -87,15 +82,8 @@ class ClipSubmission(BaseModel):
     evidence_times_s: list[float]
 
 
-class ReflectionSubmission(BaseModel):
-    reflection: str
-    meta_reflection: str
-
-
 @dataclass
 class RolloutSession:
-    agent: Agent
-    history: list[dict[str, Any]]
     answer: str | None
     status: str
     trace_files: list[str]
@@ -190,7 +178,7 @@ def completion_characters(response: Any) -> str:
 def read_skill_catalog(skill_dir: Path) -> list[dict[str, str]]:
     skills = []
     for path in sorted(skill_dir.glob("*.md")):
-        if path.name in {"META-SKILL.md", "ROOT-SKILL.md"}:
+        if path.name == "ROOT-SKILL.md":
             continue
         lines = path.read_text().splitlines()
         if not lines or lines[0] != "---":
@@ -515,7 +503,7 @@ async def sample_contact_sheets(
         return outputs
 
 
-def make_tools(context: HarnessContext) -> tuple[list[Any], Any, Any]:
+def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
     @function_tool(failure_error_function=tool_error_json)
     async def run_sql(sql: str) -> str:
         """Execute one read-only SQL query. Returns at most 100 rows."""
@@ -816,7 +804,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any, Any]:
         agent_raise,
         submit_answer,
     ]
-    return answer_tools, submit_answer, catalog
+    return answer_tools, catalog
 
 
 class VideoSQLHarness:
@@ -861,7 +849,7 @@ class VideoSQLHarness:
             embedding_url=embedding_url,
             embedding_model=embedding_model,
         )
-        self.answer_tools, self.submit_answer_tool, self.catalog = make_tools(self.context)
+        self.answer_tools, self.catalog = make_tools(self.context)
 
     async def answer(self, question: str) -> RolloutSession:
         base_instructions = (
@@ -899,8 +887,6 @@ class VideoSQLHarness:
             if not needs_compaction:
                 submission = AnswerSubmission.model_validate_json(str(result.final_output))
                 return RolloutSession(
-                    agent=agent,
-                    history=history,
                     answer=submission.answer,
                     status="answered",
                     trace_files=trace_files,
@@ -922,8 +908,6 @@ class VideoSQLHarness:
             handoff = str(compact_result.final_output)
             if compactions == 3:
                 return RolloutSession(
-                    agent=agent,
-                    history=compact_result.to_input_list(),
                     answer=None,
                     status="compaction_limit",
                     trace_files=trace_files,
@@ -936,134 +920,6 @@ class VideoSQLHarness:
                 + handoff
             )
             input_items = "Continue the investigation from the trusted handoff."
-
-    async def reflect(
-        self,
-        session: RolloutSession,
-        reference_answer: str,
-        score: int,
-    ) -> ReflectionSubmission:
-        agent = session.agent
-        tool_calls = 0
-
-        class ReflectionHooks(AgentHooks):
-            async def on_tool_end(self, context, agent, tool, result) -> None:
-                nonlocal tool_calls
-                if tool.name not in {"submit_reflection", "agent_raise"}:
-                    tool_calls += 1
-
-        @function_tool(
-            failure_error_function=None,
-            is_enabled=lambda context, agent: tool_calls >= 2,
-        )
-        async def submit_reflection(reflection: str, meta_reflection: str) -> str:
-            """Submit both abstract reflections and stop the reflection loop."""
-            return ReflectionSubmission(
-                reflection=reflection,
-                meta_reflection=meta_reflection,
-            ).model_dump_json()
-
-        agent.tools = [
-            tool
-            for tool in self.answer_tools
-            if tool.name != self.submit_answer_tool.name
-        ] + [submit_reflection]
-        agent.tool_use_behavior = StopAtTools(
-            stop_at_tool_names=["submit_reflection"]
-        )
-        agent.hooks = ReflectionHooks()
-        agent.model_settings = dataclasses.replace(
-            self.context.model_settings, tool_choice="required"
-        )
-        agent.reset_tool_choice = False
-        reflection_tools = agent.tools
-        reflection_behavior = agent.tool_use_behavior
-        meta_skill = (self.context.skill_dir / "META-SKILL.md").read_text()
-        if session.status == "compaction_limit":
-            reflection_prompt = (
-                f"Reference answer: {reference_answer}\nScore out of 5: 0\n"
-                "The rollout ended after its third compaction and received score 0. "
-                "Focus on why the investigation looped. "
-            )
-        else:
-            reflection_prompt = (
-                f"Reference answer: {reference_answer}\nScore out of 5: {score}\n"
-            )
-        reflection_prompt += (
-            "Reflect on your own answer process in this same conversation. "
-            "During reflection, make at least two tool calls to investigate and check your "
-            "conclusions before submitting. Earlier answer-stage calls do not count. "
-            "Use the returned evidence rather than the reference answer alone to diagnose "
-            "the process. Write lessons only after finding the correct answer through "
-            "evidence during reflection. Otherwise submit only a very small proposed patch "
-            "with a possible error cause explicitly marked uncertain and unverified, for "
-            "the merger to decide how to handle. Submit abstract reflection and "
-            "meta-reflection.\n\nMETA-SKILL:\n"
-            + meta_skill
-        )
-        base_instructions = agent.instructions
-        input_items = session.history + [{"role": "user", "content": reflection_prompt}]
-        compactions = 0
-        while True:
-            result, threshold, _ = await run_stream(
-                self.context,
-                agent,
-                input_items,
-                "reflection",
-                True,
-            )
-            if result.final_output is not None:
-                if tool_calls < 2:
-                    raise InvalidTrace("reflection ended before two reflection-stage tool calls")
-                return ReflectionSubmission.model_validate_json(str(result.final_output))
-            if not threshold:
-                raise InvalidTrace("reflection ended without submit_reflection")
-            agent.tools = []
-            agent.tool_use_behavior = "run_llm_again"
-            agent.model_settings = self.context.model_settings
-            compact_result, _, _ = await run_stream(
-                self.context,
-                agent,
-                result.to_input_list() + [{
-                    "role": "user",
-                    "content": (
-                        "Stop calling tools. Compact this reflection into a handoff preserving "
-                        "the question, submitted/reference answers, score, original reasoning "
-                        "and tool evidence, reflection-stage checks and returned evidence, "
-                        "competing explanations, unresolved issues, and next checks. "
-                        "Do not submit the final reflection yet."
-                    ),
-                }],
-                "reflection-compaction",
-                False,
-            )
-            compactions += 1
-            agent.instructions = (
-                base_instructions + "\n\nReflection handoff:\n"
-                + str(compact_result.final_output)
-            )
-            agent.tool_use_behavior = reflection_behavior
-            agent.model_settings = dataclasses.replace(
-                self.context.model_settings, tool_choice="required"
-            )
-            if compactions == 3:
-                if tool_calls < 2:
-                    raise InvalidTrace("reflection exhausted three compactions before two tool calls")
-                agent.tools = [submit_reflection]
-                forced, _, _ = await run_stream(
-                    self.context,
-                    agent,
-                    reflection_prompt + "\n\n" + FORCED_REFLECTION_INSTRUCTION,
-                    "reflection-forced",
-                    False,
-                )
-                return ReflectionSubmission.model_validate_json(str(forced.final_output))
-            agent.tools = reflection_tools
-            input_items = [{
-                "role": "user",
-                "content": reflection_prompt + f"\nReflection tool calls completed: {tool_calls}. "
-                "Continue from the reflection handoff.",
-            }]
 
     async def close(self) -> None:
         await self.context.client.close()

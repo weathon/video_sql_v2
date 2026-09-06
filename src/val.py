@@ -6,13 +6,144 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import httpx2
+import openai
 import wandb
 import weave
+from agents import (
+    Agent,
+    MaxTurnsExceeded,
+    ModelBehaviorError,
+    StopAtTools,
+    UserError,
+    function_tool,
+)
 from dotenv import load_dotenv
+from pydantic import BaseModel, ValidationError
 from wandb.sdk.lib.runid import generate_id
 
-from src.harness import VideoSQLHarness
-from src.training import judge_answer, milestone, retryable, write_error
+from src.harness import (
+    AgentRaised,
+    InvalidTrace,
+    VideoSQLHarness,
+    run_stream,
+    tool_error_json,
+)
+
+
+class Judgment(BaseModel):
+    score: int
+
+
+def exception_chain(error: BaseException) -> list[BaseException]:
+    chain = []
+    current: BaseException | None = error
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def retryable(error: BaseException) -> bool:
+    for item in exception_chain(error):
+        if isinstance(
+            item,
+            (
+                AgentRaised,
+                InvalidTrace,
+                MaxTurnsExceeded,
+                ModelBehaviorError,
+                ValidationError,
+                UserError,
+                httpx2.RemoteProtocolError,
+                openai.APIConnectionError,
+                openai.APITimeoutError,
+                openai.RateLimitError,
+                openai.InternalServerError,
+            ),
+        ):
+            return True
+        if type(item) is openai.APIError:
+            return True
+    return False
+
+
+def write_error(path: Path, error: BaseException) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "type": type(error).__name__,
+                "message": str(error),
+                "chain": [
+                    {"type": type(item).__name__, "message": str(item)}
+                    for item in exception_chain(error)
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def milestone(message: str) -> None:
+    print(message, flush=True)
+    with Path("AGENT_STDOUT.txt").open("a") as output:
+        output.write(message + "\n")
+
+
+async def judge_answer(
+    harness: VideoSQLHarness,
+    reference_answer: str,
+    candidate_answer: str,
+    attempts: int,
+) -> int:
+    @function_tool(failure_error_function=tool_error_json)
+    async def submit_judgment(score: int) -> str:
+        """Submit an integer semantic-equivalence score from 0 through 5."""
+        if not 0 <= score <= 5:
+            raise ValueError("score must be from 0 through 5")
+        return Judgment(score=score).model_dump_json()
+
+    prompt = json.dumps(
+        {
+            "reference_answer": reference_answer,
+            "candidate_answer": candidate_answer,
+        },
+        ensure_ascii=False,
+    )
+    instructions = (
+        "Judge only whether the candidate final answer is semantically equivalent to the "
+        "reference final answer. Ignore incidental video IDs, timestamps, row IDs, and other "
+        "identifiers. Return 5 for fully equivalent and 0 for wrong, with intermediate integers "
+        "for partially correct answers. Call submit_judgment."
+    )
+    for attempt in range(1, attempts + 1):
+        agent = Agent(
+            name="judge",
+            instructions=instructions,
+            model=harness.context.model,
+            model_settings=harness.context.model_settings,
+            tools=[submit_judgment],
+            tool_use_behavior=StopAtTools(stop_at_tool_names=["submit_judgment"]),
+        )
+        try:
+            result, _, _ = await run_stream(
+                harness.context,
+                agent,
+                prompt,
+                f"judge-attempt-{attempt}",
+                False,
+            )
+            return Judgment.model_validate_json(str(result.final_output)).score
+        except BaseException as error:
+            write_error(
+                harness.context.run_dir / f"judge-attempt-{attempt}-error.json",
+                error,
+            )
+            if not retryable(error):
+                raise
+    raise RuntimeError("judge attempts exhausted")
 
 
 async def run_eval_rollout(
