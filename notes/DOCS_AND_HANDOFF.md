@@ -10,7 +10,7 @@
 
 用户补充要求完整 trace：各阶段保存指令、模型设置、工具 schemas、输入输出、reasoning、usage、错误和逐事件 JSONL；图像独立保存并记录源帧与裁剪映射。完整 trace 实现提交为 `b0097c66`。
 
-尚未启动正式评测，未进行 API 运行验证。Embedding 当前可用性未在本轮确认。代码交付需完成新的独立 diff review；后续正式评测前需 Claude CLI 全仓 review。用户已有修改、删除、历史 runs 和数据均保留。
+尚未启动正式评测，未进行 API 运行验证。Embedding 当前可用性未在本轮确认。新的独立 subagent 已完成 `b4799309..cb5ad4e7` 的指定文件 diff review，结论为 `no blocking issues`；后续正式评测前仍需 Claude CLI 全仓 review。用户已有修改、删除、历史 runs 和数据均保留。
 
 以下内容是停止训练时的历史交接，不作为当前模型、judge、并发或启动指令。
 

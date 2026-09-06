@@ -299,3 +299,7 @@ harness for files [本任务修改文件列表].
 - 监控遵守仓库前台 session 和稳定后低频轮询规则。
 
 最终交付报告包含分支、提交、实际修复项、review 结果，以及尚未进行正式运行验证的事实。
+
+## 6. 实施交付记录
+
+本计划的代码和文档修改已提交在 `codex/training-free-harness`。新的独立 review subagent 已自行读取 REVIEW.md 并审查 `b4799309..cb5ad4e7` 的指定文件 diff，结论为 `no blocking issues`。用户补充的完整 trace 要求已实现。未启动正式评测，未执行 API 运行验证、syntax checks、preflight 或 smoke tests。当前入口、trace 文件布局和后续正式评测要求见 PLANS.md；历史审计证据保留在本计划第 3 节。
