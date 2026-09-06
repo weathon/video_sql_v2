@@ -106,6 +106,11 @@ class HarnessContext:
     run_config: RunConfig
     embedding_url: str
     embedding_model: str
+    context_limit: int = CONTEXT_LIMIT
+    compaction_threshold: int = COMPACTION_THRESHOLD
+    compactions: int = 0
+    base_instructions: str = ""
+    response_states: dict[str, Any] = field(default_factory=dict)
     vectors: dict[str, np.ndarray] = field(init=False)
     row_ids: dict[str, np.ndarray] = field(init=False)
     sources: list[dict[str, Any]] = field(init=False)
@@ -143,6 +148,8 @@ def exception_chain(error: BaseException) -> list[BaseException]:
 
 def tool_error_json(_context: Any, error: Exception) -> str:
     for item in exception_chain(error):
+        if isinstance(item, FileNotFoundError):
+            raise item
         if isinstance(item, APIError) and (
             item.code == "insufficient_quota" or "no credits remaining" in str(item).lower()
         ):
@@ -277,6 +284,8 @@ def save_trace(
                 "raw_usage": response.raw_usage,
             }
         )
+        if response.response_id in context.response_states:
+            raw_responses[-1]["prefix_state"] = context.response_states[response.response_id]
     payload = {
         **header,
         "events_file": events_path.name,
@@ -318,8 +327,8 @@ async def run_stream(
             "reasoning_item_id_policy": context.run_config.reasoning_item_id_policy,
             "max_turns": MAX_TURNS,
             "watch_context": watch_context,
-            "context_limit": CONTEXT_LIMIT,
-            "compaction_threshold": COMPACTION_THRESHOLD,
+            "context_limit": context.context_limit,
+            "compaction_threshold": context.compaction_threshold,
         },
     }
     events_path = context.run_dir / "traces" / f"{label}-events-{uuid.uuid4().hex}.jsonl"
@@ -358,11 +367,11 @@ async def run_stream(
                 if response.usage is None:
                     raise RuntimeError("completed response did not include usage")
                 remaining = (
-                    CONTEXT_LIMIT
+                    context.context_limit
                     - response.usage.input_tokens
                     - response.usage.output_tokens
                 )
-                if watch_context and remaining <= COMPACTION_THRESHOLD:
+                if watch_context and remaining <= context.compaction_threshold:
                     result.cancel(mode="after_turn")
                     context_triggered = True
         except BaseException as error:
@@ -557,6 +566,8 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         )
 
     def semantic_search_error(tool_context: Any, error: Exception) -> str:
+        if isinstance(error, (httpx.HTTPError, RuntimeError, FileNotFoundError)):
+            raise error
         return json.dumps(
             {
                 "error": str(error),
@@ -940,13 +951,21 @@ class VideoSQLHarness:
         api_key: str,
         embedding_url: str,
         embedding_model: str,
+        *,
+        base_url: str = OPENAI_BASE_URL,
+        context_limit: int = CONTEXT_LIMIT,
+        compaction_threshold: int = COMPACTION_THRESHOLD,
+        reasoning_context: str | None = "all_turns",
     ) -> None:
         client = AsyncOpenAI(
-            api_key=api_key, base_url=OPENAI_BASE_URL, max_retries=3
+            api_key=api_key, base_url=base_url, max_retries=3
         )
         model = OpenAIResponsesModel(model=model_name, openai_client=client)
+        reasoning = {"effort": "medium"}
+        if reasoning_context is not None:
+            reasoning["context"] = reasoning_context
         model_settings = ModelSettings(
-            reasoning={"effort": "medium", "context": "all_turns"},
+            reasoning=reasoning,
             store=False,
             response_include=["reasoning.encrypted_content"],
             preserve_raw_usage=True,
@@ -967,6 +986,8 @@ class VideoSQLHarness:
             run_config=run_config,
             embedding_url=embedding_url,
             embedding_model=embedding_model,
+            context_limit=context_limit,
+            compaction_threshold=compaction_threshold,
         )
         self.answer_tools, self.catalog = make_tools(self.context)
 
@@ -976,16 +997,21 @@ class VideoSQLHarness:
         *,
         input_items: list[dict[str, Any]] | None = None,
         instructions: str | None = None,
+        base_instructions: str | None = None,
+        compactions: int = 0,
     ) -> RolloutSession:
-        base_instructions = instructions if instructions is not None else (
-            "Answer the user's question by retrieving evidence from the memory database. "
-            "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
-            + "\n\nROOT-SKILL (skill loading guidance):\n"
-            + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
-        )
+        if base_instructions is None:
+            base_instructions = instructions if instructions is not None else (
+                "Answer the user's question by retrieving evidence from the memory database. "
+                "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
+                + "\n\nROOT-SKILL (skill loading guidance):\n"
+                + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
+            )
+        self.context.base_instructions = base_instructions
+        self.context.compactions = compactions
         agent = Agent(
             name="memory-retrieval",
-            instructions=base_instructions,
+            instructions=instructions if instructions is not None else base_instructions,
             model=self.context.model,
             model_settings=self.context.model_settings,
             tools=self.answer_tools,
@@ -997,7 +1023,6 @@ class VideoSQLHarness:
         if input_items is None:
             input_items = f"Question: {normalize_text(question)}\n\nAvailable skills:\n{skills}"
         trace_files = []
-        compactions = 0
         while True:
             result, needs_compaction, trace_file = await run_stream(
                 self.context,
@@ -1017,7 +1042,7 @@ class VideoSQLHarness:
                 )
             if not needs_compaction:
                 raise InvalidTrace("answer loop ended without submit_answer")
-            compactions += 1
+            self.context.compactions += 1
             original_tools = agent.tools
             original_behavior = agent.tool_use_behavior
             agent.tools = []
@@ -1032,7 +1057,7 @@ class VideoSQLHarness:
             )
             trace_files.append(compact_trace)
             handoff = str(compact_result.final_output)
-            if compactions == 3:
+            if self.context.compactions == 3:
                 return RolloutSession(
                     answer=None,
                     status="compaction_limit",
