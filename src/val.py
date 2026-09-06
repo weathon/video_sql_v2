@@ -28,6 +28,7 @@ from src.harness import (
     InvalidTrace,
     OPENAI_BASE_URL,
     VideoSQLHarness,
+    exception_chain,
     run_stream,
     tool_error_json,
 )
@@ -37,17 +38,14 @@ class Judgment(BaseModel):
     score: int
 
 
-def exception_chain(error: BaseException) -> list[BaseException]:
-    chain = []
-    current: BaseException | None = error
-    while current is not None and current not in chain:
-        chain.append(current)
-        current = current.__cause__ or current.__context__
-    return chain
-
-
 def retryable(error: BaseException) -> bool:
-    for item in exception_chain(error):
+    chain = exception_chain(error)
+    for item in chain:
+        if isinstance(item, openai.APIError) and (
+            item.code == "insufficient_quota" or "no credits remaining" in str(item).lower()
+        ):
+            return False
+    for item in chain:
         if isinstance(
             item,
             (
@@ -71,6 +69,9 @@ def retryable(error: BaseException) -> bool:
 
 
 def write_error(path: Path, error: BaseException) -> None:
+    print(f"error_file={path} " + " <- ".join(
+        f"{type(item).__name__}: {item}" for item in exception_chain(error)
+    ), flush=True)
     path.write_text(
         json.dumps(
             {

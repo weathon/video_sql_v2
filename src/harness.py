@@ -25,7 +25,7 @@ from agents import (
     ToolsToFinalOutputResult,
     function_tool,
 )
-from openai import AsyncOpenAI
+from openai import APIError, AsyncOpenAI
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
@@ -132,7 +132,21 @@ class HarnessContext:
         self.sources = json.loads(self.media_map.read_text())["sources"]
 
 
+def exception_chain(error: BaseException) -> list[BaseException]:
+    chain = []
+    current: BaseException | None = error
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
 def tool_error_json(_context: Any, error: Exception) -> str:
+    for item in exception_chain(error):
+        if isinstance(item, APIError) and (
+            item.code == "insufficient_quota" or "no credits remaining" in str(item).lower()
+        ):
+            raise item
     return json.dumps({"error": str(error)}, ensure_ascii=False)
 
 
