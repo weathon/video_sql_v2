@@ -302,4 +302,39 @@ harness for files [本任务修改文件列表].
 
 ## 6. 实施交付记录
 
-本计划的代码和文档修改已提交在 `codex/training-free-harness`。新的独立 review subagent 已自行读取 REVIEW.md 并审查 `b4799309..cb5ad4e7` 的指定文件 diff，结论为 `no blocking issues`。用户补充的完整 trace 要求已实现。未启动正式评测，未执行 API 运行验证、syntax checks、preflight 或 smoke tests。当前入口、trace 文件布局和后续正式评测要求见 PLANS.md；历史审计证据保留在本计划第 3 节。
+本计划的代码和文档修改已提交在 `codex/training-free-harness`。新的独立 review subagent 已自行读取 REVIEW.md 并审查 `b4799309..cb5ad4e7` 的指定文件 diff，结论为 `no blocking issues`。用户补充的完整 trace 要求已实现。当前入口和 trace 文件布局见 PLANS.md；历史审计证据保留在本计划第 3 节。
+
+## 7. 正式运行交接（2026-09-06 UTC）
+
+用户要求继续完成并授权 embedding 使用任意空闲 GPU 后，已运行正式评测。运行代码为 `7510e5356e290023b65358541fb1b4f2f36f65a1`。启动前 Claude CLI 使用 claude-opus-4-8 完成全仓审查，自行完整读取 REVIEW.md，结论为 `no blocking issues`，无权限拒绝；原始报告保存为 `runs/training_free_luna_seed0_7510e535/claude-full-review.json`。没有执行 syntax checks、preflight 或 smoke tests。
+
+实际启动命令：
+
+```bash
+PYTHONUNBUFFERED=1 HF_HOME=/raid/huggingface .venv/bin/python -m src.val \
+  --test-file /raid/wg25r/video_sql_v2/data/test-seed-0.json \
+  --runtime-root /raid/wg25r/video_sql_v2/data/runtime \
+  --skill-dir /raid/wg25r/video_sql_v2/skills/initial \
+  --run-dir /raid/wg25r/video_sql_v2/runs/training_free_luna_seed0_7510e535 \
+  --model-name gpt-5.6-luna --api-key-env PERSONAL_OPENAI_KEY \
+  --embedding-url http://127.0.0.1:8013/v1 \
+  --embedding-model qwen3-vl-embedding-8b \
+  --attempts 3 --batch-size 30 --rollouts 5 \
+  > runs/training_free_luna_seed0_7510e535/eval.log 2>&1
+```
+
+该命令是已经执行的历史命令。不要直接重跑并覆盖 eval.log；恢复条件见下文。
+
+- 新 run 目录：`runs/training_free_luna_seed0_7510e535`。配置文件已核对：官方 endpoint、Luna、medium/all_turns、150 并发、静态初始 skills、854×480 和每 clip 1,024 张图片。
+- W&B：`https://wandb.ai/3dsmile/video-sql-v2/runs/tityz8z2`，ID 为 `tityz8z2`。日志记录 W&B 文件同步完成。
+- 进程最终退出码为 0，所有 1,500 个 result.json 均已写入；其中 1,447 个为 answered，53 个为 failed。汇总 score_sum=2928，accuracy=0.3904，包含失败计零，不能当作完整有效的最终评测结果。
+- 53 个失败的最后一次 error.json 均包含 OpenAI APIError：`You have no credits remaining.`。共 158 条 attempt 错误的异常链为外层 TypeError `object NoneType can't be used in 'await' expression`、内层余额不足 APIError；另有 37 条 AnswerSubmission 格式校验错误。余额不足已向用户报告；没有换 key、模型、reasoning 或启动新 API 调用。
+- Weave 写出了实际 call 链接，但退出前出现单条 calls_complete 超过 32,505,856 bytes 的警告；未逐条核实远端上传完整性。完整本地 traces 和媒体均保留，不以进程退出码证明 Weave 上传完整。
+
+正式产物核对范围：人工检查了实际工具输入输出、多轮 encrypted reasoning、judge 的 question/reference/candidate，以及打开的证据图片。`question-month-742/rollout-04` 的采样帧与最终 evidence 引用相同图像文件；画面中的肖像脸部为蓝色。`question-month-40/rollout-02` 的无效 frame ID 提交返回错误，之后成功纠正。`question-month-528/rollout-02` 的超额采样整体被拒绝，后续请求累计从 510 增至 750、990。`question-week-185/rollout-04` 的 sql-qa 输入为 110,153 字符，其中 25 行与同一 SQL 查询的完整数据库结果逐行相同。未逐张人工检查全部图片，也未从本次运行验证未触发的 compaction 场景。
+
+运行后修复 `5f4eb63f`：余额不足或 insufficient_quota 不再归入可重试错误；工具边界向上抛出该 APIError，错误日志打印完整异常链。此为局部修复，未重复 review，尚未经过新 API 运行验证；瞬态错误仍保留原有重试次数。
+
+Embedding 恢复及清理：原 `egolife-qwen3-vl-embedding-8b` 容器保持停止。曾在 GPU 3 启动 `video-sql-training-free-embedding-7510e535`，使用原镜像 `sha256:bd995759b5b8ac51062e04c9e4d7c91c382d1ba377bb787e24dca2ccb39925e9` 和 Qwen/Qwen3-VL-Embedding-8B，显存预算从旧 0.45 改为 0.40，保留其他原设置；正式 semantic_search 返回了实际检索结果。评测后该临时容器已停止并删除，其前台 session 退出码为 0，日志保存在 run 的 embedding.log。当前没有本任务仍在运行的前台任务。
+
+恢复前必须先解决 PERSONAL_OPENAI_KEY 所属账号的 API credits。当前恢复逻辑会直接读取任何已有 result.json，包括 failed；因此直接重新执行入口不会补跑这 53 项。收到恢复指令后，应保留原始失败目录和汇总记录，把确认由余额不足影响的 53 个 rollout 目录移到 run 内独立归档路径，再沿用同一 W&B run 和原评估设置补跑缺失项；不能删除旧 traces 或覆盖已有日志。还需恢复同模型 embedding API，按当时空闲 GPU 状态选择设备。不要在余额尚未恢复时继续重试。

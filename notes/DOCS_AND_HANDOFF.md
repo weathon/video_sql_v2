@@ -10,7 +10,11 @@
 
 用户补充要求完整 trace：各阶段保存指令、模型设置、工具 schemas、输入输出、reasoning、usage、错误和逐事件 JSONL；图像独立保存并记录源帧与裁剪映射。完整 trace 实现提交为 `b0097c66`。
 
-尚未启动正式评测，未进行 API 运行验证。Embedding 当前可用性未在本轮确认。新的独立 subagent 已完成 `b4799309..cb5ad4e7` 的指定文件 diff review，结论为 `no blocking issues`；后续正式评测前仍需 Claude CLI 全仓 review。用户已有修改、删除、历史 runs 和数据均保留。
+新的独立 subagent 已完成 `b4799309..cb5ad4e7` 的指定文件 diff review，结论为 `no blocking issues`。正式运行前 Claude CLI 全仓 review 同样无阻塞项。用户已有修改、删除、历史 runs 和数据均保留。
+
+正式 run 为 `runs/training_free_luna_seed0_7510e535`，W&B ID 为 `tityz8z2`。1,500 个 rollout 已落盘，其中 1,447 个 answered、53 个因 OpenAI API credits 用尽而 failed；含失败计零的 accuracy 为 0.3904，不能作为完整有效的最终评测结果。已从真实 traces 核对检索、采样画面、帧引用、无效视觉提交纠正、图片累计额度、sql_qa 全量输入和 judge 问题语境。完整本地 traces 与媒体保留；Weave 出现单条上传过大的警告，远端完整性未逐条核实。
+
+运行后局部修复 `5f4eb63f` 使余额不足直接终止并显示原始异常链，尚未经过新 API 运行验证。正式进程已退出，本任务在 GPU 3 创建的临时 embedding 容器已停止并删除，没有仍在运行的前台任务。恢复必须先解决账号 credits；现有 failed result.json 会被恢复逻辑直接读取，不能直接重跑后认为 53 项已补跑。实际命令、审查报告、具体 trace 证据和归档后补跑的交接说明见 [TRAINING_FREE_PLAN.md 第 7 节](../TRAINING_FREE_PLAN.md#7-正式运行交接2026-09-06-utc)。
 
 以下内容是停止训练时的历史交接，不作为当前模型、judge、并发或启动指令。
 
