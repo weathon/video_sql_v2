@@ -31,8 +31,9 @@ from pydantic import BaseModel
 from src.normalize import normalize_text
 
 
-CONTEXT_LIMIT = 262_144
-COMPACTION_THRESHOLD = 50_000
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+CONTEXT_LIMIT = 1_050_000
+COMPACTION_THRESHOLD = 178_000
 MAX_TURNS = 100
 SEARCH_TABLES = {
     "episodes": "text",
@@ -817,18 +818,16 @@ class VideoSQLHarness:
         run_dir: Path,
         model_name: str,
         api_key: str,
-        base_url: str | None,
         embedding_url: str,
         embedding_model: str,
-        reasoning_effort: Literal["low", "medium", "high"],
     ) -> None:
-        client_arguments: dict[str, Any] = {"api_key": api_key, "max_retries": 3}
-        if base_url is not None:
-            client_arguments["base_url"] = base_url
-        client = AsyncOpenAI(**client_arguments)
+        client = AsyncOpenAI(
+            api_key=api_key, base_url=OPENAI_BASE_URL, max_retries=3
+        )
         model = OpenAIResponsesModel(model=model_name, openai_client=client)
         model_settings = ModelSettings(
-            reasoning={"effort": reasoning_effort},
+            reasoning={"effort": "medium", "context": "all_turns"},
+            store=False,
             response_include=["reasoning.encrypted_content"],
             preserve_raw_usage=True,
         )
@@ -884,13 +883,15 @@ class VideoSQLHarness:
             )
             trace_files.append(trace_file)
             history = result.to_input_list()
-            if not needs_compaction:
+            if result.final_output is not None:
                 submission = AnswerSubmission.model_validate_json(str(result.final_output))
                 return RolloutSession(
                     answer=submission.answer,
                     status="answered",
                     trace_files=trace_files,
                 )
+            if not needs_compaction:
+                raise InvalidTrace("answer loop ended without submit_answer")
             compactions += 1
             original_tools = agent.tools
             original_behavior = agent.tool_use_behavior

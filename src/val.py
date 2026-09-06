@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import json
-import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -18,13 +17,14 @@ from agents import (
     UserError,
     function_tool,
 )
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 from pydantic import BaseModel, ValidationError
 from wandb.sdk.lib.runid import generate_id
 
 from src.harness import (
     AgentRaised,
     InvalidTrace,
+    OPENAI_BASE_URL,
     VideoSQLHarness,
     run_stream,
     tool_error_json,
@@ -94,6 +94,7 @@ def milestone(message: str) -> None:
 
 async def judge_answer(
     harness: VideoSQLHarness,
+    question: str,
     reference_answer: str,
     candidate_answer: str,
     attempts: int,
@@ -107,6 +108,7 @@ async def judge_answer(
 
     prompt = json.dumps(
         {
+            "question": question,
             "reference_answer": reference_answer,
             "candidate_answer": candidate_answer,
         },
@@ -114,7 +116,8 @@ async def judge_answer(
     )
     instructions = (
         "Judge only whether the candidate final answer is semantically equivalent to the "
-        "reference final answer. Ignore incidental video IDs, timestamps, row IDs, and other "
+        "reference final answer in the context of the original question. Interpret option "
+        "numbers using the question when present. Ignore incidental video IDs, timestamps, row IDs, and other "
         "identifiers. Return 5 for fully equivalent and 0 for wrong, with intermediate integers "
         "for partially correct answers. Call submit_judgment."
     )
@@ -155,7 +158,6 @@ async def run_eval_rollout(
     run_dir: Path,
     model_name: str,
     api_key: str,
-    base_url: str | None,
     embedding_url: str,
     embedding_model: str,
     attempts: int,
@@ -185,10 +187,8 @@ async def run_eval_rollout(
                 run_dir=attempt_dir,
                 model_name=model_name,
                 api_key=api_key,
-                base_url=base_url,
                 embedding_url=embedding_url,
                 embedding_model=embedding_model,
-                reasoning_effort="medium",
             )
             try:
                 session = await harness.answer(question["question"])
@@ -197,6 +197,7 @@ async def run_eval_rollout(
                     if session.status == "compaction_limit"
                     else await judge_answer(
                         harness,
+                        question["question"],
                         question["answer"],
                         session.answer,
                         attempts,
@@ -239,8 +240,9 @@ async def run_eval_rollout(
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    load_dotenv()
-    api_key = os.environ[args.api_key_env]
+    api_key = dotenv_values(Path(__file__).resolve().parents[1] / ".env")[args.api_key_env]
+    if not api_key:
+        raise ValueError(f"{args.api_key_env} must have a value in the project .env")
     args.run_dir.mkdir(parents=True, exist_ok=True)
     main_git_hash = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -258,12 +260,14 @@ async def main_async(args: argparse.Namespace) -> None:
         resume = "never"
         config = {
             "model": args.model_name,
-            "base_url": args.base_url,
+            "base_url": OPENAI_BASE_URL,
+            "reasoning": {"effort": "medium", "context": "all_turns"},
             "embedding_url": args.embedding_url,
             "embedding_model": args.embedding_model,
             "attempts": args.attempts,
             "batch_size": args.batch_size,
             "rollouts": args.rollouts,
+            "concurrency": args.batch_size * args.rollouts,
             "skill_dir": str(args.skill_dir),
             "main_git_hash": main_git_hash,
             "wandb_id": wandb_id,
@@ -280,7 +284,7 @@ async def main_async(args: argparse.Namespace) -> None:
         dir=args.run_dir,
     )
     questions = json.loads(args.test_file.read_text())
-    semaphore = asyncio.Semaphore(24)
+    semaphore = asyncio.Semaphore(args.batch_size * args.rollouts)
     all_results = []
     try:
         for batch_index, start in enumerate(range(0, len(questions), args.batch_size)):
@@ -295,7 +299,6 @@ async def main_async(args: argparse.Namespace) -> None:
                     args.run_dir,
                     args.model_name,
                     api_key,
-                    args.base_url,
                     args.embedding_url,
                     args.embedding_model,
                     args.attempts,
@@ -348,15 +351,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--test-file", type=Path, required=True)
     parser.add_argument("--runtime-root", type=Path, required=True)
-    parser.add_argument("--skill-dir", type=Path, required=True)
+    parser.add_argument("--skill-dir", type=Path, default=Path(__file__).resolve().parents[1] / "skills/initial")
     parser.add_argument("--run-dir", type=Path, required=True)
-    parser.add_argument("--model-name", required=True)
-    parser.add_argument("--api-key-env", required=True)
-    parser.add_argument("--base-url")
+    parser.add_argument("--model-name", default="gpt-5.6-luna")
+    parser.add_argument("--api-key-env", default="PERSONAL_OPENAI_KEY")
     parser.add_argument("--embedding-url", required=True)
     parser.add_argument("--embedding-model", required=True)
     parser.add_argument("--attempts", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=30)
     parser.add_argument("--rollouts", type=int, default=5)
     args = parser.parse_args()
     asyncio.run(main_async(args))
