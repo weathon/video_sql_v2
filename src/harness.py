@@ -964,8 +964,14 @@ class VideoSQLHarness:
         )
         self.answer_tools, self.catalog = make_tools(self.context)
 
-    async def answer(self, question: str) -> RolloutSession:
-        base_instructions = (
+    async def answer(
+        self,
+        question: str,
+        *,
+        input_items: list[dict[str, Any]] | None = None,
+        instructions: str | None = None,
+    ) -> RolloutSession:
+        base_instructions = instructions if instructions is not None else (
             "Answer the user's question by retrieving evidence from the memory database. "
             "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
             + "\n\nROOT-SKILL (skill loading guidance):\n"
@@ -982,9 +988,8 @@ class VideoSQLHarness:
         skills = "\n".join(
             f"- {skill['name']}: {skill['description']}" for skill in self.catalog
         )
-        input_items: str | list[dict[str, Any]] = (
-            f"Question: {normalize_text(question)}\n\nAvailable skills:\n{skills}"
-        )
+        if input_items is None:
+            input_items = f"Question: {normalize_text(question)}\n\nAvailable skills:\n{skills}"
         trace_files = []
         compactions = 0
         while True:

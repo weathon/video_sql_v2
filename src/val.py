@@ -125,6 +125,8 @@ async def judge_answer(
         "for partially correct answers. Call submit_judgment."
     )
     for attempt in range(1, attempts + 1):
+        if (harness.context.run_dir / f"judge-attempt-{attempt}-error.json").exists():
+            continue
         agent = Agent(
             name="judge",
             instructions=instructions,
