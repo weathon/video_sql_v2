@@ -20,13 +20,13 @@
 - 保留现有 **Qwen3-VL-Embedding-8B API 和 embedding index**，不重建索引。
 - 本次交付为代码修改、提交和最终 diff 审查；尚未获得启动新正式评测的指令。
 
-**当前工作区状态：**
+**实施开始前的工作区状态（历史快照）：**
 
 - 工作目录：`/raid/wg25r/video_sql_v2`。
 - 已从 `fresh2` 创建分支：`codex/training-free-harness`。
 - 分支起点：`b4799309eb060f47ccd8db4e77cb22d94c2c85ed`。
 - 迄今只创建了分支，**没有实施代码修改、没有新提交、没有启动运行**。
-- `TRAINING_FREE_PLAN.md` 尚未创建。进入执行模式后，先将本计划完整写入该文件并提交。
+- 本计划已保存为 `TRAINING_FREE_PLAN.md` 并在 `c1015eef` 提交。其余本节条目保留实施开始前的快照；当前实现状态见 `notes/DOCS_AND_HANDOFF.md`。
 - 工作区存在用户已有修改、删除和未跟踪文件，必须保留，不能顺手提交或恢复。其中包括已修改的 `AGENT_STDOUT.txt`、`REVIEW.md`，以及未跟踪的 `OTHERS.md`、`notes/CLAUDE_PROBLEMS.md`、`notes/INCIDENT_redundant_post_patch_read.md`、`notes/index.md`。
 - 用户已有的源码、测试和基础设施文件删除同样不能恢复。
 

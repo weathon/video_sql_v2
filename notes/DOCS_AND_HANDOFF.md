@@ -1,5 +1,19 @@
 # video_sql_v2：项目说明与接手记录
 
+## Training-free 实施状态（2026-09-06）
+
+当前分支为 `codex/training-free-harness`，实施计划见 [TRAINING_FREE_PLAN.md](../TRAINING_FREE_PLAN.md)，当前协议见 [PLANS.md](../PLANS.md)。
+
+已删除训练入口、reflection 和 META-SKILL；答题、judge、静态初始 skills、W&B/Weave、逐 rollout 结果和恢复保留。所有 LLM 角色使用 OpenAI 官方 Responses API、项目 .env 的 PERSONAL_OPENAI_KEY、gpt-5.6-luna、medium reasoning，并保留多轮 reasoning。每批 30 题 × 5 rollouts，合计 150 并发。Embedding 继续使用现有 Qwen3-VL-Embedding-8B API 和索引。
+
+已实现成功提交优先于 compaction、视觉提交校验错误继续 loop、SQL 同名列报错、sql_qa 全量结果、judge 原始问题输入。视觉输入改为最大 854×480 的独立帧，保存真实源 PTS 和原始分辨率帧，支持单帧裁剪；每次 clip_qa 累计 1,024 张图，证据复用已观察帧。
+
+用户补充要求完整 trace：各阶段保存指令、模型设置、工具 schemas、输入输出、reasoning、usage、错误和逐事件 JSONL；图像独立保存并记录源帧与裁剪映射。完整 trace 实现提交为 `b0097c66`。
+
+尚未启动正式评测，未进行 API 运行验证。Embedding 当前可用性未在本轮确认。代码交付需完成新的独立 diff review；后续正式评测前需 Claude CLI 全仓 review。用户已有修改、删除、历史 runs 和数据均保留。
+
+以下内容是停止训练时的历史交接，不作为当前模型、judge、并发或启动指令。
+
 记录日期：2026-09-05（America/Los_Angeles）。停止训练的 UTC 时间为 2026-09-06 00:05:15。
 
 ## 1. 接手时最重要的状态
