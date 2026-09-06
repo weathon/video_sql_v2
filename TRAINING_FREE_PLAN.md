@@ -338,3 +338,13 @@ PYTHONUNBUFFERED=1 HF_HOME=/raid/huggingface .venv/bin/python -m src.val \
 Embedding 恢复及清理：原 `egolife-qwen3-vl-embedding-8b` 容器保持停止。曾在 GPU 3 启动 `video-sql-training-free-embedding-7510e535`，使用原镜像 `sha256:bd995759b5b8ac51062e04c9e4d7c91c382d1ba377bb787e24dca2ccb39925e9` 和 Qwen/Qwen3-VL-Embedding-8B，显存预算从旧 0.45 改为 0.40，保留其他原设置；正式 semantic_search 返回了实际检索结果。评测后该临时容器已停止并删除，其前台 session 退出码为 0，日志保存在 run 的 embedding.log。当前没有本任务仍在运行的前台任务。
 
 恢复前必须先解决 PERSONAL_OPENAI_KEY 所属账号的 API credits。当前恢复逻辑会直接读取任何已有 result.json，包括 failed；因此直接重新执行入口不会补跑这 53 项。收到恢复指令后，应保留原始失败目录和汇总记录，把确认由余额不足影响的 53 个 rollout 目录移到 run 内独立归档路径，再沿用同一 W&B run 和原评估设置补跑缺失项；不能删除旧 traces 或覆盖已有日志。还需恢复同模型 embedding API，按当时空闲 GPU 状态选择设备。不要在余额尚未恢复时继续重试。
+
+## 8. 充值后补跑完成（2026-09-06 UTC）
+
+用户确认已充值并要求跑完剩余项。使用 `5cfcb51909612dfba620ea255ce744e7ca022857` 的代码，沿用第 7 节全部评估参数和 W&B run `tityz8z2`，仅将 stdout/stderr 写入 `eval-resume-1.log`。原始 53 个余额不足失败目录及旧汇总已移入 `runs/training_free_luna_seed0_7510e535/credit-exhaustion-archive-7510e535/`；归档 traces 中原来的绝对媒体路径对应此归档目录下相同的相对路径。旧 eval.log、embedding.log 和 1,447 个已完成结果保留。
+
+本次 embedding 使用同一镜像、模型和 0.40 显存预算，在当时空闲的 GPU 5 启动，容器名为 `video-sql-training-free-embedding-resume-5cfcb519`，日志为 `embedding-resume-1.log`。正式产物中已核对新的检索返回、工具调用、采样及裁剪图像、judge 输入和评分；53 个补跑结果与各自 judge trace 的 candidate/reference/score 对应一致。本次有一次 AnswerSubmission 格式校验错误，第二次尝试完成；未再次出现余额不足。
+
+补跑 53 个全部为 answered，新增 score_sum=42，新增 score>4 的 rollout 为 5 个。最终 1,500 个 rollout 全部完成答题与评分，failed=0，score_sum=2970，平均分为 1.98/5（39.60%）；score>4 为 442/1500（29.47%）。实际汇总为 run 根目录 result.json，W&B 最终 summary 为 val/accuracy=0.396、val/completed_rollouts=1500。
+
+补跑进程退出码为 0，W&B 日志记录同步完成；Weave 仍有单条 calls_complete 上传过大的警告，远端完整性未逐条核实，本地完整 traces 和媒体保留。临时 embedding 容器已停止并删除，其前台 session 退出码为 0。当前没有待补跑项或本任务仍在运行的前台进程。
