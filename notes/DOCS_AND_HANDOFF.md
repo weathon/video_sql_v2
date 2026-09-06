@@ -35,7 +35,7 @@ flowchart TD
 | [skills/initial/](../skills/initial/) | ROOT-SKILL 与六个静态检索技能 |
 | [docker/harness/Dockerfile](../docker/harness/Dockerfile) | Python 运行环境、依赖、ffmpeg 和 git |
 
-直接集成时可使用 `VideoSQLHarness`：构造参数包括数据库、embedding 索引、媒体映射、skills、输出目录、模型名、API key 和 embedding 服务配置。调用 `await harness.answer(question)` 得到 `RolloutSession(answer, status, trace_files)`，使用后调用 `await harness.close()`。这个接口负责答题；judge、评估汇总和 W&B/Weave 初始化由 `src.val` 负责。
+直接集成时可使用 `VideoSQLHarness`：构造参数包括数据库、embedding 索引、媒体映射、skills、输出目录、模型名、API key 和 embedding 服务配置。调用 `await harness.answer(question)` 得到 `RolloutSession(answer, status, trace_files)`，使用后调用 `await harness.close()`。这个接口负责答题；judge、评估汇总和 W&B/Weave 初始化由 `src.val` 负责。RolloutSession 的 trace_files 列出主检索和 compaction 段；子调用也写入 traces 目录，评估入口保存结果时统一收集全部阶段的 segment JSON。
 
 ## 2. 依赖与模型配置
 
@@ -175,7 +175,7 @@ SQL 连接只读，禁用外部访问和未签名扩展。语句开头只接受 
 
 ## 5. 视频采样、裁剪与证据
 
-每次 `clip_qa` 创建独立视觉 agent、帧目录和图片额度。区间必须有限、非负、递增，长度不超过 1200 秒。视觉 agent 可多次采样、裁剪和记录 notes，但不能使用主 agent 的数据库检索工具。
+每次 `clip_qa` 创建独立视觉 agent、帧记录表和图片额度。区间必须有限、非负、递增，长度不超过 1200 秒。视觉 agent 可多次采样、裁剪和记录 notes，但不能使用主 agent 的数据库检索工具。
 
 ### 视觉工具
 
@@ -321,7 +321,7 @@ SDK 请求重试和评估层重试是两层独立机制。评估层最多执行 
 
 恢复时仍使用本次 CLI 参数；config.json 不会自动覆盖这些参数，也不会验证它们是否与旧 run 一致。应保持题目文件、模型、skills、数据和 rollout 设置一致。config.json 中的 Git hash 和配置记录是该 run 创建时的值。
 
-如果明确需要重新执行已有 failed 结果，应先保留并归档对应 rollout 的完整目录及旧汇总，再恢复缺失项；只移走 result.json 会留下已耗尽的 attempt 错误，可能再次直接得到 failed。归档或移动目录后，trace 中保存的绝对媒体路径需要按归档位置解析。不要将归档副本放进活动 `val/question-*/rollout-*` 的统计范围。
+如果明确需要重新执行已有 failed 结果，应先保留并归档对应 rollout 的完整目录及旧汇总，再恢复缺失项；只移走 result.json 会留下已耗尽的 attempt 错误，可能再次直接得到 failed。Trace 中的媒体路径沿用 run-dir 的绝对或相对形式；相对路径按原工作目录解析，归档或移动目录后还需对应到新位置。不要将归档副本放进活动 `val/question-*/rollout-*` 的统计范围。
 
 ## 10. 结果、完整 trace 与日志
 
