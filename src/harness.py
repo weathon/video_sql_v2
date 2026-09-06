@@ -239,7 +239,14 @@ def execute_sql(
         connection.close()
 
 
-def save_trace(context: HarnessContext, label: str, result: Any) -> str:
+def save_trace(
+    context: HarnessContext,
+    label: str,
+    result: Any,
+    header: dict[str, Any],
+    events_path: Path,
+    error: BaseException | None,
+) -> str:
     path = context.run_dir / "traces" / f"{label}-segment-{context.trace_counter:02d}.json"
     while path.exists():
         context.trace_counter += 1
@@ -257,6 +264,9 @@ def save_trace(context: HarnessContext, label: str, result: Any) -> str:
             }
         )
     payload = {
+        **header,
+        "events_file": events_path.name,
+        "error": None if error is None else {"type": type(error).__name__, "message": str(error)},
         "input": stripped_json(result.input),
         "history": stripped_json(result.to_input_list()),
         "raw_responses": raw_responses,
@@ -274,34 +284,83 @@ async def run_stream(
     label: str,
     watch_context: bool,
 ) -> tuple[Any, bool, str]:
-    result = Runner.run_streamed(
-        agent,
-        input_items,
-        max_turns=MAX_TURNS,
-        run_config=context.run_config,
-    )
+    header = {
+        "agent": {
+            "name": agent.name,
+            "instructions": agent.instructions,
+            "model": context.model.model,
+            "base_url": str(context.client.base_url),
+            "model_settings": stripped_json(agent.model_settings),
+            "tools": [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.params_json_schema,
+                }
+                for tool in agent.tools
+            ],
+        },
+        "run_config": {
+            "reasoning_item_id_policy": context.run_config.reasoning_item_id_policy,
+            "max_turns": MAX_TURNS,
+            "watch_context": watch_context,
+            "context_limit": CONTEXT_LIMIT,
+            "compaction_threshold": COMPACTION_THRESHOLD,
+        },
+    }
+    events_path = context.run_dir / "traces" / f"{label}-events-{uuid.uuid4().hex}.jsonl"
     context_triggered = False
     caught: BaseException | None = None
-    try:
-        async for event in result.stream_events():
-            if event.type != "raw_response_event":
-                continue
-            if getattr(event.data, "type", None) != "response.completed":
-                continue
-            response = event.data.response
-            if response.usage is None:
-                raise RuntimeError("completed response did not include usage")
-            remaining = (
-                CONTEXT_LIMIT
-                - response.usage.input_tokens
-                - response.usage.output_tokens
-            )
-            if watch_context and remaining <= COMPACTION_THRESHOLD:
-                result.cancel(mode="after_turn")
-                context_triggered = True
-    except BaseException as error:
-        caught = error
-    trace_file = save_trace(context, label, result)
+    with events_path.open("x", buffering=1) as events:
+        events.write(json.dumps({
+            "type": "run_start", **header, "input": stripped_json(input_items),
+        }, ensure_ascii=False) + "\n")
+        result = Runner.run_streamed(
+            agent,
+            input_items,
+            max_turns=MAX_TURNS,
+            run_config=context.run_config,
+        )
+        try:
+            async for event in result.stream_events():
+                if event.type == "raw_response_event":
+                    record = {"type": event.type, "data": stripped_json(event.data)}
+                elif event.type == "run_item_stream_event":
+                    record = {
+                        "type": event.type,
+                        "name": event.name,
+                        "agent": event.item.agent.name,
+                        "item_type": event.item.type,
+                        "item": stripped_json(event.item.raw_item),
+                    }
+                else:
+                    record = {"type": event.type, "agent": event.new_agent.name}
+                events.write(json.dumps(record, ensure_ascii=False) + "\n")
+                if event.type != "raw_response_event":
+                    continue
+                if getattr(event.data, "type", None) != "response.completed":
+                    continue
+                response = event.data.response
+                if response.usage is None:
+                    raise RuntimeError("completed response did not include usage")
+                remaining = (
+                    CONTEXT_LIMIT
+                    - response.usage.input_tokens
+                    - response.usage.output_tokens
+                )
+                if watch_context and remaining <= COMPACTION_THRESHOLD:
+                    result.cancel(mode="after_turn")
+                    context_triggered = True
+        except BaseException as error:
+            caught = error
+            events.write(json.dumps({
+                "type": "run_error", "error_type": type(error).__name__, "message": str(error),
+            }, ensure_ascii=False) + "\n")
+            print(f"agent={agent.name} label={label} error={error}", flush=True)
+    trace_file = save_trace(
+        context, label, result, header, events_path,
+        caught if caught is not None else result.run_loop_exception,
+    )
     if caught is not None:
         raise caught
     if result.run_loop_exception is not None:
@@ -342,6 +401,9 @@ def render_frame(frame: dict[str, Any]) -> list[ToolOutputText | ToolOutputImage
         ))
         rendered = ImageOps.contain(cropped, FRAME_SIZE)
         rendered.save(frame["image_path"], quality=90)
+    frame["image_path"].with_suffix(".json").write_text(
+        json.dumps(stripped_json(frame), ensure_ascii=False, indent=2) + "\n"
+    )
     return [
         ToolOutputText(text=json.dumps({
             "frame_id": frame["frame_id"],
@@ -439,6 +501,9 @@ async def sample_frames(
             frames.append({
                 "frame_id": frame_id,
                 "time_s": time_s,
+                "pts": int(pts),
+                "time_base": [time_base_num, time_base_den],
+                "source_timeline_start_s": source["timeline_start_s"],
                 "original_path": frame_path,
                 "image_path": media_root / f"frame-{frame_id}.jpg",
                 "crop": crop,
@@ -705,6 +770,8 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                 original = frames[frame_id]
                 new_id = uuid.uuid4().hex
                 frame = {
+                    **original,
+                    "parent_frame_id": frame_id,
                     "frame_id": new_id,
                     "time_s": original["time_s"],
                     "original_path": original["original_path"],

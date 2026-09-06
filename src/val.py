@@ -214,7 +214,7 @@ async def run_eval_rollout(
                     "answer": session.answer,
                     "reference_answer": question["answer"],
                     "score": score,
-                    "trace_files": session.trace_files,
+                    "trace_files": sorted(str(path) for path in (attempt_dir / "traces").glob("*.json")),
                 }
                 rollout_root.mkdir(parents=True, exist_ok=True)
                 result_path.write_text(

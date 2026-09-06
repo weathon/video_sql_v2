@@ -11,6 +11,7 @@
 - 使用 **Responses API**，保留多轮 reasoning。之前的 Cerebras / Chat Completions 方案撤销。
 - 每批 **30 questions × 5 rollouts = 150 个并发 rollout**，优先整体吞吐。
 - 保留答题、judge、逐 rollout 落盘、恢复机制、W&B 和 Weave。
+- 用户补充：training-free 也必须保存完整 trace。保存初始指令、模型设置、工具 schemas、问题、reasoning、工具输入输出、judge、compaction、失败记录和逐事件日志；图片独立保存，记录原始帧、裁剪和证据之间的映射。
 - 保留 `skills/initial/` 的静态检索技能，删除 META-SKILL 和自动技能更新；不使用训练后的 skills。
 - Judge 接收**原始问题、reference answer、candidate answer**，维持开放式回答和原有 0–5 分语义等价评分。
 - `sql_qa` 返回的 SQL 结果完整交给子模型，**不截断**；API 溢出明确返回错误。
