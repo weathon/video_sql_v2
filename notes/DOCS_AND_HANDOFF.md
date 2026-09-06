@@ -325,6 +325,8 @@ SDK 请求重试和评估层重试是两层独立机制。评估层最多执行 
 
 ## 10. 结果、完整 trace 与日志
 
+GPT-5.6-Luna 的完整评估产物位于 [/raid/wg25r/video_sql_v2/runs/training_free_luna_seed0_7510e535](../runs/training_free_luna_seed0_7510e535/)，汇总见该目录的 [result.json](../runs/training_free_luna_seed0_7510e535/result.json)。逐 rollout 结果位于 `val/question-<timeline>-<index>/rollout-<N>/result.json`；对应 attempt 的完整 trace 和图像分别在 `attempt-<N>/traces/` 与 `attempt-<N>/media/`。
+
 ```text
 <run-dir>/
 ├── config.json
