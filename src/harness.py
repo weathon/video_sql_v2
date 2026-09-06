@@ -367,6 +367,12 @@ async def run_stream(
                     context_triggered = True
         except BaseException as error:
             caught = error
+            if isinstance(error, asyncio.CancelledError):
+                result.cancel(mode="immediate")
+                try:
+                    await result.run_loop_task
+                except asyncio.CancelledError:
+                    pass
             events.write(json.dumps({
                 "type": "run_error", "error_type": type(error).__name__, "message": str(error),
             }, ensure_ascii=False) + "\n")

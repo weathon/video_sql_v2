@@ -17,7 +17,7 @@ from dotenv import dotenv_values
 from wandb.sdk.lib.runid import generate_id
 
 from src.harness import VideoSQLHarness, stripped_json
-from src.val import judge_answer, retryable, write_error
+from src.val import JudgeAttemptsExhausted, judge_answer, retryable, write_error
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -183,6 +183,12 @@ async def collect_branch(branch, api_key, state, request_log, wandb_run):
                 )
                 result = {
                     **answer, "score": score,
+                    "all_trace_files": sorted(str(p) for p in (attempt_dir / "traces").glob("*.json")),
+                }
+            except JudgeAttemptsExhausted as error:
+                result = {
+                    **answer, "status": "judge_failed", "score": None,
+                    "error": str(error),
                     "all_trace_files": sorted(str(p) for p in (attempt_dir / "traces").glob("*.json")),
                 }
             finally:

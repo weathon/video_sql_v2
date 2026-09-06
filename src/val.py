@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,10 @@ from src.harness import (
 
 class Judgment(BaseModel):
     score: int
+
+
+class JudgeAttemptsExhausted(RuntimeError):
+    pass
 
 
 def retryable(error: BaseException) -> bool:
@@ -125,8 +130,11 @@ async def judge_answer(
         "for partially correct answers. Call submit_judgment."
     )
     for attempt in range(1, attempts + 1):
-        if (harness.context.run_dir / f"judge-attempt-{attempt}-error.json").exists():
-            continue
+        error_path = harness.context.run_dir / f"judge-attempt-{attempt}-error.json"
+        if error_path.exists():
+            if json.loads(error_path.read_text())["type"] != "CancelledError":
+                continue
+            error_path.rename(error_path.with_name(f"judge-attempt-{attempt}-cancelled-{uuid.uuid4().hex}.json"))
         agent = Agent(
             name="judge",
             instructions=instructions,
@@ -144,6 +152,8 @@ async def judge_answer(
                 False,
             )
             return Judgment.model_validate_json(str(result.final_output)).score
+        except asyncio.CancelledError:
+            raise
         except BaseException as error:
             write_error(
                 harness.context.run_dir / f"judge-attempt-{attempt}-error.json",
@@ -151,7 +161,7 @@ async def judge_answer(
             )
             if not retryable(error):
                 raise
-    raise RuntimeError("judge attempts exhausted")
+    raise JudgeAttemptsExhausted("judge attempts exhausted")
 
 
 async def run_eval_rollout(
