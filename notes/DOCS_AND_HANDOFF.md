@@ -1,249 +1,372 @@
-# video_sql_v2：项目说明与接手记录
+# Training-free Video Understanding Harness
 
-## Training-free 实施状态（2026-09-06）
+这个 harness 使用静态检索技能回答长视频问题。主 agent 在预先构建的 DuckDB 记忆库和 embedding 索引中定位线索，按需调用视觉 agent 检查源视频，再提交开放式答案。评估入口为每道题运行多个独立 rollout，并用 judge 评分。
 
-当前分支为 `codex/training-free-harness`，实施计划见 [TRAINING_FREE_PLAN.md](../TRAINING_FREE_PLAN.md)，当前协议见 [PLANS.md](../PLANS.md)。
+训练不在运行链路中：skills 在推理期间只读，不进行 reflection、技能汇总或自动更新。主检索、视觉问答、SQL 问答和 judge 均使用 OpenAI 官方 Responses API；embedding 使用独立的 Qwen3-VL-Embedding-8B 服务。
 
-已删除训练入口、reflection 和 META-SKILL；答题、judge、静态初始 skills、W&B/Weave、逐 rollout 结果和恢复保留。所有 LLM 角色使用 OpenAI 官方 Responses API、项目 .env 的 PERSONAL_OPENAI_KEY、gpt-5.6-luna、medium reasoning，并保留多轮 reasoning。每批 30 题 × 5 rollouts，合计 150 并发。Embedding 继续使用现有 Qwen3-VL-Embedding-8B API 和索引。
+## 1. 架构与代码入口
 
-已实现成功提交优先于 compaction、视觉提交校验错误继续 loop、SQL 同名列报错、sql_qa 全量结果、judge 原始问题输入。视觉输入改为最大 854×480 的独立帧，保存真实源 PTS 和原始分辨率帧，支持单帧裁剪；每次 clip_qa 累计 1,024 张图，证据复用已观察帧。
+```mermaid
+flowchart TD
+    E["src.val：题目与 rollout 调度"] --> A["主检索 agent"]
+    S["静态 skills"] --> A
+    A --> R["semantic_search / run_sql"]
+    R --> D["隔离记忆库与 embedding 索引"]
+    A --> Q["sql_qa：完整查询结果问答"]
+    A --> V["clip_qa：视觉 agent"]
+    V --> F["sample_video / crop_frame"]
+    F --> M["源视频与原始帧"]
+    V --> A
+    Q --> A
+    A --> J["judge：问题、reference、candidate"]
+    J --> O["逐 rollout 结果与评估汇总"]
+    A --> T["本地 traces 与媒体"]
+    V --> T
+    Q --> T
+    J --> T
+```
 
-用户补充要求完整 trace：各阶段保存指令、模型设置、工具 schemas、输入输出、reasoning、usage、错误和逐事件 JSONL；图像独立保存并记录源帧与裁剪映射。完整 trace 实现提交为 `b0097c66`。
-
-新的独立 subagent 已完成 `b4799309..cb5ad4e7` 的指定文件 diff review，结论为 `no blocking issues`。正式运行前 Claude CLI 全仓 review 同样无阻塞项。用户已有修改、删除、历史 runs 和数据均保留。
-
-正式 run 为 `runs/training_free_luna_seed0_7510e535`，W&B ID 为 `tityz8z2`。首次运行的 53 个余额不足失败项已在用户充值后补跑完成。最终 1,500 个 rollout 全部 answered、failed=0，平均分 1.98/5（39.60%），score>4 为 442/1500（29.47%）。已从真实 traces 核对检索、采样画面、帧引用、无效视觉提交纠正、图片累计额度、sql_qa 全量输入和 judge 问题语境。完整本地 traces 与媒体保留；Weave 出现单条上传过大的警告，远端完整性未逐条核实。
-
-运行后局部修复 `5f4eb63f` 使余额不足直接终止并显示原始异常链，该代码已用于本次补跑，但未再次触发余额不足分支。补跑代码版本为 `5cfcb519`，日志为 eval-resume-1.log；旧失败目录和汇总保留在 run 的 credit-exhaustion-archive-7510e535 目录。补跑期间在 GPU 5 创建的临时 embedding 容器已停止并删除，正式进程已退出，没有待补跑项或仍在运行的前台任务。实际命令、审查报告、具体 trace 证据和补跑完成记录见 [TRAINING_FREE_PLAN.md](../TRAINING_FREE_PLAN.md) 第 7、8 节。
-
-以下内容是停止训练时的历史交接，不作为当前模型、judge、并发或启动指令。
-
-记录日期：2026-09-05（America/Los_Angeles）。停止训练的 UTC 时间为 2026-09-06 00:05:15。
-
-## 1. 接手时最重要的状态
-
-**训练已经按用户要求停止。不要自行重新开始训练。** 用户说“先停止训练，我发现一些bug”，随后要求写本文档并重开会话。用户尚未描述这些新 bug；下一会话先处理用户提供的问题。此前“继续监控”的授权不能覆盖最新停止指令。
-
-- 工作目录：`/raid/wg25r/video_sql_v2`。
-- 写本文档前主仓库 HEAD：`1cb440ee`。本文档会单独提交。
-- 当前训练容器：`video-sql-qwen38-27b-fp8-fresh-3x10-full-client`。
-- 实际停止结果：`status=exited running=false exit_code=137`。这是本次 `docker stop --time 30` 后的状态，不是一次新发现的训练自然崩溃。
-- encoder、prefill/decode、proxy 和 embedding 服务仍运行；本次只停止训练容器。
-- 正式 run：`runs/qwen38_27b_fp8_epd_fresh_3x10_seed0`。
-- 已落盘 batch 结果到 `train/epoch-000/batch-020/batch.json`；`batch-021` 已有部分 rollout 结果，尚无 batch 完成文件。
-- 当前没有需要继续执行的监控目标。旧会话的工具 session ID 不可作为新会话的进程状态证据。
-
-## 2. 项目做什么
-
-用 MM-Lifelong 的视频、字幕/描述及检索数据库回答问题，并通过答题后的 reflection、同题汇总和 updater 迭代检索技能文档。这里的“训练”是技能文档更新循环，不是模型权重反向传播。
-
-主要流程：问题 → 检索/看视频 → 提交答案 → judge 评分 → 在原 Agent 和原会话中 reflection → 同题多个 rollout 汇总 → updater 修改技能并提交 → 保存 batch 和技能快照。
-
-| 文件或目录 | 用途 |
+| 路径 | 职责 |
 | --- | --- |
-| `PLANS.md` | 实验约定；之后的用户指令优先 |
-| `INFRA.txt` | 当前 EPD、embedding 部署命令 |
-| `src/harness.py` | 工具、视频采样、trace、Agent loop、compaction、reflection |
-| `src/training.py` | rollout/judge/reflection 重试、汇总、updater、恢复、W&B/Weave |
-| `src/val.py` | 验证接口 |
-| `src/prepare_runtime.py`, `src/normalize.py` | 运行时数据准备与规范化；不要因接手而重建数据 |
-| `infra/responses_epd_proxy.py` | Responses 请求先预编码图像，再转发 PD；缓存清理接口 |
-| `infra/Dockerfile.vllm-epd` | ExampleConnector 在 TP worker 的当前 CUDA device 上加载 tensor 的补丁 |
-| `skills/initial/` | 初始技能，包括 `ROOT-SKILL.md`、`META-SKILL.md` |
-| `<run>/skills/` | 正在迭代的独立技能 Git 仓库 |
-| `<run>/skill-snapshots/` | 各批更新后的技能快照 |
-| `<run>/train/epoch-XXX/batch-XXX/` | rollout、trace、summary、updater 和 batch 结果 |
-| `notes/` | 事故报告与历史记录；不能把旧记录当作当前状态 |
-| `vis/` | 历史 trace 网页与导出器 |
+| [src/harness.py](../src/harness.py) | Agent 配置、检索工具、视频采样与裁剪、证据引用、compaction、trace 保存 |
+| [src/val.py](../src/val.py) | CLI、批次调度、rollout/judge 重试、结果恢复、评分、W&B/Weave |
+| [src/normalize.py](../src/normalize.py) | 输入文本归一化 |
+| [src/prepare_runtime.py](../src/prepare_runtime.py) | 从已有总库与索引导出按 timeline 隔离的运行数据 |
+| [skills/initial/](../skills/initial/) | ROOT-SKILL 与六个静态检索技能 |
+| [docker/harness/Dockerfile](../docker/harness/Dockerfile) | Python 运行环境、依赖、ffmpeg 和 git |
 
-## 3. 数据路径：绝对不能重新下载
+直接集成时可使用 `VideoSQLHarness`：构造参数包括数据库、embedding 索引、媒体映射、skills、输出目录、模型名、API key 和 embedding 服务配置。调用 `await harness.answer(question)` 得到 `RolloutSession(answer, status, trace_files)`，使用后调用 `await harness.close()`。这个接口负责答题；judge、评估汇总和 W&B/Weave 初始化由 `src.val` 负责。
 
-数据集与视频已存在于：
+## 2. 依赖与模型配置
 
-```text
-/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443/
+需要 Python 3.12 或以上、git、ffmpeg，以及 [pyproject.toml](../pyproject.toml) 和 uv.lock 中的依赖。在仓库根目录安装：
+
+```bash
+uv sync --frozen --no-dev
 ```
 
-媒体路径是相对数据集根目录的路径；不要自行假定所有视频在一个额外的 `videos/` 目录中。按实际 media-map 和文件内容解析。HF cache 是 `/raid/huggingface`，不是 home。
+评估入口从**项目根目录的 .env 文件**读取密钥，默认字段为：
 
-当前运行时数据根目录：`data/runtime`。训练源码读取：
+```dotenv
+PERSONAL_OPENAI_KEY=YOUR_OPENAI_API_KEY
+```
 
-- `month/index.duckdb`
-- `month/embedding_index`
-- `month/media-map.json`
+这里使用 `dotenv_values` 直接读取文件；仅在 shell 中 export 同名变量不能替代该文件。密钥不写入 run 配置或本地 trace。
 
-训练问题来自数据集根目录下 `month/train.json`。不要重下载、重新索引、删除数据或覆盖旧 run。
+主检索、视觉、SQL 问答和 judge 共享以下设置：
 
-## 4. 当前实验协议
+| 配置 | 值或行为 |
+| --- | --- |
+| API endpoint | `https://api.openai.com/v1`，代码固定 |
+| 默认模型 | `gpt-5.6-luna` |
+| SDK | OpenAI Agents SDK 的 `OpenAIResponsesModel` |
+| Reasoning | `effort=medium`、`context=all_turns` |
+| Responses 存储 | `store=false` |
+| Reasoning 返回 | `response_include=["reasoning.encrypted_content"]` |
+| Reasoning item IDs | `reasoning_item_id_policy=preserve` |
+| 请求重试 | OpenAI client 的 `max_retries=3` |
+| 生成参数 | 不设置 temperature、top_p 或输入/输出 token 上限 |
 
-- 模型：`Qwen/Qwen3.8-27B-FP8`。不要退回 NVFP4 或 Flash；之前用户明确改为 FP8。
-- batch：**3 questions × 10 rollouts each**；3 epochs；seed 0；first-epoch-skip 0。
-- TP=2，MTP speculative length=3。
-- agent reasoning effort=`medium`；保留 `enable_thinking=true`、`preserve_thinking=true` 与 Responses reasoning items。
-- harness context limit=262144；服务端 max-model-len=314573，官方 YaRN factor=1.2。
-- 训练并发 semaphore=24。不要把它误改为 batch 大小。
-- `--attempts 3` 分别用于 rollout、judge、reflection、summarizer、updater；SDK 内部 max_retries=3。
-- judge 只接收 reference answer 和 candidate answer；正式 judge 同样使用当前 Qwen。
-- `train/fully_correct_portion`：**分数严格 >4 的 rollout 数 / batch 全部 rollout 数**。不是 mean score/5，也不是 >=4。失败 rollout 不进入分子。
-- batch 的 `mean_score` 当前按 successful 结果计算，分母与 fully_correct_portion 不同。
-- 当前正式启动命令没有 `--max-updates`，不是只跑几个 batch 的 pilot。
-- 计划中的初始/训练后测试是各 300 题 × 5 rollout，只答题和 judge；本轮没有执行完成这项评估。
+正常工具轮次保留 reasoning items，历史导出使用 `result.to_input_list()`。Encrypted reasoning 是可供 API 延续上下文的不透明内容，不等同于可阅读的思考文本。Agents SDK 自带的 tracing 被关闭；本地 trace 和 Weave 记录独立保留。
 
-已经实现的用户要求，不能在修 bug 时退回旧方案：
+Embedding 服务须提供兼容的 `POST /v1/embeddings` 接口。配套配置为：
 
-1. Reflection 在答题的同一个 Agent instance、同一会话继续，不能 clone 或序列化 trace 给独立 reflection agent。
-2. 答题和 reflection 各允许 3 次 compaction；reflection 第三次 compact 后仅允许提交反思。Handoff/instructions 按现有原 Agent 会话实现维护。
-3. Reflection 至少完成 2 次工具调用才可提交；不计答题阶段调用和 submit_reflection 自身。
-4. Updater 采用建议性的小范围更新语言，不是硬性 patch 长度门槛，也不是数值优化器。
-5. `ROOT-SKILL.md` 内容直接注入，指导何时加载其他技能，并由 updater 维护。
-6. Reflection 必须通过实际检索证据找到正确答案才可写入已证实经验；仅获得 reference 不算验证。未找到时只提极小、明确不确定的可能错误原因 patch，由 merger/updater 决定处理。
+```text
+URL:   http://127.0.0.1:8013/v1
+model: qwen3-vl-embedding-8b
+```
 
-第 6 条目前是 prompt/meta-skill/汇总与 updater 指令约束，不是额外的“成功证据”自动裁判。不能仅因 run 完成就宣称模型遵守。
+Harness 发送单个归一化文本查询，读取一个 4096 维有限值向量，并与已有索引向量做点积排序。服务模型必须与索引匹配；评估入口不会启动 embedding 服务、重新生成向量或部署本地答题模型。
 
-## 5. 当前部署与镜像/host 的关系
+评估还要求运行环境已登录 W&B，并有 `3dsmile/video-sql-v2` 的访问权限。W&B 和 Weave 的 entity/project 在入口中固定，初始化失败不会被忽略。
 
-| 容器 | 状态（本次交接检查） | 资源/地址 |
+## 3. 输入数据与隔离
+
+### 题目文件
+
+`--test-file` 指向 JSON 数组。每项必需字段如下，例子仅展示格式：
+
+```json
+[
+  {
+    "index": 1,
+    "timeline": "day",
+    "question": "画面中的人把杯子放在哪里？",
+    "answer": "桌上"
+  }
+]
+```
+
+`timeline` 选择运行数据子目录，`index` 标识该 timeline 内的题目；二者共同构成题目身份。同一题目的多个 rollout 分别编号，从 0 开始。仓库配套评估文件为 `data/test-seed-0.json`。
+
+主 agent 获得问题文本、当前隔离库的 schema、ROOT-SKILL 和其他技能的名称/描述；reference answer 只传给 judge。输入中的其他标注字段不会传给答题 agent。
+
+主 agent 的问题、语义查询、子问题和 notes 使用 `normalize_text`：NFKD、移除组合标记、映射常见引号/破折号等标点、转小写并折叠空白，保留中文等非 ASCII 字符。Judge 接收题目文件中的原始问题。
+
+### 运行数据目录
+
+```text
+data/runtime/
+├── day/
+│   ├── index.duckdb
+│   ├── media-map.json
+│   └── embedding_index/
+│       ├── episodes.row_ids.npy
+│       ├── episodes.vectors.npy
+│       └── <其余六张检索表的 row_ids/vectors 文件>
+├── week/
+│   └── <相同结构>
+└── month/
+    └── <相同结构>
+```
+
+每张检索表的 `row_ids.npy` 与 `vectors.npy` 按行对应；通过 NumPy mmap 加载。运行库应已按 timeline 隔离，移除用于区分其他 timeline 的数据库字段和 row ID 前缀。这个隔离由数据准备阶段完成，评估入口直接使用已有文件。
+
+`media-map.json` 的顶层为 `{"sources": [...]}`。每个 source 包含 `source_video_id`、`path`、`duration_s`、`timeline_start_s` 和 `timeline_end_s`。Sources 按逻辑时间排序，`path` 指向实际媒体文件；所有工具时间均使用映射中的连续逻辑时间轴，单位为秒。
+
+默认部署使用 `/raid/huggingface` 作为 HF cache。媒体文件的真实路径由 media-map 决定，不能仅根据视频名拼接路径。运行环境或容器必须能访问映射中的路径。
+
+### 记忆库
+
+| 表 | 内容及主要关联 |
+| --- | --- |
+| `episodes` | 不同粒度的文本描述；`row_id, start_s, end_s, granularity, text` |
+| `entities` | 实体名称、首次/末次出现时间与频率 |
+| `semantic_triples` | `subject/predicate/object`、`snapshot_s`，通过 `caption_30sec_row_id` 关联描述 |
+| `topic_chains` / `topic_facts` | 主题链与事实，事实通过 `chain_row_id` 关联链 |
+| `event_chains` / `event_steps` | 事件链与步骤，步骤通过 `chain_row_id` 关联链 |
+| `visual_clips` | 带起止时间的视频片段描述 |
+| `object_states` | 物体状态与所属 3 分钟、30 秒描述 |
+| `graph_edges` | row ID 之间的关系与权重 |
+| `topic_fact_evidence` | `fact_row_id → caption_30sec_row_id` |
+| `event_step_evidence` | `step_row_id → caption_30sec_row_id` |
+
+完整字段列表在 `src/harness.py` 的 `SCHEMA` 和 [sql-schema skill](../skills/initial/sql-schema.md) 中。
+
+## 4. 静态 skills 与主 agent 工具
+
+ROOT-SKILL 自动注入主 agent 指令。其他技能通过 Markdown frontmatter 中的 `name` 和 `description` 建立目录，模型调用 `read_skill(name)` 后才取得全文。
+
+| Skill | 用途 |
+| --- | --- |
+| `general-retrieval` | 调查规划与多来源检索 |
+| `semantic-search` | 按概念定位候选内容 |
+| `sql-schema` | 查询字段、关联和证据链接 |
+| `locating-time-intervals` | 时间锚点、前后关系和区间 |
+| `counting-and-ordering` | 去重、计数、顺序和排名 |
+| `visual-verification` | 检查可见细节、文字、状态与动作 |
+
+| 主工具 | 输入 | 返回与用途 |
 | --- | --- | --- |
-| `video-sql-qwen38-27b-fp8-fresh-3x10-full-client` | 已停止，exit 137 | 正式训练 client |
-| `qwen38-27b-fp8-epd-encoder` | 运行中 | GPU 5，内部 8000 |
-| `qwen38-27b-fp8-epd-pd` | 运行中 | GPU 0,2，内部 8000 |
-| `qwen38-27b-fp8-epd-proxy` | 运行中 | 主机 8002 → 内部 8000 |
-| `egolife-qwen3-vl-embedding-8b` | 运行中 | GPU 4，主机 8013 |
+| `semantic_search` | `query, table, n, rank_start, min_score, max_score` | 候选 row ID、时间、文本 preview 和相似度得分 |
+| `run_sql` | `sql` | `columns, rows, has_more`，查询结果预览 |
+| `sql_qa` | `sql, question` | 把完整 SQL 结果交给无工具的子模型，返回文本答案 |
+| `clip_qa` | `start_s, end_s, question` | 视觉答案、证据时间及图像 |
+| `add_note` / `read_notes` | `note` / 无参数 | 保存和读取该 attempt 的调查笔记 |
+| `read_skill` | `name` | 指定静态 skill 的完整 Markdown |
+| `agent_raise` | `reason` | 抛出 AgentRaised，结束当前 attempt，交由 rollout 重试层处理 |
+| `submit_answer` | `answer` | 提交答案并停止检索 loop |
 
-网络：`video-sql-v2`。其余 GPU/容器属于共享主机环境，不能广泛 stop/kill。
+`semantic_search` 支持 `episodes.text`、`entities.name`、`semantic_triples.text`、`topic_facts.fact`、`event_steps.description`、`object_states.text` 和 `visual_clips.text`。先按包含边界的 min/max score 过滤，再按降序取 rank 范围；`rank_start` 从 1 开始，`n` 必须为正，无分数边界使用 JSON `null`。Preview 最多保留 500 字符，长文本同时附原长度；需要全文时可查询原行。
 
-训练镜像：`video-sql-training:cache-cleanup-a0be03dc`，构建得到短 ID `f00b514d45d0`。训练源码烘焙在镜像中，**host 的 src 修改不会自动进入已有训练容器**。最近构建方式如下（仅记录，接手不要自动执行）：
+SQL 连接只读，禁用外部访问和未签名扩展。语句开头只接受 SELECT、WITH、DESCRIBE、SHOW，执行超时为 30 秒。同名输出列会显式报错，JOIN 时应使用不同 AS 别名。
 
-```bash
-docker build -f - -t video-sql-training:cache-cleanup-a0be03dc src <<'DOCKERFILE'
-FROM video-sql-training:e3e4ec70
-COPY . /workspace/video_sql_v2/src
-DOCKERFILE
-```
+`run_sql` 最多返回 100 行，长字符串单元格表示为 `{"value": "...", "original_length": N}`。这只是工具返回的预览结构，数据库原列仍是字符串。`sql_qa` 则读取全部行和完整字符串，不做 50k 等字符截断；输入超过 API 容量时返回错误，不自动缩减结果。
 
-Proxy 的 `infra/` 是 host 只读 bind mount；Python 已加载的代码仍需进程重启才生效。EPD 镜像是 `video-sql-vllm-epd:ec-tp-device`。完整服务命令在 `INFRA.txt`，不要再次无条件创建已有 network/volume/container。
+## 5. 视频采样、裁剪与证据
 
-重要继承配置：PD 有 SimpleCPUOffloadConnector，每 rank `cpu_bytes_to_use_per_rank=236223201280`、`lazy_offload=false`；max-num-seqs=24、GPU utilization=0.90；encoder utilization=0.45。不要仅查新增参数而忽略这些继承设置。embedding 的 `--mm-processor-cache-gb 0` 不应被误认为主模型设置。
+每次 `clip_qa` 创建独立视觉 agent、帧目录和图片额度。区间必须有限、非负、递增，长度不超过 1200 秒。视觉 agent 可多次采样、裁剪和记录 notes，但不能使用主 agent 的数据库检索工具。
 
-旧失败容器和旧服务保留了 `-before-cache-cleanup` 后缀，便于读取事故日志；未删除。不要用 `--rm` 启动容器。
+### 视觉工具
 
-## 6. 本轮缓存事故、修复及证据
+`sample_video(sample_start_s, sample_end_s, fps, include_captions, crop_left, crop_top, crop_right, crop_bottom)`：
 
-### 原始事故
+- 采样区间必须位于本次 clip_qa 内，fps 必须有限且大于零。
+- 返回独立帧图像，每帧附 `frame_id, time_s, filename, crop`。
+- 返回本次 `frame_count`、累计 `images_used` 和 `remaining_images`。
+- 开启 captions 时，附带与采样区间重叠的 30 秒级 episodes 全文；这些是记忆库描述，不是临时运行 ASR。
 
-自动清理前，ExampleConnector 将 encoder tensor 写入共享 tmpfs，但没有 TTL/淘汰/删除机制。实际检查 tmpfs：总量约 1008G，使用 1008G，仅余 7.3M，100%。内存文件系统不会自己淘汰这些文件。
+`crop_frame(frame_id, crop_left, crop_top, crop_right, crop_bottom)` 从已返回帧的原始分辨率 PNG 裁剪，生成新 frame ID，保留源帧时间并记录 `parent_frame_id`。即使传入的是先前裁剪图的 ID，坐标也仍相对于原始完整画面。
 
-Encoder 的真实异常链到 `safetensors.torch.save_file`：
+所有 crop 坐标使用 0–1000 单位：
 
 ```text
-SafetensorError: Error while serializing: I/O error: No space left on device (os error 28)
+0 ≤ left < right ≤ 1000
+0 ≤ top < bottom ≤ 1000
+完整画面：left=0, top=0, right=1000, bottom=1000
 ```
 
-encoder 容器退出码是 0、OOMKilled=false，但 engine 确实崩溃。Proxy 随后不能连接 encoder，reflection 重试收到 HTTP 500，训练最终 `RuntimeError: reflection attempts exhausted`，原 client exit 1。不能把容器 exit 0 当作服务健康。
+模型收到的图像为保持比例、最大 854×480 的 JPEG，quality=90、detail=high；原始 PNG 单独保存。缩放上限作用于每一帧或裁剪图。
 
-### 实现
+`add_clip_note(note)` 和 `read_clip_notes()` 保存与读取该 clip 的文字笔记。
 
-- `27bb0868`：proxy 增加 `/clear_encoder_cache`、活动请求计数和 lock；流式请求到实际 stream 结束才释放计数；图像 priming 用 TaskGroup 等待子请求收束。
-- `a0be03dc`：训练启动/恢复时、每个 batch 的全部 rollout（含 reflection）结束后调用清理；更新 `INFRA.txt`、`PLANS.md`。
-- `1cb440ee`：展开 TaskGroup 中的 HTTPException，保留 encoder 原始 HTTP 错误，不让它一律变成泛化 500。
+### 帧时间与证据提交
 
-清理流程：持锁禁止新请求进入 → 有 active request 则返回 409 → 依次调用 encoder 和 PD 的 `/reset_encoder_cache` → 删除共享 volume 中的缓存目录 → 返回删除数量与前后占用。
+ffmpeg 使用保留源 PTS 的 select 和 passthrough 同步方式选择帧。程序读取 showinfo 的整数 PTS 与 time base，按以下公式换算：
 
-两端都启用 `VLLM_SERVER_DEV_MODE=1`，因为已安装 vLLM 的 reset 路由在 dev router 内。已读取实际安装源码确认 core 会重置 scheduler 和 executor 的 encoder cache，并从两端真实启动日志确认 POST 路由存在。只删除文件却保留内部缓存可能造成状态不一致，因此两端重置是修复的一部分。
+```text
+time_s = source.timeline_start_s + pts × time_base_num / time_base_den
+```
 
-这是启动/批间清理，**不是批内容量上限、TTL 或 LRU**。没有新增 cache 大小参数；超大单批能否超过容量没有被本次验证排除。清理也不保证释放所有其他类别的主机内存/KV cache。
+时间不是通过 `sample_start_s + frame_index / fps` 推算。采样跨越多个 source 时分别读取各 source 的时间戳；实际采样数由源帧选择决定。
 
-### 正式 run 中实际验证
+视觉 agent 通过 `submit_clip_answer(status, answer, evidence_frame_ids)` 提交：
 
-服务重建后 tmpfs 最初为 0；不能把这一步说成新清理代码释放了原来的 1TB。
+- `status` 为 `answered` 或 `unknown`。
+- `answered` 必须至少引用一个本 clip 已返回的 frame ID。
+- 任何引用都必须属于本 clip；无效提交作为工具错误返回，允许模型纠正。
 
-随后正式训练清理日志验证：
+主 agent 收到 `status, answer, evidence_times_s`；answered 结果还包含对应证据图及其 frame ID、文件名和 crop。证据时间由帧记录派生，图片直接读取已经发送给视觉 agent 的 JPEG，不按时间重新 seek。模型可见的图像元数据不包含宿主机路径，完整路径留在本地媒体记录。
 
-| 完成的 epoch 0 batch | removed_entries | used_bytes_before | used_bytes_after |
-| --- | ---: | ---: | ---: |
-| 018 | 1389 | 20796166144 | 0 |
-| 019 | 1255 | 19383316480 | 0 |
-| 020 | 3670 | 53803704320 | 0 |
+### 累计图片额度
 
-Proxy 对 encoder/PD reset 的真实日志均出现 status=200。下一批运行时缓存再次增长是预期现象；最后一次小时检查看到约 32G，不能把它作为停止后的当前值。
+每个 clip_qa 最多累计返回 **1024 张图片**。采样和裁剪共用额度与异步锁，并行请求也串行检查和更新计数。重复调用工具重新发送图像会消耗新额度；SDK 重放已有历史不重新计数。
 
-已执行一次新 subagent diff review 和一次 Claude 全仓 review。小修复后未重复 review。Claude 提到无法从仓库确认 reset 路由；已由实际安装源码和启动日志解决。没有运行语法检查、smoke test 或 preflight；验证来自正式运行。
+超额请求整体返回错误和剩余额度，不部分返回、不自动降低 fps 或缩短区间。额度在整次图片工具返回准备成功后更新；被拒绝请求可能已经在磁盘留下解码产物，但不会将其作为部分成功结果交给模型。
 
-## 7. 正式 run 产物与已知问题
+视觉 agent 不做 compaction。图片额度控制图片输入的增长，不能保证任意长文本和 reasoning 都不会触及上下文上限；工具或 API 错误会显式记录。
 
-W&B：<https://wandb.ai/3dsmile/video-sql-v2/runs/evnxlgp9>。Weave 项目为 `3dsmile/video-sql-v2`，client 日志有实际 call 链接；这里只确认日志存在，不据此宣称所有 trace 健康。
+## 6. 上下文与结束条件
 
-`config.json` 保留 run 初建的 `main_git_hash=a16fadefe0011afff9a200c66289f641778b9a06`，并非恢复时的运行代码 hash。恢复代码不重写旧 config；辨认实际代码需结合镜像和上述提交。
+每次 `Runner.run_streamed` 最多执行 100 轮。主 agent 根据每次 completed response 的 usage 计算：
 
-最后完整 batch 的真实 `batch.json`（020）：successful=30，failed=0，mean_score=2.8，fully_correct_portion=0.4，skill_commit=`3fc5d1cb3b1483ce3242144fa5b70b914e41d1c1`。successful 表示管线完成，不表示答案正确。
+```text
+remaining = 1,050,000 - input_tokens - output_tokens
+```
 
-主机读取技能仓库 HEAD 时遇到 Git dubious ownership，未修改全局 safe.directory。因此上面的 skill_commit 是 batch 文件记录，不能假称再次读出了技能仓库当前 HEAD。
+当 remaining ≤ 178,000 时，请求在当前轮结束后 compaction。若同轮已经产生有效最终答案，先接受答案。
 
-具体 trace 路径相对于 run：
+Compaction 使用同一个主 Agent 和原会话，临时移除工具，要求生成保留问题、证据和后续调查步骤的 handoff。前两次生成后，以 handoff 开始新的上下文并继续；第三次生成后返回 `compaction_limit`，得分 0，不调用 judge。视觉 agent、sql_qa 和 judge 不做 compaction。
 
-- `train/epoch-000/batch-018/question-56/rollout-04/attempt-2/traces/clip-2064a35c0b8e457098b0f509e2067613-segment-00.json`：人工读取片段，见 sample_video 首次传 crop 全 0 返回明确错误，随后模型纠正为 0/0/1000/1000，返回 40 帧/4 contact sheets；再调用两个细采样窗口，均返回图像项；多轮 reasoning item 保留。此次只检查了该片段，没重新查看其全部实际图片像素，不能称已全量验证。
-- `train/epoch-000/batch-020/question-133/rollout-06/attempt-1/reflection-attempt-1-error.json`：`Tool submit_answer not found in agent memory-retrieval`。
-- `train/epoch-000/batch-020/question-132/rollout-01/attempt-1/error.json`：`Invalid JSON input for tool submit_answer`。
-- `train/epoch-000/batch-020/question-128/rollout-09/attempt-1/error.json`：顶层 `object NoneType can't be used in 'await' expression`，异常链含 `RemoteProtocolError: peer closed connection without sending complete message body (incomplete chunked read)`；client 同期有 `Error streaming response`。未定位具体源代码根因。
+模型容量、compaction 余量和图片额度是源码常量；它们不会随 `--model-name` 自动调整，也不是请求中的 token 限制。
 
-这些错误所在 batch 最终写出了 30 个完成结果，不代表错误路径不存在，也不能把这些错误自动等同于用户尚未说明的新 bug。
+流结束后还会检查：排除 reasoning 并规范化 item IDs 等字段后，如果连续三次 completion 完全相同，抛出 InvalidTrace。模型未按提交格式结束时，按实际结构化输出校验错误处理。
 
-更早的人工检查还发现某些 reflection 在未找到答案时仍很长或写出推测经验，个别 clip 输出认错游戏/角色或计数。它们说明 prompt 合规性不能只看结果分数；本轮缓存修复没有重审或修复这些模型行为。
+## 7. 运行评估
 
-历史 semantic_search 不可用、clip 输出 `[object Object]`、视频路径不存在、reflection clone/compaction 争议均有先前修复/事故记录。不要仅靠这份交接认定当前任意样本已无这些问题；用户指定问题后读取当前实际调用输入和返回值。
-
-## 8. 恢复语义与原启动参数（暂不执行）
-
-现有训练从 `config.json` 使用同一个 wandb_id，`resume="must"`；已存在 batch.json 的批次跳过。未完成 batch 重用已保存的 rollout `result.json`，只补缺失项，然后继续 summary/updater。不要删除 completed rollout 或换 run 目录来“方便恢复”。如果用户认为某类旧产物已无效，由用户决定作废范围。
-
-原 client 命令保存在下面供核对；已有同名已停止容器，不能原样直接再 docker run。修改 src 后也不能仅 docker start 旧容器，因为旧镜像没有新代码。等用户提供 bug 并完成相应修复/审查、明确恢复后，再处理容器名与新镜像。
+在仓库根目录运行。以下为新评估目录的启动示例；embedding API、数据、.env 和 W&B 登录应已准备好：
 
 ```bash
-docker run --name video-sql-qwen38-27b-fp8-fresh-3x10-full-client \
-  --network video-sql-v2 --gpus '"device=0,2,4,5"' --env-file .env \
-  -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory \
-  -e GIT_CONFIG_VALUE_0=/workspace/video_sql_v2 -e HF_HOME=/raid/huggingface \
-  -v /home/wg25r/.netrc:/root/.netrc:ro \
-  -v /raid/wg25r/video_sql_v2/runs:/workspace/video_sql_v2/runs \
-  -v /raid/wg25r/video_sql_v2/data:/workspace/video_sql_v2/data:ro \
-  -v /raid/wg25r/video_sql_v2/.git:/workspace/video_sql_v2/.git:ro \
-  -v /raid/wg25r/video_sql_v2/AGENT_STDOUT.txt:/workspace/video_sql_v2/AGENT_STDOUT.txt \
-  -v /raid/huggingface:/raid/huggingface:ro \
-  video-sql-training:cache-cleanup-a0be03dc -m src.training \
-  --dataset-root /raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443 \
-  --runtime-root /workspace/video_sql_v2/data/runtime \
-  --initial-skills /workspace/video_sql_v2/skills/initial \
-  --run-dir /workspace/video_sql_v2/runs/qwen38_27b_fp8_epd_fresh_3x10_seed0 \
-  --model-name Qwen/Qwen3.8-27B-FP8 --api-key-env LAB_OPENAI_KEY \
-  --base-url http://qwen38-27b-fp8-epd-proxy:8000/v1 \
-  --embedding-url http://egolife-qwen3-vl-embedding-8b:8000/v1 \
+mkdir -p runs/training-free-example
+PYTHONUNBUFFERED=1 HF_HOME=/raid/huggingface .venv/bin/python -m src.val \
+  --test-file data/test-seed-0.json \
+  --runtime-root data/runtime \
+  --run-dir runs/training-free-example \
+  --skill-dir skills/initial \
+  --model-name gpt-5.6-luna \
+  --api-key-env PERSONAL_OPENAI_KEY \
+  --embedding-url http://127.0.0.1:8013/v1 \
   --embedding-model qwen3-vl-embedding-8b \
-  --attempts 3 --epochs 3 --batch-size 3 --rollouts 10 --seed 0 --first-epoch-skip 0
+  --batch-size 30 --rollouts 5 --attempts 3 \
+  > runs/training-free-example/eval.log 2>&1
 ```
 
-不要输出 `.env`/`.netrc` 内容，也不要去其他目录寻找 API key。
+| CLI 参数 | 必需或默认值 | 含义 |
+| --- | --- | --- |
+| `--test-file` | 必需 | 题目 JSON |
+| `--runtime-root` | 必需 | 包含各 timeline 的运行数据根目录 |
+| `--run-dir` | 必需 | 结果、traces 与配置的保存目录 |
+| `--embedding-url` | 必需 | Embedding API 的 /v1 base URL |
+| `--embedding-model` | 必需 | Embedding 服务中的模型名 |
+| `--skill-dir` | 项目 `skills/initial` | 静态技能目录 |
+| `--model-name` | `gpt-5.6-luna` | 所有 LLM 角色使用的模型名 |
+| `--api-key-env` | `PERSONAL_OPENAI_KEY` | 项目 .env 中的字段名 |
+| `--batch-size` | 30 | 每批题目数 |
+| `--rollouts` | 5 | 每题独立答题次数 |
+| `--attempts` | 3 | 每个 rollout 的 attempt 上限及每次 judge 的尝试上限 |
 
-## 9. 操作纪律与历史交接陷阱
+题目按输入文件顺序分批。一批创建 batch_size × rollouts 个任务，并使用同样大小的 semaphore；默认最多 150 个并发 rollout。一批全部结束后才调度下一批。每个 rollout 完成答题和 judge 后立即保存 result.json，不等整个 batch 结束。实际 API 请求量还受每个 rollout 的工具调用与提供方限流影响。
 
-- 中文交流。遵循当前 AGENTS.md 与用户最新要求；只修改指定目标，不顺带清理或重构。
-- 永远不要 `git status --short`。列 untracked 使用 `git ls-files --others --exclude-standard`。不要对输出数据做全仓 diff。
-- 每次编辑都提交。本文写入前的无关 untracked 为 `OTHERS.md`、`notes/INCIDENT_redundant_post_patch_read.md`、`notes/index.md`，不要加入本次提交。
-- 永远不要 `fork_turns="all"`，也不能省略该参数导致默认 all。独立审查用新 agent、fork none，不泄露用户已指出的结论来引导独立 trace 审查。不要复用旧 subagent。
-- 主 agent 不得打开 REVIEW.md；中等修改按仓库规则派新 reviewer，prompt 使用用户要求的短格式：`Review the diff between X and Y against REVIEW.md for the purpose of A for files [files]`。正式运行前的 Claude 全仓 review 按当时有效规则处理；本轮已完成的 review 不必因为交接重复。
-- 不写新 tests、不开 syntax check/smoke/preflight；从正式产物与实际 trace 验证。不要把 schema/工具错误吞掉继续生成无效结果，也不要擅改重试次数和实验参数。
-- 稳定后监控间隔 **1 小时**，禁止 60 秒轮询和反复进度消息。短任务/服务启动可短等；长任务保持 foreground exec，不用 tmux/nohup/后台 watcher。
-- 工具单次 poll 有上限时，在一次 functions.exec 内累计等满 1 小时，底层进程退出则立即返回；外层如返回 cell_id，继续同一 cell 的长 wait，不在模型层每 60 秒醒来。用户停止后不要自动继续此流程。
-- 此环境 bwrap 存在 runtime 问题，shell 读写按用户指示在 elevated 环境执行。编辑首选 bare `apply_patch` 的持久 PTY，再用 write_stdin 发送 patch+EOF；遵守审批拒绝，不改工具绕过拒绝。
-- 停容器只按精确名字；不 broad pkill，不删除数据集、技能或训练结果。
-- 曾经 host `src/` 消失，按用户授权从镜像恢复了 6 个源文件：`__init__.py`、`harness.py`、`normalize.py`、`prepare_runtime.py`、`training.py`、`val.py`。内容与当时 HEAD 相同，`a465bda6` 为空提交记录恢复。不要顺手恢复其他用户删除的文件。
+Docker 镜像可以用 `docker build -f docker/harness/Dockerfile -t video-sql-harness .` 构建。镜像包含源码、skills、Python 依赖、ffmpeg 和 git，入口为 `.venv/bin/python`，因此容器参数从 `-m src.val` 开始。运行时需提供 .env、运行数据、media-map 所指向的媒体路径、可写的输出目录、W&B 登录及有效 Git 工作区；入口会执行 `git rev-parse HEAD`，镜像自身没有复制 .git。访问宿主机的 127.0.0.1 embedding 服务时，需匹配容器网络配置，例如使用 host 网络。容器保留命名实例，不使用 `--rm`。
 
-此前关于 Codex 强制 60 秒监控偏好的 GitHub issue 已处理：<https://github.com/openai/codex/issues/42981>。英文正文，核心是内置沟通偏好覆盖用户明确的低频监控要求，不是 Goal 功能本身；此任务目前没有待办。
+## 8. Judge 与指标
 
-`vis/README.md` 当前描述的是旧 continuation run 的静态导出器，`vis/dist/` 更旧。不要把已有网页当成本次 fresh run 的实时 trace，也不要假称本次修复已更新 Sites；本轮未重新发布，交接时未核对线上版本。
+Judge 的输入是 JSON，包含 `question`、`reference_answer` 和 `candidate_answer`，输出为 `submit_judgment(score)`，score 是 0–5 的整数。评分依据问题语境中的语义等价：5 表示完全等价，0 表示错误，中间整数表示部分正确。若 reference 是选项编号，judge 利用原问题解释编号；附带的视频 ID、时间戳和 row ID 不作为答案对错依据。
 
-## 10. 新会话从这里开始
+结果状态如下：
 
-1. 保持训练停止，接收用户发现的具体 bug；本文没有替用户推断 bug 内容。
-2. 以当前源文件和用户指定 trace 为证据定位，分别确认工具实际输入/返回、reflection/summary/updater 产物，不能只报告分数。
-3. 修改严格限定在确认的问题；用户如果要求作废/重跑，再明确处理相应范围，不能自行把所有旧结果抹掉。
-4. 修复、必要 review 和镜像同步后，按用户新的恢复要求继续；当前停止指令仍有效。
+| status | 含义 | score |
+| --- | --- | --- |
+| `answered` | 答案提交与 judge 均完成 | Judge 给出的 0–5 分；不代表答对 |
+| `compaction_limit` | 达到第三次主 agent compaction | 0 |
+| `failed` | Rollout 的可重试 attempts 耗尽 | 0 |
+
+非可重试错误会向上抛出，可能使评估在没有最终汇总的情况下退出；已有逐 rollout 结果仍保留。
+
+入口记录的 `accuracy` 是：
+
+```text
+accuracy = sum(score) / (5 × rollout 数)
+```
+
+分母包含 failed 与 compaction_limit；它不是“满分 rollout 比例”。从逐 rollout 文件还可另行计算：
+
+- 满分比例：`count(score > 4) / rollout 数`。
+- 至少一次满分的题目比例：按 `(timeline, question_index)` 分组，统计至少一个 rollout 得分 >4 的题目数，再除以题目数。
+
+这两个额外比例不由入口自动写入汇总。统计时只读取 `val/question-*/rollout-*/result.json`，避免把归档、attempt traces 或 W&B 恢复后的重复日志当成额外样本。
+
+## 9. 重试与恢复
+
+SDK 请求重试和评估层重试是两层独立机制。评估层最多执行 `--attempts` 次 rollout；每次成功答题后的 judge 也有自己的 `--attempts` 次机会。可重试类别包括模型输出校验、InvalidTrace、AgentRaised、SDK 轮数/模型行为错误，以及代码列明的连接、超时、限流和服务端错误。重试不切换模型或 reasoning。
+
+普通工具校验和执行错误通常返回 error JSON 供模型纠正。余额不足或 `insufficient_quota` 会沿异常链识别、从通用工具错误处理向上抛出，并被评估层判为不可重试。错误文件保留异常链，stdout 同时打印原因。
+
+使用相同 run-dir 和原参数可恢复评估；stdout 日志应写入新文件，避免覆盖旧日志。恢复规则是：
+
+1. 已存在 rollout 的 `result.json` 就直接读取，包括 status=failed 的结果。
+2. 缺少 result.json 时，跳过已有 `attempt-N/error.json` 的 attempt，继续下一个可用编号。
+3. 没有完成也没有 error.json 的 attempt 会重新运行答题流程，**不会从最后一个工具调用继续会话**。
+4. 同一个 run 的 W&B ID 从 config.json 读取，使用 `resume="must"`；新 run 使用 `resume="never"`。
+
+恢复时仍使用本次 CLI 参数；config.json 不会自动覆盖这些参数，也不会验证它们是否与旧 run 一致。应保持题目文件、模型、skills、数据和 rollout 设置一致。config.json 中的 Git hash 和配置记录是该 run 创建时的值。
+
+如果明确需要重新执行已有 failed 结果，应先保留并归档对应 rollout 的完整目录及旧汇总，再恢复缺失项；只移走 result.json 会留下已耗尽的 attempt 错误，可能再次直接得到 failed。归档或移动目录后，trace 中保存的绝对媒体路径需要按归档位置解析。不要将归档副本放进活动 `val/question-*/rollout-*` 的统计范围。
+
+## 10. 结果、完整 trace 与日志
+
+```text
+<run-dir>/
+├── config.json
+├── result.json
+├── wandb/
+└── val/
+    └── question-<timeline>-<index>/
+        └── rollout-00/
+            ├── result.json
+            └── attempt-1/
+                ├── error.json
+                ├── judge-attempt-<N>-error.json
+                ├── agent_notes.jsonl
+                ├── clip-notes-<clip-id>.jsonl
+                ├── traces/
+                │   ├── answer-segment-<N>.json
+                │   ├── answer-events-<uuid>.jsonl
+                │   ├── clip-<id>-segment-<N>.json
+                │   ├── sql-qa-segment-<N>.json
+                │   ├── judge-attempt-<N>-segment-<N>.json
+                │   └── <各阶段对应的 events JSONL 与 compaction traces>
+                └── media/
+                    ├── frame-<id>.jpg
+                    ├── frame-<id>.json
+                    └── sample-<clip-id>-<request-id>/
+                        ├── source-<source-index>-<frame-number>.png
+                        ├── ffmpeg-<source-index>.json
+                        └── ffmpeg-<source-index>.log
+```
+
+错误、notes、clip、sql-qa 与 compaction 文件仅在相应路径发生时生成。Segment 编号在整个 harness attempt 内分配，不能假定 answer 的第一个 segment 一定是 00。
+
+- **config.json**：模型、endpoint、reasoning、embedding 设置、并发、skills 路径、图像设置、Git hash 和 W&B ID，不含 API key。
+- **逐 rollout result.json**：题目身份、rollout 编号、status、answer、reference_answer、score；完成的 answered/compaction_limit 结果还包含 attempt 和该 attempt 的 trace_files。
+- **根目录 result.json**：全部批次结束后写入 `rollouts, score_sum, accuracy`。
+- **segment JSON**：agent 指令、模型设置、工具 schema、初始输入、完整 SDK 历史、raw responses、usage、request/response IDs、最终输出、异常信息及对应 events 文件名。
+- **events JSONL**：从 run_start 开始逐行保存 SDK 流事件、工具调用与返回；异常前已收到的事件也会留下，适合查看中途停止的执行。
+- **frame JSON**：frame ID、逻辑时间、PTS、time base、source timeline 起点、原始 PNG 路径、发送的 JPEG 路径和 crop；裁剪记录还含 parent_frame_id。
+- **ffmpeg 文件**：确切命令参数、stderr/showinfo 和原始分辨率图像，可追溯帧选择与时间计算。
+
+JSON 中的 data:image base64 替换为 `<base64-image-removed>`，实际图像保存在 media 中；完整 trace 由文本记录与媒体共同组成。正常历史中的 encrypted reasoning 不删除。结果目录应连同媒体一起保留；仅复制 segment JSON 无法还原图像证据。
+
+W&B 记录 `val/rollout_score`、题目与 rollout 编号，以及每批 `val/batch`、`val/accuracy`、`val/completed_rollouts`。Weave 记录模型调用；大图像历史可能触及远端单次上传大小限制，本地 trace 不依赖上传成功。批次和最终里程碑还追加到工作目录的 `AGENT_STDOUT.txt`。
+
+检查一次执行时，将 result.json 的答案和得分与主 agent、子 agent、judge 的实际输入输出对应起来，再根据 frame ID 打开对应图像。结果文件存在或进程正常退出，仅说明运行产物已写出，不能单独证明检索与视觉证据正确。
