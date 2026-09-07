@@ -26,6 +26,7 @@ if role in ("profile", "pd"):
                 "--kv-cache-dtype", "auto", "--enable-prefix-caching", "--enable-chunked-prefill",
                 "--mamba-cache-mode", "align", "--async-scheduling", "--attention-backend", "FLASHINFER",
                 "--enable-flashinfer-autotune", "--mm-processor-cache-gb", "4",
+                "--mm-processor-kwargs", json.dumps({"min_pixels": 65536, "max_pixels": 414720}),
                 "--limit-mm-per-prompt", json.dumps({"image": 650, "video": 0}),
                 "--tensor-parallel-size", "2", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder",
                 "--reasoning-parser", "qwen3", "--speculative-config", json.dumps({"method": "mtp", "num_speculative_tokens": 1}),
@@ -42,6 +43,7 @@ elif role == "encoder":
     command += [IMAGE, MODEL, "--host", "0.0.0.0", "--port", "8000", "--mm-encoder-only", "--enforce-eager",
                 "--no-enable-prefix-caching", "--gpu-memory-utilization", "0.45", "--max-num-batched-tokens", "114688",
                 "--max-num-seqs", "24", "--mm-processor-cache-gb", "4", "--limit-mm-per-prompt", json.dumps({"image": 650, "video": 0}),
+                "--mm-processor-kwargs", json.dumps({"min_pixels": 65536, "max_pixels": 414720}),
                 "--enable-request-id-headers", "--ec-transfer-config", json.dumps({"ec_connector": "ECExampleConnector", "ec_role": "ec_producer", "ec_connector_extra_config": {"shared_storage_path": "/epd_shared/cache"}})]
 elif role == "embedding":
     command += ["--gpus", '"device=4"', "--shm-size=8g", "-p", "127.0.0.1:8014:8000"] + shared
