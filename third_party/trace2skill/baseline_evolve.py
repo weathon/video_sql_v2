@@ -158,7 +158,8 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
                     raise ValueError(feedback)
                 patch = self._patch_from_data(parsed.model_dump())
                 state = self.read_skill_state()
-                self._enforce_create_pairing([patch], state)
+                if system_prompt != self._translation_system_prompt:
+                    self._enforce_create_pairing([patch], state)
                 if system_prompt in (self._translation_system_prompt, self._verification_system_prompt):
                     if system_prompt == self._translation_system_prompt and len(patch.edits) != 1:
                         raise ValueError("Translation must return exactly one edit")

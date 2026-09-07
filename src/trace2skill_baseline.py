@@ -10,8 +10,8 @@ import uuid
 from pathlib import Path
 
 import weave
-from agents import Agent, OpenAIResponsesModel, StopAtTools, function_tool, set_trace_processors, trace
-from pydantic import BaseModel, Field
+from agents import Agent, OpenAIResponsesModel, StopAtTools, ToolOutputImage, function_tool, set_trace_processors, trace
+from pydantic import BaseModel, Field, ValidationError
 from weave.integrations.openai_agents.openai_agents import WeaveTracingProcessor
 
 from src.harness import InvalidTrace, VideoSQLHarness, run_stream, tool_error_json
@@ -149,22 +149,34 @@ async def analyze(result, semaphore):
                                     {"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.b64encode(Path(filename).read_bytes()).decode(), "detail": "high"}])
                 messages = [{"role": "user", "content": content}]
                 for attempt in range(1, 4):
-                    async with semaphore:
-                        raw = await harness.context.client.responses.with_raw_response.parse(
-                            model=MODEL, instructions=instructions, input=messages,
-                            reasoning={"effort": "medium"}, store=False,
-                            text_format=SuccessReport,
-                        )
-                    (directory / f"success-response-{attempt}.json").write_bytes(await raw.aread())
-                    response = await raw.parse()
-                    if response.status != "completed" or response.output_parsed is None:
-                        raise RuntimeError(f"Incomplete success analysis: {response.model_dump_json()}")
-                    report = response.output_parsed
-                    break
+                    try:
+                        async with semaphore:
+                            raw = await harness.context.client.responses.with_raw_response.parse(
+                                model=MODEL, instructions=instructions, input=messages,
+                                reasoning={"effort": "medium"}, store=False,
+                                text_format=SuccessReport,
+                            )
+                        body = await raw.aread()
+                        (directory / f"success-response-{attempt}.json").write_bytes(body)
+                        messages.extend(json.loads(body)["output"])
+                        response = await raw.parse()
+                        if response.status != "completed" or response.output_parsed is None:
+                            raise RuntimeError(f"Incomplete success analysis: {response.model_dump_json()}")
+                        report = response.output_parsed
+                        break
+                    except asyncio.CancelledError:
+                        raise
+                    except BaseException as error:
+                        write_error(directory / f"success-attempt-{attempt}-error.json", error)
+                        if attempt == 3 or not retryable(error):
+                            raise
+                        if isinstance(error, ValidationError):
+                            messages.append({"role": "user", "content": f"Correct the structured output. Validation error: {error}"})
                 (directory / "success_report.json").write_text(report.model_dump_json(indent=2) + "\n")
                 groups = {"success_memory": report.success_memory}
             else:
                 validated_fix = None
+                submitted_report = None
 
                 @function_tool(failure_error_function=tool_error_json)
                 async def read_trace(file: str, start_line: int, end_line: int) -> str:
@@ -180,9 +192,14 @@ async def analyze(result, semaphore):
                 async def evaluate_output(answer: str, minimal_fix: str, evidence: str) -> str:
                     """Validate the corrected answer and minimal reasoning/tool change using the unchanged 0–5 judge."""
                     nonlocal validated_fix
-                    score = await judge_answer(harness, result["question_text"], result["reference_answer"], answer, 3)
+                    fix_id = uuid.uuid4().hex
+                    judge_harness = make_harness(directory / f"fix-{fix_id}", RUN / "skills/initial", semaphore)
+                    try:
+                        score = await judge_answer(judge_harness, result["question_text"], result["reference_answer"], answer, 3)
+                    finally:
+                        await judge_harness.close()
                     fix = {"answer": answer, "minimal_fix": minimal_fix, "evidence": evidence, "score": score, "pass": score >= 4}
-                    path = directory / f"validated-fix-{uuid.uuid4().hex}.json"
+                    path = directory / f"validated-fix-{fix_id}.json"
                     path.write_text(json.dumps(fix, ensure_ascii=False, indent=2) + "\n")
                     validated_fix = fix if score >= 4 else None
                     return json.dumps(fix, ensure_ascii=False)
@@ -190,23 +207,35 @@ async def analyze(result, semaphore):
                 @function_tool(failure_error_function=tool_error_json)
                 async def submit_failure_analysis(report: FailureReport) -> str:
                     """Submit causal failure items and at most three reusable memory items after validating the minimal fix."""
+                    nonlocal submitted_report
                     if validated_fix is None:
                         raise ValueError("Validate a minimal fix with evaluate_output before submitting analysis")
+                    submitted_report = report
                     return report.model_dump_json()
+
+                @function_tool(failure_error_function=tool_error_json)
+                async def read_frame(file: str) -> list[ToolOutputImage]:
+                    """Inspect an original rollout frame from media_files, including its actual pixels."""
+                    if file not in result["media_files"]:
+                        raise ValueError("Choose a file from media_files in the task input")
+                    return [ToolOutputImage(image_url="data:image/jpeg;base64," + base64.b64encode(Path(file).read_bytes()).decode(), detail="high")]
 
                 instructions = (ROOT / "baseline/error_analysis_qa.txt").read_text()
                 agent = Agent(
                     name="trace2skill-error-analysis", instructions=instructions,
                     model=harness.context.model, model_settings=harness.context.model_settings,
                     tools=[tool for tool in harness.answer_tools if tool.name != "submit_answer"]
-                          + [read_trace, evaluate_output, submit_failure_analysis],
+                          + [read_trace, read_frame, evaluate_output, submit_failure_analysis],
                     tool_use_behavior=StopAtTools(stop_at_tool_names=["submit_failure_analysis"]),
                 )
                 task = {**result, "trace_line_counts": {p: len(Path(p).read_text().splitlines()) for p in result["trace_files"]}}
                 for attempt in range(1, 4):
                     try:
+                        validated_fix = submitted_report = None
                         run, _, _ = await run_stream(harness.context, agent, json.dumps(task, ensure_ascii=False), f"error-analysis-{attempt}", False)
                         report = FailureReport.model_validate_json(str(run.final_output))
+                        if submitted_report is None or report != submitted_report or validated_fix is None:
+                            raise InvalidTrace("Failure analysis ended without a validated submit_failure_analysis call")
                         break
                     except asyncio.CancelledError:
                         raise
