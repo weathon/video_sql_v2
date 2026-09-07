@@ -9,6 +9,7 @@ import sys
 import uuid
 from pathlib import Path
 
+import httpx
 import weave
 from agents import Agent, OpenAIResponsesModel, StopAtTools, ToolOutputImage, function_tool, trace
 from pydantic import BaseModel, Field, ValidationError
@@ -300,6 +301,13 @@ async def main():
                    "mean_score_over_5": sum(r["score"] / 5 for r in results) / len(results),
                    "successes": sum(r["success"] for r in results)}
         (RUN / f"{version}-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
+            limits=httpx.Limits(max_connections=1000, max_keepalive_connections=256),
+        ) as proxy_client:
+            response = await proxy_client.post("http://127.0.0.1:8003/clear_encoder_cache")
+            response.raise_for_status()
+            (RUN / f"{version}-encoder-cache-clear.json").write_text(response.text + "\n")
         if version == "evolved":
             break
         analysis_jobs = iter(results)
@@ -314,6 +322,13 @@ async def main():
                 group.create_task(analysis_worker())
         records.sort(key=lambda r: r["instance_id"])
         (RUN / "combined-records.json").write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n")
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
+            limits=httpx.Limits(max_connections=1000, max_keepalive_connections=256),
+        ) as proxy_client:
+            response = await proxy_client.post("http://127.0.0.1:8003/clear_encoder_cache")
+            response.raise_for_status()
+            (RUN / "analysis-encoder-cache-clear.json").write_text(response.text + "\n")
         evolved = RUN / "skills/evolved"
         if not evolved.exists():
             weave.finish()
