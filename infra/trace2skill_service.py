@@ -14,9 +14,18 @@ NETWORK = "video-sql-trace2skill"
 VOLUME = "video-sql-trace2skill-ec"
 role = sys.argv[1]
 name = "trace2skill-" + role
+RUN.mkdir(parents=True, exist_ok=True)
 command = ["docker", "run", "--init", "--name", name, "--network", NETWORK]
 shared = ["-e", "HF_HOME=/hf_cache", "-v", "/raid/huggingface:/hf_cache", "-v", VOLUME + ":/epd_shared/cache"]
 if role in ("profile", "pd"):
+    available_memory = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines() if line.startswith("MemAvailable:"))) * 1024
+    cpu_bytes_per_rank = available_memory // 8
+    (RUN / "offload-memory.json").write_text(json.dumps({
+        "host_available_bytes": available_memory,
+        "total_offload_bytes": cpu_bytes_per_rank * 4,
+        "cpu_bytes_to_use_per_rank": cpu_bytes_per_rank,
+        "tensor_parallel_size": 4,
+    }, indent=2) + "\n")
     command += ["--gpus", '"device=0,1,2,3"', "--shm-size=32g", "-p", "127.0.0.1:8024:8000",
                 "-e", "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1", "-e", "VLLM_SERVER_DEV_MODE=1",
                 "-e", "VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1"] + shared
@@ -30,13 +39,10 @@ if role in ("profile", "pd"):
                 "--limit-mm-per-prompt", json.dumps({"image": 650, "video": 0}),
                 "--tensor-parallel-size", "4", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder",
                 "--reasoning-parser", "qwen3", "--speculative-config", json.dumps({"method": "mtp", "num_speculative_tokens": 1}),
-                "--kv-transfer-config", json.dumps({"kv_connector": "SimpleCPUOffloadConnector", "kv_role": "kv_both", "kv_connector_extra_config": {"cpu_bytes_to_use_per_rank": 236223201280, "lazy_offload": False}}),
+                "--kv-transfer-config", json.dumps({"kv_connector": "SimpleCPUOffloadConnector", "kv_role": "kv_both", "kv_connector_extra_config": {"cpu_bytes_to_use_per_rank": cpu_bytes_per_rank, "lazy_offload": False}}),
                 "--ec-transfer-config", json.dumps({"ec_connector": "ECExampleConnector", "ec_role": "ec_consumer", "ec_connector_extra_config": {"shared_storage_path": "/epd_shared/cache"}}),
                 "--default-chat-template-kwargs", json.dumps({"enable_thinking": True, "preserve_thinking": True})]
-    if role == "profile":
-        command += ["--max-num-seqs", "128"]
-    else:
-        command += ["--max-num-seqs", "50"]
+    command += ["--max-num-seqs", "256"]
 elif role == "encoder":
     command += ["--gpus", '"device=4"', "--shm-size=32g", "-e", "VLLM_SERVER_DEV_MODE=1"] + shared
     command += [IMAGE, MODEL, "--host", "0.0.0.0", "--port", "8000", "--mm-encoder-only", "--enforce-eager",
@@ -59,7 +65,6 @@ elif role == "proxy":
                 "--encoder-url", "http://trace2skill-encoder:8000", "--pd-url", "http://trace2skill-pd:8000", "--cache-dir", "/epd_shared/cache"]
 else:
     raise ValueError(f"Unknown service: {role}")
-RUN.mkdir(parents=True, exist_ok=True)
 (RUN / f"{role}-command.json").write_text(json.dumps(command, indent=2) + "\n")
 print(json.dumps(command), flush=True)
 os.execvp(command[0], command)

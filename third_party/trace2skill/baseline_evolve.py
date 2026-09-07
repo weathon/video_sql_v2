@@ -230,7 +230,7 @@ def evolve(run_directory):
     )
     try:
         evolver = BaselineEvolver(run, client, skill_dir=working, output_dir=run / "evolution",
-                                 parse_failure_dir=run / "evolution/parse_failures", max_workers=128,
+                                 parse_failure_dir=run / "evolution/parse_failures", max_workers=256,
                                  max_references=6, skip_translation=False, patch_pipeline="json")
         records = json.loads((run / "combined-records.json").read_text())
         summary = evolver.run(records)

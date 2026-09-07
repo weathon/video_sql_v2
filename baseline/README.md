@@ -24,7 +24,7 @@ The upstream spreadsheet failure-analysis prompt is adapted in error_analysis_qa
 to evidence search, minimal answer correction and the original 0–5 QA judge.
 
 All model calls use Qwen/Qwen3.8-27B-FP8 and medium reasoning. The shared request
-semaphore is 128, including nested agents, judges and embeddings. HTTP connect timeout
+semaphore is 256, including nested agents, judges and embeddings. HTTP connect timeout
 is 60 seconds; read/write/pool timeout is 100000 seconds; pools permit 1000 connections
 and 256 keepalive connections. The EPD proxy has no short total request deadline.
 Weave uses the Agents SDK processor and rollout roots, with local traces retained.
@@ -38,12 +38,14 @@ tokens plus two delimiters; 50000 tokens are reserved for text/reasoning.
 The researched configuration uses 32768 batched tokens, MTP1 and FlashInfer autotune;
 these are deployment candidates, not a measured throughput claim. CPU eager KV offload,
 BF16 KV, prefix cache, async scheduling and 4GiB MM processor cache remain enabled.
-The user selected max-num-seqs 50 for TP4. The PD service performs native memory
+The user selected max-num-seqs 256 for TP4. The PD service performs native memory
 profiling for this configuration and lets vLLM schedule requests when KV is constrained.
 Its profiler records the exact available KV budget for each rank after non-KV and
 CUDA-graph deductions; server_info reports the exact resident concurrency capacity.
 The earlier TP2 budget is not reused. CPU offload space is not included in resident
 capacity. No inference preflight is sent.
+The total CPU external KV cache budget is 50% of host MemAvailable measured at launch
+after stopping the previous PD, divided equally among the four TP ranks.
 
 Services run in foreground exec sessions via infra/trace2skill_service.py. Full
 repository review precedes the formal run. Formal traces provide correctness evidence;

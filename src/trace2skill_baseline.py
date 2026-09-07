@@ -50,7 +50,7 @@ class LimitedResponsesModel(OpenAIResponsesModel):
         self.semaphore = semaphore
 
     async def stream_response(self, *args, **kwargs):
-        # Acquire per model request, so nested agents and judges share the same 128 slots.
+        # Acquire per model request, so nested agents and judges share the same 256 slots.
         async with self.semaphore:
             async for event in super().stream_response(*args, **kwargs):
                 yield event
@@ -282,7 +282,7 @@ async def main():
         if (initial / source.name).read_bytes() != source.read_bytes():
             raise RuntimeError(f"Initial skill changed: {source.name}")
     questions = json.loads(TRAIN.read_text())
-    semaphore = asyncio.Semaphore(128)
+    semaphore = asyncio.Semaphore(256)
     # A separate scheduling bound avoids loading thousands of simultaneous harness contexts.
     for version in ("initial", "evolved"):
         jobs = iter((question, index) for question in questions for index in range(5))
@@ -294,7 +294,7 @@ async def main():
                     results.append(await rollout(question, index, version, semaphore))
 
         async with asyncio.TaskGroup() as group:
-            for _ in range(128):
+            for _ in range(256):
                 group.create_task(collect_worker())
         results.sort(key=lambda r: (int(r["question"]), r["rollout"]))
         summary = {"questions": len(questions), "rollouts": len(results),
@@ -318,7 +318,7 @@ async def main():
                 records.append(await analyze(result, semaphore))
 
         async with asyncio.TaskGroup() as group:
-            for _ in range(128):
+            for _ in range(256):
                 group.create_task(analysis_worker())
         records.sort(key=lambda r: r["instance_id"])
         (RUN / "combined-records.json").write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n")
