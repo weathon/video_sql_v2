@@ -135,8 +135,7 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
             # Preserve the actual reasoning items during native continuation/format repair.
             messages.extend(payload["output"])
             try:
-                response = raw.parse()
-                if response.status == "incomplete":
+                if payload["status"] == "incomplete":
                     if continuations >= max_continuations:
                         raise RuntimeError(f"Trace2Skill continuation exhausted: {directory}")
                     continuations += 1
@@ -144,6 +143,7 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
                     messages.append({"role": "user", "content": feedback})
                     conversation.append(("user", feedback))
                     continue
+                response = raw.parse()
                 if response.status != "completed" or response.output_parsed is None:
                     raise RuntimeError(f"Trace2Skill response did not complete: {directory}")
                 parsed = response.output_parsed
@@ -158,6 +158,10 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
                     raise ValueError(feedback)
                 patch = self._patch_from_data(parsed.model_dump())
                 state = self.read_skill_state()
+                created = {edit.file for edit in patch.edits if edit.op == "create"}
+                for edit in patch.edits:
+                    if edit.op != "create" and edit.file not in state and edit.file not in created:
+                        raise ValueError(f"Patch targets a missing skill file: {edit.file}")
                 if system_prompt != self._translation_system_prompt:
                     self._enforce_create_pairing([patch], state)
                 if system_prompt in (self._translation_system_prompt, self._verification_system_prompt):

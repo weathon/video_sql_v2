@@ -2859,6 +2859,8 @@ class ParallelSkillEvolver:
                 applied += 1
                 continue
 
+            if edit.file not in updated:
+                raise ValueError(f"Patch targets a missing skill file: {edit.file}")
             current = updated[edit.file]
             new_content = _apply_patch_edit_to_content(current, edit)
             if new_content == current:
