@@ -64,8 +64,8 @@ async def startup() -> None:
     app.state.cache_lock = asyncio.Lock()
     app.state.active_requests = 0
     session = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=100_000),
-        connector=aiohttp.TCPConnector(limit=0),
+        timeout=aiohttp.ClientTimeout(total=None, connect=100000, sock_connect=60, sock_read=100000),
+        connector=aiohttp.TCPConnector(limit=1000),
     )
 
 

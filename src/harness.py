@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 import duckdb
 import httpx
+import httpx2
 import numpy as np
 from agents import (
     Agent,
@@ -25,7 +26,7 @@ from agents import (
     ToolsToFinalOutputResult,
     function_tool,
 )
-from openai import APIError, AsyncOpenAI
+from openai import APIError, AsyncOpenAI, DefaultAsyncHttpxClient
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
@@ -33,11 +34,13 @@ from src.normalize import normalize_text
 
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
-CONTEXT_LIMIT = 1_050_000
+CONTEXT_LIMIT = 314573
 COMPACTION_THRESHOLD = 178_000
 MAX_TURNS = 100
 FRAME_SIZE = (854, 480)
-CLIP_IMAGE_LIMIT = 1024
+# Qwen patch=16, merge=2: 854x480 -> 864x480 -> 405 patches + 2 delimiters.
+# Reserve 50,000 tokens for text and reasoning in the 314,573-token context.
+CLIP_IMAGE_LIMIT = (CONTEXT_LIMIT - 50_000) // 407
 SEARCH_TABLES = {
     "episodes": "text",
     "entities": "name",
@@ -106,6 +109,7 @@ class HarnessContext:
     run_config: RunConfig
     embedding_url: str
     embedding_model: str
+    embedding_client: httpx.AsyncClient
     context_limit: int = CONTEXT_LIMIT
     compaction_threshold: int = COMPACTION_THRESHOLD
     compactions: int = 0
@@ -608,11 +612,10 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             raise ValueError(f"table must be one of {sorted(SEARCH_TABLES)}")
         if n <= 0 or rank_start <= 0:
             raise ValueError("n and rank_start must be positive")
-        async with httpx.AsyncClient(timeout=None) as embedding_client:
-            response = await embedding_client.post(
-                context.embedding_url.rstrip("/") + "/embeddings",
-                json={"model": context.embedding_model, "input": [normalize_text(query)]},
-            )
+        response = await context.embedding_client.post(
+            context.embedding_url.rstrip("/") + "/embeddings",
+            json={"model": context.embedding_model, "input": [normalize_text(query)]},
+        )
         response.raise_for_status()
         data = response.json()["data"]
         if len(data) != 1 or data[0]["index"] != 0:
@@ -734,7 +737,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             Crop coordinates refer to the original full frame, in 0-1000 units.
             Full frame: left=0, top=0, right=1000, bottom=1000.
             Require 0 <= left < right <= 1000 and 0 <= top < bottom <= 1000.
-            Sampling and crops share a cumulative 1024-image limit per clip_qa.
+            Sampling and crops share a cumulative 650-image limit per clip_qa.
             An over-budget request returns an error without partial images.
             """
             if not start_s <= sample_start_s < sample_end_s <= end_s:
@@ -958,7 +961,11 @@ class VideoSQLHarness:
         reasoning_context: str | None = "all_turns",
     ) -> None:
         client = AsyncOpenAI(
-            api_key=api_key, base_url=base_url, max_retries=3
+            api_key=api_key, base_url=base_url, max_retries=3,
+            http_client=DefaultAsyncHttpxClient(
+                timeout=httpx2.Timeout(connect=60, read=100000, write=100000, pool=100000),
+                limits=httpx2.Limits(max_connections=1000, max_keepalive_connections=256),
+            ),
         )
         model = OpenAIResponsesModel(model=model_name, openai_client=client)
         reasoning = {"effort": "medium"}
@@ -971,7 +978,7 @@ class VideoSQLHarness:
             preserve_raw_usage=True,
         )
         run_config = RunConfig(
-            tracing_disabled=True,
+            tracing_disabled=False,
             reasoning_item_id_policy="preserve",
         )
         self.context = HarnessContext(
@@ -986,6 +993,10 @@ class VideoSQLHarness:
             run_config=run_config,
             embedding_url=embedding_url,
             embedding_model=embedding_model,
+            embedding_client=httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
+                limits=httpx.Limits(max_connections=1000, max_keepalive_connections=256),
+            ),
             context_limit=context_limit,
             compaction_threshold=compaction_threshold,
         )
@@ -1074,3 +1085,4 @@ class VideoSQLHarness:
 
     async def close(self) -> None:
         await self.context.client.close()
+        await self.context.embedding_client.aclose()
