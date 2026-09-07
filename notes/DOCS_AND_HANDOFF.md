@@ -372,3 +372,63 @@ JSON 中的 data:image base64 替换为 `<base64-image-removed>`，实际图像�
 W&B 记录 `val/rollout_score`、题目与 rollout 编号，以及每批 `val/batch`、`val/accuracy`、`val/completed_rollouts`。Weave 记录模型调用；大图像历史可能触及远端单次上传大小限制，本地 trace 不依赖上传成功。批次和最终里程碑还追加到工作目录的 `AGENT_STDOUT.txt`。
 
 检查一次执行时，将 result.json 的答案和得分与主 agent、子 agent、judge 的实际输入输出对应起来，再根据 frame ID 打开对应图像。结果文件存在或进程正常退出，仅说明运行产物已写出，不能单独证明检索与视觉证据正确。
+
+## 11. 固定前缀对比轨迹采集（2026-09-07 追加）
+
+### 代码修改
+
+- 新增 [src/collect_fixed_prefix.py](../src/collect_fixed_prefix.py)：从已有 Luna 评估中收集成功轨迹，每题选主 agent 工具轮数最少的成功轨迹，同轮数取 rollout 编号最小者，固定抽样后用 Luna 续跑和评分。该入口的独立输出目录为 `runs/luna_fixed_prefix_seed0/`。
+- 新增 [src/collect_local_pairs.py](../src/collect_local_pairs.py)：从训练题重新采样，用本地 Qwen 先收集成功轨迹，再做固定前缀 branching 和 pair 收集。本次完成的本地实验使用此入口。
+- 扩展 [src/harness.py](../src/harness.py)：`VideoSQLHarness.answer` 接受 `input_items`、原始 `instructions`、`base_instructions` 和 `compactions`；构造器允许指定本地 `base_url`、上下文容量、compaction 余量和 reasoning context。主 agent 请求前保存 notes、基础指令和 compaction 状态，并写入对应 raw response 的 `prefix_state`，供分支恢复。缺失媒体和 semantic_search 的服务错误向上传播。
+- 修改 [src/val.py](../src/val.py)：judge 尝试耗尽时抛出 `JudgeAttemptsExhausted`，采集入口可保存 `judge_failed`；将 embedding 使用的 `httpx.RemoteProtocolError` 加入现有重试类别，同时保留 SDK 使用的 `httpx2.RemoteProtocolError`。
+- 相关代码提交：`d70f73a6`、`344adde8`（Luna 采集与恢复），`762ed24d`、`7029d666`、`048e5717`（本地模型、训练题采集与 embedding 重试）。此次未生成或修改 skills。
+
+### 本地实验协议与停止位置
+
+运行目录为 [/raid/wg25r/video_sql_v2/runs/qwen27b_train_fixed_prefix_seed0](../runs/qwen27b_train_fixed_prefix_seed0/)。入口是 `.venv/bin/python -m src.collect_local_pairs`；题目文件、模型、endpoint 和运行目录在该入口中指定，实际配置见 [config.json](../runs/qwen27b_train_fixed_prefix_seed0/config.json)。
+
+- 输入为 MM-Lifelong 的 `month/train.json`，共 266 题；确切 HF snapshot 路径保存在 config 中。使用 `random.Random(0)` 打乱题目顺序。
+- 原计划每题依次执行最多 20 次 rollout，首次得到 judge 分数 ≥4 即停止该题。用户随后要求“剩下的不 rollout 了，当作 hard case；先做 branching，之后 iterative 再做难的”，因此在已有 495 条完成 rollout、115 题成功时停止原始采集，将剩余 151 题保存为 `hard_case`，并保留未完成 attempt 的 traces 和媒体。本次没有继续执行这些难题。
+- 每个成功题使用首次成功轨迹。按 `(timeline, question_index)` 排序，以独立的 `random.Random(0)` 从含 `semantic_search`、`run_sql`、`sql_qa` 或 `clip_qa` 调用的主 agent 轮次中无放回抽取 `min(5, 候选轮数)` 个分支，共 525 个任务；抽样结果固定保存在 `branches.json`。
+- 根据 raw response 第一个输出 item 的 ID，在 source history 中定位截断点，排除候选轮的 reasoning 和工具选择。此前的 reasoning、item IDs、工具参数与返回保持原样；原 JPEG 字节恢复为图像输入，保留顺序、元数据与 detail，不重跑前缀工具。notes 和 compaction 状态从分支边界快照恢复。
+- 主 agent、视觉、SQL、compaction 和 judge 均使用 `Qwen/Qwen3.8-27B-FP8`，reasoning effort 为 `medium`。本地 harness 使用 262,144 上下文容量和 50,000 compaction 余量；不发送 reasoning context 字段，不添加 temperature、top_p 或请求 token 上限。Reference answer 只交给 judge。W&B 和 Weave 保留。
+- 主 agent、视觉、SQL 和 compaction 共享 50 个实际流式模型请求名额，在请求开始时取得、结束或异常时释放；工具执行期间不占名额，任务持续补位。Judge 独立调度，不占这 50 个名额。正式记录中的续跑请求峰值为 50，branch 阶段 judge 峰值为 12。
+- 沿用 SDK 重试；每个 rollout 最多 3 次 attempt，每次从同一固定前缀重新开始。有效答案立即保存为 `answer.json`，之后 judge 最多尝试 3 次，不因答案得分低重新答题。完成记录直接复用，已有答案只补缺失评分；本地采集入口的 failed、judge_failed 和无有效答案结果使用 `score: null`。
+- 原成功后缀作为正例。仅在续跑提交有效最终答案且 judge 分数 <3 时保存 `pair.json`；3–5 分、执行失败和无最终答案不进入 pair。每题的 `hard_case` 已写入终态 result，重启同一入口会复用这些记录，不会自动重跑难题。
+
+### 本地最终结果
+
+正式采集已结束，collector 退出码为 0；汇总见 [result.json](../runs/qwen27b_train_fixed_prefix_seed0/result.json)。
+
+| 项目 | 数量 |
+| --- | ---: |
+| 原始训练题 / 已完成原始 rollout | 266 / 495 |
+| 有成功轨迹的题目 / 留待 iterative 的 hard cases | 115 / 151 |
+| Branch 任务 / 完成答案和评分 / 执行失败 | 525 / 522 / 3 |
+| Branch 得分 0 / 1 / 2 | 51 / 15 / 49 |
+| Branch 得分 3 / 4 / 5 | 51 / 75 / 281 |
+| 对比对 / 对比对覆盖题目数 | 115 / 57 |
+
+因此 115 对来自 0–2 分的分支；其余 356 个分支得分 ≥4，51 个得分为 3，另有 3 个执行失败。
+
+### 产物、核对与服务状态
+
+以下路径均相对于本地运行目录；其中 source traces 和媒体保留在 `train/`，多个分支通过明确路径及边界位置引用它们，移动数据时需一起保留并处理绝对路径引用。
+
+| 路径 | 内容 |
+| --- | --- |
+| `questions.json`、`successful_rollouts.json`、`selected_sources.json`、`branches.json` | 固定题目顺序、成功题记录、选中源轨迹和抽样分支 |
+| [hard_cases.json](../runs/qwen27b_train_fixed_prefix_seed0/hard_cases.json) | 151 道难题、已完成 rollout 路径及未完成 rollout 目录 |
+| `train/question-month-*/result.json`、`rollout-*/answer.json`、`rollout-*/result.json` | 每题终态与逐 rollout 答案、评分和 attempt 引用 |
+| `branches/question-month-*/branch-*/prefix.json`、`answer.json`、`result.json`、`pair.json` | 固定前缀、续跑结果和满足阈值时立即写出的 pair；完整 traces/media 位于各自 attempt 目录 |
+| [pairs.json](../runs/qwen27b_train_fixed_prefix_seed0/pairs.json) | 全部 115 对，包含题目身份、来源、分支位置、公共前缀、正负后缀、双方答案和分数、媒体引用 |
+| `model-requests.jsonl`、[request-verification.json](../runs/qwen27b_train_fixed_prefix_seed0/request-verification.json) | 实际请求输入与起止记录、并发及前缀一致性核对 |
+| [verification.json](../runs/qwen27b_train_fixed_prefix_seed0/verification.json)、`pair-media-review.json`、`pair-media-sheet-*.jpg` | 正式产物核对、图像引用与人工查看的缩略图页 |
+| [judge-review-flags.json](../runs/qwen27b_train_fixed_prefix_seed0/judge-review-flags.json)、[pair-execution-review-flags.json](../runs/qwen27b_train_fixed_prefix_seed0/pair-execution-review-flags.json) | 18 对核心答案相近但评分跨阈值的标记；10 对正例或负例轨迹含子调用异常的标记 |
+| `collection-1.log`、`collection-2.log`、`service-config.json`、`service-shutdown.json`、`claude-review-report.md` | 原始采集与 branching 日志、实际服务启动参数、清理记录和正式运行前的 Claude 审查报告 |
+
+已核对全部 525 个固定前缀及 567 个分支 attempt 的首次请求，前缀 item IDs、reasoning、工具调用闭合和状态快照一致；其中 9 个前缀含 notes。逐结果核对了保存答案、judge 输入输出及 pair 阈值，并查看 94 对所引用的代表图像；其余 21 对的负例及公共前缀没有图像。JSON 日志会移除 base64，因此图像恢复核对结合 JPEG 文件与加载代码完成，不等同于保存了未脱敏的 HTTP 请求体。原始阶段用户中断时有 3 条请求 start 未配对 end，分支阶段起止记录闭合，详情保留在 request-verification 中。
+
+上述两类 review flags 均未删除、重评或改写原始 pair。有效最终答案可能伴随此前的子工具错误；这些记录单独列出，不能把所有低分答案都当作已被人工独立证实的错误。
+
+本次模型使用 GPU 5 的 encoder、GPU 1/3 的 PD，embedding 使用 GPU 4；模型与 embedding endpoint 分别为 `127.0.0.1:8002/v1`、`127.0.0.1:8013/v1`。正式结束后 encoder cache 已清空，`qwen27b-pairs-proxy`、`qwen27b-pairs-embedding`、`qwen27b-pairs-pd`、`qwen27b-pairs-encoder` 四个容器均停止并手动删除，本次 `qwen27b-pairs-ec-cache` 卷也已删除。后续需要运行时应按 `INFRA.txt` 和保存的 `service-config.json` 重新启动服务。
