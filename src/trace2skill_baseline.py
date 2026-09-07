@@ -290,6 +290,10 @@ async def main():
 
         async def collect_worker():
             for question, index in jobs:
+                saved = RUN / version / f"question-{question['index']}" / f"rollout-{index:02d}" / "result.json"
+                if saved.exists():
+                    results.append(json.loads(saved.read_text()))
+                    continue
                 with weave.attributes({"run": RUN.name, "question": str(question["index"]), "rollout": index, "skill_version": version}):
                     results.append(await rollout(question, index, version, semaphore))
 
