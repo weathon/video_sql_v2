@@ -10,7 +10,7 @@ dedicated infrastructure. It collects all 266 month training questions with five
 independent rollouts each, analyzes score 4–5 as success and 0–3 as failure, performs
 one upstream Combined evolution, then collects the same 1,330 rollouts with the frozen
 evolved skill. Results, complete traces/media, intermediate patches and comparison
-are written under `runs/trace2skill-baseline`. Completed rollout, analysis and evolution
+are written under `runs/trace2skill-baseline-replace-tools`. Completed rollout, analysis and evolution
 LLM artifacts are reused on resume; failures exhaust their applicable correction
 opportunities and raise. No held-out evaluation is started.
 
@@ -38,7 +38,7 @@ tokens plus two delimiters; 50000 tokens are reserved for text/reasoning.
 The researched configuration uses 32768 batched tokens, MTP1 and FlashInfer autotune;
 these are deployment candidates, not a measured throughput claim. CPU eager KV offload,
 BF16 KV, prefix cache, async scheduling and 4GiB MM processor cache remain enabled.
-The user selected max-num-seqs 256 for TP4. The PD service performs native memory
+The user selected max-num-seqs 50 for TP4. The PD service performs native memory
 profiling for this configuration and lets vLLM schedule requests when KV is constrained.
 Its profiler records the exact available KV budget for each rank after non-KV and
 CUDA-graph deductions; server_info reports the exact resident concurrency capacity.

@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = ROOT / "runs/trace2skill-baseline"
+RUN = ROOT / "runs/trace2skill-baseline-replace-tools"
 MODEL = "Qwen/Qwen3.8-27B-FP8"
 IMAGE = "video-sql-trace2skill:fp8"
 NETWORK = "video-sql-trace2skill"
@@ -42,7 +42,7 @@ if role in ("profile", "pd"):
                 "--kv-transfer-config", json.dumps({"kv_connector": "SimpleCPUOffloadConnector", "kv_role": "kv_both", "kv_connector_extra_config": {"cpu_bytes_to_use_per_rank": cpu_bytes_per_rank, "lazy_offload": False}}),
                 "--ec-transfer-config", json.dumps({"ec_connector": "ECExampleConnector", "ec_role": "ec_consumer", "ec_connector_extra_config": {"shared_storage_path": "/epd_shared/cache"}}),
                 "--default-chat-template-kwargs", json.dumps({"enable_thinking": True, "preserve_thinking": True})]
-    command += ["--max-num-seqs", "256"]
+    command += ["--max-num-seqs", "50"]
 elif role == "encoder":
     command += ["--gpus", '"device=4"', "--shm-size=32g", "-e", "VLLM_SERVER_DEV_MODE=1"] + shared
     command += [IMAGE, MODEL, "--host", "0.0.0.0", "--port", "8000", "--mm-encoder-only", "--enforce-eager",

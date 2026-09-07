@@ -20,7 +20,7 @@ from src.val import judge_answer, retryable, write_error
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = ROOT / "runs/trace2skill-baseline"
+RUN = ROOT / "runs/trace2skill-baseline-replace-tools"
 UPSTREAM = ROOT / "third_party/trace2skill"
 RUNTIME = Path("/raid/wg25r/video_sql_v2/data/runtime/month")
 TRAIN = Path("/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443/month/train.json")
