@@ -1,0 +1,105 @@
+{
+  "question_id": "day-29",
+  "timeline": "day",
+  "index": 29,
+  "question": "After the player enters Yellow Wind Ridge (黄风岭), in what order did they defeat the following bosses? 1. Tiger Vanguard (虎先锋) 2. Yellow Wind Sage (黄风大圣) 3. Little Li Loong 4. Mother of Stones (石母) 5. Mad Tiger (疯虎) 6. The Red Loong (赤髯龙)",
+  "reference_answer": "4, 3, 6, 1, 5, 2",
+  "question_type": "Temporal Reasoning",
+  "temporal_certificate": "Long",
+  "total_intervals": [[12909, 13042], [17074, 17236], [17463, 17601], [17879, 18017], [20462, 20605], [20924, 21101]],
+  "clue_interval": [[12909, 13042], [17074, 17236], [17463, 17601], [17879, 18017], [20462, 20605], [20924, 21101]],
+  "scores": [5, 3, 2, 0, 1],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "4 -> 3 -> 6 -> 1 -> 5 -> 2 (Mother of Stones ~13020s, Little Li Loong ~17220s, Red Loong ~17580s, Tiger Vanguard ~18000s, Mad Tiger ~20400s, Yellow Wind Sage ~21090s)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps, per-boss queries incl. '小骊龙'/'小黄龙') -> run_sql(name/summary text search for all 6 bosses) -> run_sql(episodes text search) -> semantic_search(episodes) -> run_sql(episodes 30sec window 11800-16000/20000-20800) -> run_sql(episodes 30sec window 15960-18120) -> semantic_search('小骊龙 defeated', event_steps) -> run_sql(event_steps+event_chains window 16980-17340) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 51, "what_happened": "semantic_search for '小骊龙 defeated boss victory' surfaces event_steps:00027094 at 52470-52680s labeled '已击败 妖王·小黄龙' (Little YELLOW Loong, a different entity) as top hit -- agent does not use this as Little Li Loong."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 54, "what_happened": "run_sql over event_steps 16980-17340 shows an unnamed event_chain 'transition to new area and antlered boss fight' with a mossy/antlered boss defeated at 17220-17250, right before the player enters 藏龙洞 (hidden dragon cave); agent identifies this, by elimination against the other 5 named bosses already located elsewhere in the timeline, as Little Li Loong and places it 2nd."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed via sql that event_steps 17070-17250 has no explicit boss name in text (only 'mossy antlered enemy' / '已击败' notice), and that the only DB entity textually resembling Little Li Loong is '小黄龙' at 52470-52680s, a distinct boss."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 3,
+      "answer": "4 -> 1 -> 6 -> 3 -> 5 -> 2 (Mother of Stones ~12510s, Tiger Vanguard ~16050s, Red Loong ~17580s, Little Li Loong ~19980-20160s, Mad Tiger ~20400s, Yellow Wind Sage ~21090s)",
+      "tool_call_sequence": "read_skill xN -> semantic_search(episodes/event_steps per-boss queries incl. '小骊龙 小黄龙') -> run_sql(episodes window 20370-21130) -> run_sql(episodes window 12480-12600) -> run_sql(episodes window 18600-20400) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 44, "what_happened": "semantic_search for '小骊龙 defeated boss' returns the 52200-52770s '小黄龙' fight as top hit but agent rejects it as out of the intended window and instead guesses Little Li Loong occurred inside the 18600-20400s block it separately scanned, without a concrete defeat marker there."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Agent treats an early ~16050s Tiger Vanguard-labeled encounter as the real defeat (2nd position) instead of the later ~18000s encounter that rollout-0 flagged as the actual final defeat (the ~16050s one being a first/duplicate encounter)."}
+      ],
+      "failure_point": "Guessed a time for Little Li Loong without a defeat marker, and used an earlier duplicate/practice Tiger Vanguard encounter instead of the final one -- two independent ordering errors that still leave some pairs correct (partial credit).",
+      "evidence_checked": "Same '小黄龙 vs 小骊龙' confusable pair present in its own search results as in rollout-00, but here neither used correctly nor overridden by elimination."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 2,
+      "answer": "4 -> 6 -> 1 -> 5 -> 2 -> 3 (Little Li Loong labeled '小黄龙' placed last at ~52470-52680s)",
+      "tool_call_sequence": "read_skill xN -> semantic_search/run_sql per boss -> submit (no clip_qa)",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Agent takes the explicit-name victory text '已击败 妖王·小黄龙' at 52470-52680s at face value as 'Little Li Loong (小黄龙)', conflating it with the questioned '小骊龙' entity, and never investigates the unnamed antlered-boss fight at 17070-17250 that rollout-0 used."}
+      ],
+      "failure_point": "Name confusion: took the textually-similar but distinct '小黄龙' (Little Yellow Loong) explicit match as the target 'Little Li Loong', producing a wrong final-position placement instead of 2nd.",
+      "evidence_checked": "Verified via sql that '小黄龙' at 52470-52680 is a separate, later, explicitly-named boss chain distinct from the unnamed antlered fight at 17070-17250."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "4 -> 6 -> 1 -> 5 -> 2 -> 3 (same numeric order as rollout-2, Little Li Loong labeled '小黄龙' at ~52650s)",
+      "tool_call_sequence": "read_skill xN -> semantic_search(episodes/event_steps/visual_clips per boss) -> run_sql(episodes windows) -> read_skill(visual-verification) -> clip_qa(12480-12540, Mother of Stones) -> clip_qa(20370-20430, Mad Tiger) -> clip_qa(17490-17610, Red Loong) -> run_sql(episodes 20400-21100) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-03.json", "item_index": 47, "what_happened": "clip_qa verifies Mother of Stones defeat visually."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-03.json", "item_index": 48, "what_happened": "clip_qa on 20370-20430 confirms on-screen text names the boss '疯虎' (Mad Tiger), but flags the clip does not show the actual defeat moment within that window."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-03.json", "item_index": 49, "what_happened": "clip_qa confirms Red Loong defeat at ~17601s."}
+      ],
+      "failure_point": "Same '小黄龙'/'小骊龙' name-confusion as rollout-2, and unlike rollout-0/rollout-2 it never even queried or clip_qa'd the unnamed 17070-17250 antlered fight, so the wrong Little Li Loong placement went completely unverified while visual verification budget was spent confirming already-fairly-clear bosses (Mother of Stones, Mad Tiger, Red Loong). Produces the identical order string as rollout-2 (4->6->1->5->2->3) yet the judge scored it 0 vs rollout-2's 2, indicating judge-side scoring noise on top of the retrieval error.",
+      "evidence_checked": "Confirmed rollout-3's segment list never touches event_steps/episodes rows in the 17070-17310s range at all."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 1,
+      "answer": "4 -> 6 -> 1 -> 5 -> 2 -> 3 (Little Li Loong labeled '小黄龙' at ~52650-52680s)",
+      "tool_call_sequence": "read_skill xN -> semantic_search/run_sql per boss (incl. '小黄龙') -> submit (no clip_qa)",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Same as rollout-2/3: adopts the explicitly-named '小黄龙' victory at ~52650-52680s as 'Little Li Loong', placing it last instead of 2nd."}
+      ],
+      "failure_point": "Same '小黄龙' vs '小骊龙' name confusion as rollouts 2 and 3; also shows Mad Tiger at a slightly different time (~20580-20610s) than the other rollouts (~20400s), suggesting a secondary minor time-window imprecision.",
+      "evidence_checked": "Same DB row (event_steps:00027094 / episodes around 52470-52680s) inspected as the source of the mislabeled boss."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "5 of the 6 boss defeats (Mother of Stones, Tiger Vanguard, Red Loong, Mad Tiger, Yellow Wind Sage) are explicitly named in event_steps/episodes text near their '已击败 妖王·X' on-screen victory captions and are reliably retrievable by name search. The 6th, Little Li Loong, has NO explicit on-screen-name text anywhere in the DB at its true clue interval (17074-17236s); that fight is captioned only as 'antlered/mossy boss' / 'seated stone-like boss with crown-shaped head' inside an event_chain named 'transition to new area and antlered boss fight', immediately followed by the player entering the '藏龙洞' (hidden dragon cave). Getting Little Li Loong right therefore requires elimination reasoning (the only unnamed boss fight left once the other 5 are located) rather than a direct text match. Separately, the DB contains a distinct, explicitly-named boss '小黄龙' (Little Yellow Loong) defeated much later (~52470-52680s) whose name is textually/semantically close to the queried 'Little Li Loong' (小骊龙) and is returned as a top semantic-search hit for '小骊龙' queries, acting as a decoy."
+  },
+  "root_causes": [
+    "Entity name confusion: the DB's explicitly-named late-game boss '小黄龙' (Little Yellow Loong) is a near-homophone/near-lookalike decoy for the queried 'Little Li Loong' (小骊龙); 3 of 5 lower-scoring rollouts (2, 3, 4) took this decoy at face value and placed Little Li Loong last instead of 2nd, corrupting the whole ordering.",
+    "The true Little Li Loong defeat event in the DB carries no boss name at all (only generic visual description), so correctly answering requires elimination-by-process reasoning across all 6 named/unnamed candidates plus contextual game knowledge (entering the 'hidden dragon cave' area) -- only rollout-0 did this.",
+    "Duplicate/practice encounter confusion: an early ~16050s clip is also labeled with Tiger Vanguard-adjacent text, and rollout-1 used this early encounter instead of the later ~18000s final defeat, while rollout-0 explicitly recognized and discarded it as a duplicate.",
+    "Judge-side scoring inconsistency: rollouts 2 and 3 submitted the identical numeric order (4,6,1,5,2,3) yet received different scores (2 vs 0), indicating some judge noise independent of retrieval quality.",
+    "Visual sub-agent (clip_qa) was used in the lowest-scoring rollout (3) but only to confirm bosses that were already unambiguous from text, never directed at the actually ambiguous Little Li Loong interval, so it added no corrective value there."
+  ],
+  "what_worked": [
+    "Rollout-0's strategy of first pinning down the 5 explicitly-named bosses by text/semantic search, then applying elimination over the remaining time span to identify the unnamed 6th boss, combined with rejecting the semantically-similar but distinct '小黄龙' decoy match.",
+    "Cross-checking a candidate defeat time against surrounding context (player entering '藏龙洞' hidden dragon cave right after the unnamed antlered-boss defeat) to support the Little Li Loong identification."
+  ],
+  "transferable_lessons": [
+    "When a named entity from the question doesn't have an exact text match in the DB, don't accept the closest-scoring semantic-search hit uncritically -- check whether it's actually a different, textually-similar entity (e.g. 小黄龙 vs 小骊龙) before using it.",
+    "For 'order N named things' questions, first locate all N-1 unambiguous items, then apply elimination to identify the remaining one from unnamed/generic-described events in the leftover time gaps, rather than forcing a low-confidence semantic-search hit onto every named slot.",
+    "When multiple similarly-labeled encounters with the same boss name exist (e.g. an early duplicate/practice fight vs the real final defeat), prefer the one immediately followed by the '已击败' (defeated) victory-notice text/overlay, not just the first name mention.",
+    "Direct clip_qa visual-verification budget toward the genuinely ambiguous or unnamed interval, not toward bosses that already have unambiguous on-screen victory text in the retrieved rows."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Why did the judge score two candidate answers with the identical numeric order (rollout-2: 4,6,1,5,2,3 vs rollout-3: 4,6,1,5,2,3) differently (2 vs 0) -- likely LLM-judge scoring noise, not examined further here.",
+    "Whether the underlying video actually shows an on-screen name for the 17070-17250s antlered boss fight that the captioning pipeline simply failed to transcribe (would make this a captioning/OCR gap rather than a pure reasoning task) -- not verified against raw frames in this diagnosis."
+  ]
+}

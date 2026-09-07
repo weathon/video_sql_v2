@@ -1,0 +1,100 @@
+{
+  "question_id": "month-165",
+  "timeline": "month",
+  "index": 165,
+  "question": "During the streamer's trip to Shanghai, what was the first food the streamer ate after getting off in Shanghai?",
+  "reference_answer": "Bought a fried chicken drumstick at a KFC store.",
+  "question_type": "Entity Recognition",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[157748, 158314]],
+  "clue_interval": [{"video_id": "14", "intervals": [[470, 1036]]}],
+  "scores": [5, 5, 0, 5, 5],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "KFC fried chicken drumstick, first bite around 158,218.5s",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(topic_facts) -> semantic_search(entities) -> run_sql(episodes 157278-161500) -> read_skill(visual-verification) -> run_sql(episodes 157500-158300) -> run_sql(event_steps 157500-158300) -> clip_qa(157548-158300) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": "run_sql episodes BETWEEN 157278 AND 161500", "what_happened": "Widened the SQL window to cover the whole candidate arrival span instead of only the top semantic-search hit's episode, surfacing the earlier 157548-158328 KFC scene alongside the later 160818 market/dumpling scene."},
+        {"segment_file": "clip-4c42ec59e36c48c0bceb7f6a9f2d00c4-segment-00.json", "item_index": "clip_qa 157548-158300", "what_happened": "Visual sub-agent confirmed the streamer steps out of the vehicle, enters KFC, and takes his first bite of a chicken drumstick around 158,208-158,238s."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "episodes 30sec rows 157278-158418 read directly via sql; confirms 'gets off' at 157548, enters KFC ~157908-157998, orders drumstick ~158028, first bite ~158208-158238."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "KFC fried-chicken drumstick, exited vehicle ~157,548s, began eating ~158,208s",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(topic_facts) -> semantic_search(visual_clips) -> run_sql(episodes 193000-199500, wrong window) -> run_sql(episodes 296500-301500, wrong window) -> semantic_search(episodes, retry) -> semantic_search(event_steps, retry) -> semantic_search(episodes, retry2) -> semantic_search(visual_clips, retry2) -> run_sql(episodes 157278-161200) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": "run_sql episodes BETWEEN 157278 AND 161200 (final)", "what_happened": "After two dead-end SQL windows (193000-199500 and 296500-301500, both irrelevant later-timeline scenes), eventually queried the correct 157278-161200 window, which contains both the early KFC scene and the later dumpling scene; picked the chronologically-earlier KFC episode as the true first food."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same episodes rows 157278-158418 confirmed via sql as in rollout 0."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "Steamed dumpling, eaten ~161,187s after getting out of car ~160,818s",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(topic_facts) -> semantic_search(visual_clips) -> run_sql(episodes 160700-162500) -> read_skill(visual-verification) -> clip_qa(161140-161240) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": "semantic_search episodes 'streamer arrives in Shanghai and gets off transportation'", "what_happened": "Top hit was episodes:1h:000074 (start_s 160878), a later walkabout-tour episode containing a second 'steps out of car onto crowded street' event at 160818s; the agent anchored on this hit and never queried the earlier 157278-158400 window where the actual first exit + KFC visit occurs."},
+        {"segment_file": "answer-segment-01.json", "item_index": "run_sql episodes BETWEEN 160700 AND 162500", "what_happened": "Restricted the SQL window to only the neighborhood of the wrong anchor (160818s), so the earlier KFC scene was never surfaced for comparison."},
+        {"segment_file": "clip-b1f9dd1adf1a4df89a77ec6781f06117-segment-00.json", "item_index": "clip_qa 161140-161240", "what_happened": "Visual sub-agent correctly confirmed a dumpling is eaten in that window, but this only verified the wrong candidate interval rather than catching the missing earlier KFC scene."}
+      ],
+      "failure_point": "Anchored on the highest-ranked semantic_search hit (a later 'steps out of car' event at 160818s) as if it were THE 'getting off in Shanghai' moment, without checking whether an earlier arrival/exit event existed; then narrowed the SQL window around that wrong anchor, permanently excluding the true first food (KFC drumstick at ~157548-158328s) from consideration.",
+      "evidence_checked": "sql episodes 157278-158418 shows the true first exit and KFC visit chronologically precede the 160818 market/dumpling episode by about 3300s (about 1 hour of timeline)."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "KFC fried chicken drumstick, ordered ~2:38:58, first bite ~2:40:12-2:40:18",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes/event_steps/topic_facts) -> run_sql(episodes near 157278-158400 window) -> clip_qa(KFC interval) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": "run_sql episodes near 157278-158400", "what_happened": "Queried the correct early window containing the KFC scene directly rather than restricting to a later semantic-search anchor."},
+        {"segment_file": "clip-2e72273ed0a641dd877d88744d7c9fb7-segment-00.json", "item_index": "clip_qa on KFC interval", "what_happened": "Visual sub-agent confirmed the drumstick bite, matching the reference answer."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Consistent with the sql-confirmed KFC timeline at 157548-158328s."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "KFC fried chicken drumstick, exited vehicle ~157,548s, ordered ~158,028s, ate ~158,208s",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes/event_steps/topic_facts) -> run_sql(episodes covering 157278-158400) -> submit (no clip_qa needed, text evidence sufficient)",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": "run_sql episodes covering 157278-158400", "what_happened": "Directly retrieved the correct early window text (order drumstick, first bite) and answered from text alone without needing clip_qa."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Matches the sql-confirmed KFC timeline at 157548-158328s."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "episodes table 30sec granularity rows 157278-158418 clearly and explicitly narrate: streamer exits vehicle at 157548s ('steps out of a vehicle onto the sidewalk'), walks past a bakery/market discussing dumplings/sushi at 157758-157848 (without eating), enters a KFC at 157908-157998 ('marvels this is his first time trying kfc in china'), orders a chicken drumstick at 158028s, and takes his first bite at 158208-158238s ('holding a piece of fried chicken... he bites the food'). This matches total_intervals [157748,158314] exactly and matches the reference answer. The DB also contains a separate, unrelated later episode (~160818-161240s) where the streamer exits a car again and eats a dumpling at a food market -- this is a second, later 'getting off' event on the same Shanghai trip, not the first one."
+  },
+  "root_causes": [
+    "rollout-02 anchored on the top-ranked semantic_search hit for 'gets off transportation in Shanghai' (episode starting 160878s) instead of verifying it was chronologically the FIRST such event on the trip; semantic similarity ranked a narratively richer/later 'steps out of car' episode above the earlier, textually plainer one.",
+    "Having anchored wrong, rollout-02 then scoped its run_sql window tightly around that anchor (160700-162500), which structurally excluded the true earliest window (157278-158400) from ever being seen, so no later step could self-correct the mistake.",
+    "clip_qa in rollout-02 was used only to verify the (wrong) candidate interval it already had, not to check for competing/earlier candidates, so it could not catch the ordering error."
+  ],
+  "what_worked": [
+    "Successful rollouts widened the SQL window to span the full candidate arrival period (roughly 157278 to 161200-161500s) rather than trusting a single semantic_search top hit, which surfaced both the early KFC scene and the later dumpling scene for direct chronological comparison.",
+    "Rollout-01 recovered from two initially wrong SQL windows (193000-199500 and 296500-301500) by re-running semantic_search and eventually querying the correct range -- persistence/backtracking rescued an initially bad anchor.",
+    "Text evidence alone (episodes table) was sufficiently explicit ('first time trying kfc in china', 'orders a chicken drumstick', 'bites the food') that some rollouts (4) could answer correctly without any clip_qa call."
+  ],
+  "transferable_lessons": [
+    "For 'first X after Y' questions, do not accept the single highest-ranked semantic_search hit as the anchor event; when multiple candidate 'Y' events exist (e.g. multiple 'gets off vehicle' moments), query a SQL window wide enough to cover the earliest plausible candidate and compare timestamps explicitly.",
+    "When narrowing a SQL time window after semantic search, favor widening rather than tightly bracketing the top hit, especially for temporal/ordering questions -- a tight window can permanently hide an earlier competing candidate.",
+    "Use clip_qa (or at least a broader run_sql) to check for competing/earlier occurrences of the anchor event, not just to verify the content of the interval already selected."
+  ],
+  "confidence": "high",
+  "open_questions": []
+}

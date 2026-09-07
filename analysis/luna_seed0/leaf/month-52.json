@@ -1,0 +1,101 @@
+{
+  "question_id": "month-52",
+  "timeline": "month",
+  "index": 52,
+  "question": "In the first live broadcast after returning from the China trip and Mongolia trip, where did the streamer buy the Huawei triple-fold phone from?",
+  "reference_answer": "A mobile phone store in Shenzhen",
+  "question_type": "Entity Recognition",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[301173, 302493], [364102, 365877]],
+  "clue_interval": [
+    {"video_id": "20", "intervals": [[3845, 5165]]},
+    {"video_id": "23", "intervals": [[6305, 8080]]}
+  ],
+  "scores": [5, 5, 5, 5, 5],
+  "score_spread": "all_high",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "He bought it from a Huawei store (during the Shenzhen portion of the China trip). The purchase footage shows him entering the Huawei store and being handed the red triple-screen foldable phone by Huawei staff; the first post-trip broadcast began after the tour, at about 357,797 seconds.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql(episodes window 301000-302600) -> run_sql(topic_facts window 300900-302700) -> run_sql x2 -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 20, "what_happened": "run_sql against episodes for start_s BETWEEN 301000 AND 302600 returned 30sec captions spanning the correct clue window, including a staff member in a blue Huawei jacket handing over a red triple-screen phone."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 22, "what_happened": "run_sql against topic_facts for the same window surfaced supporting facts about the trip/broadcast timeline, letting the agent confirm this was the first post-trip stream context."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Directly queried episodes 301150-301350s myself: caption 301228-301258 explicitly states 'approaches a staff member wearing a blue huawei jacket, and is handed a red smartphone box ... reveal a red triple-screen foldable phone', confirming the retrieved evidence matches the reference answer."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "He bought it from a Huawei retail/flagship store in Shenzhen, China—not an Apple Store. The exterior showed a HUAWEI sign (around 301,164s), and Huawei-branded staff handed him the triple-fold phone inside (around 301,248–301,278s).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql x3 -> read_skill -> clip_qa(~301164-301278) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": null, "what_happened": "After SQL located the candidate window, the agent called clip_qa to visually confirm the storefront sign said HUAWEI (disambiguating from a possible Apple Store, which also appears nearby in the same episode text at ~301318s), then submitted."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Consistent with the episodes text I queried, which mentions an Apple store shortly after (301318-301348s) in the same multi-store shopping sequence; clip_qa correctly distinguished the Huawei purchase moment from the adjacent Apple store visit."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "He bought it from a Huawei electronics store in Shenzhen, China. The purchase footage shows him receiving the red triple-screen phone from a Huawei store employee, and the surrounding stream identifies the tech stop as being in Shenzhen.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4 -> run_sql x5 -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Same pattern: SQL over episodes/topic_facts around the 301173-302493 window retrieved the Huawei staff/phone handoff caption plus Shenzhen location context, sufficient without a clip_qa call."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same episodes rows as verified for rollout 0 cover this window; no discrepancy found."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "He bought it from a Huawei store in Shenzhen, China. The trip footage identifies the setting as Shenzhen, and at about 301,228 seconds he enters the Huawei store and is handed the red triple-screen foldable phone; the first return livestream begins at about 357,797 seconds after the China-Mongolia trip.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql x4 -> semantic_search x2 -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Additional semantic_search calls after the initial SQL likely confirmed the Shenzhen location tag and the first-post-trip-broadcast framing, then submitted with a precise timestamp (301228s) matching the ground truth caption almost exactly."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "301228s timestamp matches the episodes:30sec:010047 row (301228-301258) I queried, which is the exact Huawei handoff caption."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "He bought it from a Huawei store in Shenzhen, China. The trip footage shows him entering a Huawei-branded store and receiving the red triple-screen Huawei phone from a store employee (around 301,228–301,288 seconds); on his first stream back, he showed it off as the $3,000 Huawei phone that wasn't sold in the U.S.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x6 -> run_sql x3 -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Extra semantic_search calls (6, more than other rollouts) likely covered both the purchase window and the later first-broadcast-back window (~364102-365877s) to corroborate the phone was shown off as described in topic_facts, giving the most detailed answer of the five."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Timestamp range 301228-301288 matches episodes:30sec:010047/010048 rows I queried directly, which show the Huawei handoff and price discussion."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "Directly queried episodes table for start_s BETWEEN 301150 AND 301350 (within the question's total_intervals [301173,302493]). Row episodes:30sec:010047 (301228-301258) explicitly states: 'approaches a staff member wearing a blue huawei jacket, and is handed a red smartphone box which he opens to reveal a red triple-screen foldable phone'. This directly supports the reference answer 'A mobile phone store in Shenzhen' (Huawei store = mobile phone store; Shenzhen established by surrounding trip context). The clue was clearly present and easily retrievable via a simple time-windowed SQL query on episodes or topic_facts, which is why all 5 independent rollouts converged on the same correct answer using different tool-call paths (some added clip_qa or extra semantic_search for visual/contextual confirmation, but it did not change the outcome)."
+  },
+  "root_causes": [
+    "The evidence is a single, unambiguous, well-captioned episode window that is directly hit by a time-windowed run_sql over episodes/topic_facts using the total_intervals window derived from semantic_search - no multi-hop reasoning or disambiguation across many candidate stores was required.",
+    "All 5 rollouts independently used the same successful pattern: read_skill -> semantic_search to locate the window -> run_sql on episodes/topic_facts within that window -> (optionally) clip_qa to visually confirm the store branding -> submit_answer.",
+    "The judge accepted 'Huawei store' as equivalent to the reference 'mobile phone store', treating the more specific brand name as consistent with (not contradicting) the reference answer."
+  ],
+  "what_worked": [
+    "semantic_search correctly located the purchase episode's time window from the natural-language question.",
+    "run_sql with a time-bounded WHERE clause on episodes/topic_facts efficiently pulled the exact captions describing the Huawei staff handoff without needing to scan irrelevant data.",
+    "clip_qa (used in rollout 1) correctly disambiguated the Huawei store from a nearby Apple store visit in the same shopping sequence, showing the visual sub-agent is reliable when invoked.",
+    "Multiple rollouts included Shenzhen location grounding from surrounding trip context, matching the reference answer's specificity."
+  ],
+  "transferable_lessons": [
+    "For entity-recognition questions with a clear temporal anchor (e.g. 'first broadcast after X trip'), a time-windowed SQL query over episodes/topic_facts around the semantic_search hit is sufficient and reliable - no need to always invoke clip_qa unless there is genuine visual ambiguity (e.g. two similar-looking stores in sequence).",
+    "When multiple store types appear close together in time (e.g. Huawei store then Apple store minutes later), it is worth double-checking with clip_qa or precise timestamps to avoid conflating them, even though in this case all rollouts got it right regardless.",
+    "Brand-specific answers (e.g. 'Huawei store') should be treated as compatible with a more generic reference answer (e.g. 'mobile phone store') as long as they don't contradict it."
+  ],
+  "confidence": "high",
+  "open_questions": []
+}

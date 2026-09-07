@@ -1,0 +1,108 @@
+{
+  "question_id": "day-162",
+  "timeline": "day",
+  "index": 162,
+  "question": "When the player successfully defeated the challenge Top Takes Bottom (兴烘掀) and Bottom Takes Top (掀烘兴), how much experience was gained, and what did the level change to?",
+  "reference_answer": "5494, 89",
+  "question_type": "Causal Reasoning",
+  "temporal_certificate": "Short",
+  "total_intervals": [[73195, 73206]],
+  "clue_interval": [[73195, 73206]],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "The challenge reward was +720 experience, and the character's level changed from 76 to 77 (evidence around 57,090-57,840s).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/visual_clips/topic_facts/event_steps, name-in-Chinese queries) -> run_sql(topic_facts join) -> run_sql(LIKE '%兴烘掀%'/'%掀烘兴%' over episodes+topic_facts, 0 rows) -> semantic_search x4 more (broader) -> run_sql(episodes 59000-60000) -> run_sql(topic_facts LIKE experience/level-up) -> run_sql(episodes 57000-57450) -> run_sql(topic_facts join 57000s) -> read_skill(visual-verification) -> clip_qa(57195-57250) -> clip_qa(57825-57855) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-02.json", "item_index": 24, "what_happened": "Literal SQL LIKE search for the Chinese challenge names '兴烘掀'/'掀烘兴' across episodes+topic_facts returned 0 rows -- the challenge name is not present anywhere in the DB text."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-02.json", "item_index": 51, "what_happened": "clip_qa was pointed at 57195-57250s, a wrong, unrelated interval (a different level-up around level 76->77), never near the true clue window 73195-73206."}
+      ],
+      "failure_point": "Never located the true clue interval (73195-73206); semantic search surfaced only distractor level-up/reward moments elsewhere in the 23.6h video, and the agent trusted the wrong clip_qa read as the answer.",
+      "evidence_checked": "Confirmed via sql that LIKE '%兴烘掀%' / '%掀烘兴%' return 0 rows across all text tables; the name is genuinely absent from indexed text."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "+5,329 experience, level changed to 80 (level-up screen at ~62,896s).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/event_steps/topic_facts/visual_clips) -> run_sql(episodes 62820-62940) -> run_sql(event_steps join 62700-63000) -> run_sql(visual_clips 62700-63000) -> run_sql(semantic_triples 62700-63000) -> read_skill(visual-verification) -> clip_qa(62880-62910) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 12, "what_happened": "semantic_search on event_steps for the challenge-name query returned as top hit 'level-up screen 曲度紫宫: level 80, +5329 exp' at 62880-62910s -- a semantically similar but wrong level-up event, since 兴烘掀/掀烘兴 is not embedded anywhere."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 31, "what_happened": "clip_qa confirmed the distractor screen shows +5329 exp / level 80 and the agent submitted this as final, never inspecting 73195-73206."}
+      ],
+      "failure_point": "Semantic search for the challenge name/keywords never scored the true 73195-73206 window highly (it isn't textually distinctive there); the highest-scoring hit was an unrelated level-up screen with a similarly-shaped 'level X, +Y exp' caption.",
+      "evidence_checked": "sql-confirmed the 62880-62910 episode/event_step text does say 'level 80, +5329 exp' -- rollout read it correctly, but it is the wrong event."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "Level changed to 33 (~16,954s); could not find a legible XP number, the visible 8,971 is a different resource total.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/visual_clips/topic_facts) -> clip_qa(16820-16980) -> semantic_search(episodes/topic_facts exact-name, event_steps) -> clip_qa(16830-16920) -> clip_qa(16945-16980) -> run_sql -> semantic_search(episodes) -> semantic_search(event_steps 'centipede crab boss level 33') -> clip_qa x2 more -> run_sql -> semantic_search -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-03.json", "item_index": 12, "what_happened": "First semantic_search on episodes for 'player successfully defeated the challenge top takes bottom...' returned a candidate around 16820-16980s that the agent treated as the target boss/challenge, despite no textual match to 兴烘掀/掀烘兴."},
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-03.json", "item_index": 27, "what_happened": "clip_qa on 16820-16980 found no legible XP popup, only an '8,971' currency figure; the agent correctly declined to guess an exact XP number but never redirected search to 73195-73206."}
+      ],
+      "failure_point": "Anchored on a wrong candidate interval (~16,900s) from the start and never found or visited the true clue window; ultimately hedged with an incomplete answer rather than continuing to search near 73195-73206.",
+      "evidence_checked": "None beyond what the agent itself did; independently confirmed via sql/frame that 73195-73206 is the real location, ~56000s away from where this rollout looked."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "+5,329 experience, leveled up to 80 (reward screen ~6:58:17-6:58:25).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/event_steps/visual_clips/topic_facts) -> semantic_search('top takes bottom', '兴烘掀', '掀烘兴' individually, episodes/event_steps) -> semantic_search(broader challenge/reward query) -> clip_qa(62880-62910) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 25, "what_happened": "Even a bare '兴烘掀' semantic query against event_steps failed to surface anything near 73195-73206; it kept returning the level 80/+5329 distractor cluster near 62880-62910 as most similar."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 41, "what_happened": "clip_qa confirmed the distractor screen (+5329/level 80) and the agent submitted it directly."}
+      ],
+      "failure_point": "Same distractor as rollout 1: semantic search never ranked the true 73195-73206 window because its captions don't mention the challenge name or an XP number, so the retrieval agent had nothing distinctive to latch onto there.",
+      "evidence_checked": "None beyond agent's own; same distractor location independently verified as textually accurate but wrong event."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "+5,329 experience, level changed to 80 (level-up screen at 62,880-62,910s).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/event_steps/topic_facts) -> semantic_search('兴烘掀'/'掀烘兴' separately, visual_clips) -> semantic_search(English transliteration + paraphrase queries, event_steps/topic_facts/episodes) -> submit (no clip_qa call at all)",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": 12, "what_happened": "All semantic_search variants (Chinese name, transliteration, paraphrase) consistently surfaced the level 80/+5329 exp episode text near 61200-63000 as best match; none scored the true window."},
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Submitted the answer directly from episode/event_step caption text (level 80, +5329 exp at 61200-63000) without ever calling clip_qa to verify pixel-level numbers, unlike the other rollouts."}
+      ],
+      "failure_point": "Same distractor as rollouts 1 and 3, but reached with even less verification (no clip_qa at all), relying purely on the mis-retrieved caption text.",
+      "evidence_checked": "None beyond agent's own; distractor confirmed textually accurate but wrong event, same as rollouts 1 and 3."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The boss-defeat event itself (an armored 'insectoid boss' that collapses into a 'turtle-like shell form' with a red '已击败' prompt) is present and correctly located in episodes/visual_clips/object_states at 73170-73230s, but no caption anywhere in episodes, visual_clips, topic_facts, event_steps, semantic_triples, or entities mentions the challenge name 兴烘掀 or 掀烘兴 (SQL LIKE search confirms 0 rows). The exact numbers the reference answer requires (+5494 exp, level 89) are only visible as a brief on-screen HUD overlay; extracting frames directly at t=73206s (within the given clue_interval) shows '+5494' and '89' clearly on the XP/level bar, exactly matching the reference answer. No rollout's semantic_search ever ranked this interval highly for any query tried (literal Chinese name, English paraphrase, transliteration), and consequently no rollout ever called clip_qa on or near 73195-73206. A separate, textually well-described level-up screen at 61200-63000s ('曲度紫宫, level 80, +5329 exp') acted as a strong distractor: it is the closest semantic match to generic 'level up / experience gained' queries and was picked by 3 of 5 rollouts (1, 3, 4); it is verified in the DB to literally contain that text, but it is not the challenge fight the question refers to."
+  },
+  "root_causes": [
+    "The specific challenge name (兴烘掀/掀烘兴) is never captured in any caption/text row in the memory DB for the true clue interval, so no amount of text-based semantic_search or SQL LIKE search over episodes/topic_facts/event_steps/visual_clips/semantic_triples can locate it (verified: 0 rows).",
+    "The true event's caption text (73170-73230s) only describes generic combat/boss-defeat visuals ('insectoid boss', 'turtle-like shell form', '已击败') without any experience/level numbers, so it never surfaces for 'experience gained / level up' style queries either.",
+    "A textually similar, well-indexed distractor level-up screen (level 80, +5329 exp at 61200-63000s) exists elsewhere in the 23.6h video and consistently outranks the true interval for any 'level up / experience' semantic query, pulling 3/5 rollouts to the wrong answer.",
+    "The exact XP/level numbers (+5494 / 89) are only readable from raw video frames at a narrow ~1-2s window (t≈73206s); none of the 5 rollouts' clip_qa calls ever targeted this interval, so even rollouts that were skeptical of distractors (rollout 2) could not recover the correct value.",
+    "One rollout (4) submitted directly from mis-retrieved caption text without any clip_qa visual verification at all, compounding the retrieval error with a lack of visual cross-check."
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly recognized that the literal Chinese challenge name would not text-match and tried both literal-name SQL/semantic queries and paraphrase/transliteration semantic queries -- a reasonable multi-angle search strategy that still failed only because the true interval is not indexed by name at all.",
+    "Rollout 2 correctly refused to fabricate a precise XP number when its clip_qa found no legible reward popup at its (wrong) candidate interval, rather than confidently asserting a wrong number.",
+    "Rollouts that used clip_qa (0, 1, 2, 3) correctly and accurately transcribed the on-screen numbers at whatever interval they inspected, showing the visual sub-agent itself is reliable when pointed at the right frames."
+  ],
+  "transferable_lessons": [
+    "When a question quotes an exact proper name/challenge title that returns zero hits in SQL LIKE search across all text tables, treat that as a strong signal the memory DB never captured it by name -- pivot search strategy to the surrounding narrative context (e.g. 'boss defeated, collapses into turtle-shell form') rather than repeating name-based queries with more paraphrases.",
+    "For questions asking for precise on-screen numeric values (XP amounts, exact levels), do not trust caption/episode text summaries even when they contain a plausible-looking number -- caption text can describe a completely different, semantically similar event (e.g. another level-up screen) elsewhere in a long video. Always clip_qa the specific candidate interval before finalizing.",
+    "When multiple semantic_search queries all converge on the same single interval regardless of query phrasing, treat that convergence with suspicion rather than confidence -- it may indicate an attractor/distractor interval that is simply the best available match for a family of related but unindexed events, not proof of correctness.",
+    "If clip_qa at a first candidate interval finds no matching visual evidence (no legible reward popup, wrong boss name, etc.), the correct response is to keep searching nearby episode/visual_clips rows for other boss-defeat moments in the same session rather than giving up with a hedge or defaulting to a distant distractor.",
+    "For 'defeated X, how much XP and what level' style causal-reasoning questions, first locate ALL boss-defeat / '已击败' moments in the DB (there are many in this 23.6h video) and then use clip_qa to check each nearby one for a legible reward number, since captions rarely index the exact numeric popup."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether any upstream indexing/captioning step could plausibly have captured the exact challenge name 兴烘掀/掀烘兴 (e.g. via OCR of the boss name banner) given the game likely displays it on-screen at the start of that specific fight -- if so, this is a data-generation gap rather than purely a search-strategy gap.",
+    "Whether the retrieval agent had any tool/skill for systematically enumerating all '已击败'/boss-defeat episodes across the video to triage candidates by visual similarity to the described challenge, which might have surfaced 73195-73206 without needing the literal name."
+  ]
+}

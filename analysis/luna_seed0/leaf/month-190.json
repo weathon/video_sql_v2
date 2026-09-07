@@ -1,0 +1,101 @@
+{
+  "question_id": "month-190",
+  "timeline": "month",
+  "index": 190,
+  "question": "During the streamer's trip in Beijing, how long did they play rap on the subway?",
+  "reference_answer": "About 7 minutes.",
+  "question_type": "Temporal Reasoning",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[197212, 197645]],
+  "clue_interval": [{"video_id": "15", "intervals": [[17135, 17568]]}],
+  "scores": [2, 0, 5, 1, 0],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 2,
+      "answer": "About 9 minutes (197,087s-197,627s), or ~10 minutes including the wrap-up/lag to 197,687s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/event_steps/visual_clips/topic_facts) x4 -> run_sql(episodes window) -> run_sql(event_steps JOIN event_chains, 196900-197800) -> run_sql(event_chains:0000820) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 23, "what_happened": "run_sql over event_steps joined to event_chains returned the fine-grained per-30s steps of event_chains:0000820 'freestyle rap attempt on the train' (steps 0-12, 197087-197627) AND the coarse wrapper event_steps (00028458/00031629) from higher-level chains giving 197087-197687 for the whole train segment including tunnel lag."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 29, "what_happened": "Instead of stopping at step_index 10 (197507-197537, 'speed wraps up the chaotic freestyle moment, declaring they're done'), the model included step 12 (197597-197627, ordering a drink/joking about a phrase) as part of the rap, and also cited the coarse wrapper's 197687 end as an alternative, producing an inflated 9-10 min answer."}
+      ],
+      "failure_point": "Correct fine-grained event_steps were retrieved but the endpoint was picked past the explicit 'they're done' step, blending in non-rap steps (singing a song, ordering a drink) and a coarser wrapper interval.",
+      "evidence_checked": "Confirmed via event_steps/event_chains SQL that step_index 10 (197537) is the explicit end-of-freestyle marker; steps 11-12 describe singing a song and ordering a drink, not rap."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "About 10 minutes (197,087s to 197,687s, a 600-second interval).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql x4 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 29, "what_happened": "run_sql joined event_steps:00031629 (a coarse, higher-level chain step titled 'ishowspeed attempts a freestyle rap on the train, references ronaldo, and experiences signal lag in tunnels', span 197087-197687) to its evidence episodes; the model used this single coarse step's full 600s span as 'the rap duration' instead of drilling into the finer event_chains:0000820 steps that isolate just the rapping."}
+      ],
+      "failure_point": "Anchored on the coarse/high-level event_steps row (which bundles rap + subsequent tunnel-lag narration into one 600s step) instead of the fine-grained chain that resolves the actual rap start/end, giving a duration far larger than reference.",
+      "evidence_checked": "Same event_chains:0000820 fine steps as rollout 0/2 show the actual rap-specific window ends at 197537, not 197687; the 197687 endpoint belongs to 'tunnel travel and arrival approach' (event_chains:0000821), a different chain."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "About 7 minutes 30 seconds (197,087s to 197,537s), distinguishing the rap-specific window from the broader ~10-minute train segment (singing/lag discussion).",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4 -> run_sql(episodes window) -> run_sql(event_steps window) -> run_sql(topic_facts window) -> run_sql(visual_clips window) -> run_sql(event_chains:0003337/0003675/0000820) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 23, "what_happened": "run_sql over event_steps in the 196500-197800 window returned the fine per-step breakdown of event_chains:0000820, letting the model see step_index 0 (rap launch, 197087) through step_index 10 ('speed wraps up the chaotic freestyle moment, declaring they're done', ending 197537), and separately steps 11-12 which are singing/ordering a drink, not rap."},
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 31, "what_happened": "run_sql on event_chains for both the coarse wrapper chains and event_chains:0000820 let the model explicitly contrast the coarse ~10-min 'transit' framing against the precise rap-only interval, and it chose the precise one for the answer while still mentioning the broader context."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Cross-checked event_steps step_index 10 text ('declaring they're done') as the correct end marker; 197087-197537 = 450s = 7.5 min, matching reference '~7 minutes' and close to total_intervals [197212,197645] (433s)."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 1,
+      "answer": "About 10 minutes (approximately 197,087s to 197,687s, a 600-second interval).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql(episodes) -> run_sql(event_steps/event_chains) -> run_sql(topic_facts 196900-197750) -> run_sql x2 more -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": 28, "what_happened": "run_sql on topic_facts across 196900-197750 returned a mixed list of facts covering haircut, tunnel-lag warnings, and the rap itself without narrowing to only the rap-specific facts/timestamps; the model did not isolate the rap-only sub-range and defaulted to the same coarse 197087-197687 span used by rollouts 1/3."}
+      ],
+      "failure_point": "Retrieved the same rows other rollouts had access to but did not use the fine event_chains:0000820 step boundaries (step 10 end at 197537) to bound the answer, instead reporting the full coarse chain span.",
+      "evidence_checked": "Same as rollout 1: coarse span 197087-197687 conflates rap with the following tunnel-lag/arrival narration in event_chains:0000821."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "About 15 minutes, citing that Speed 'explicitly said it would run about 15 minutes' around 197,537s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x6 -> run_sql(event_steps/event_chains window) -> run_sql(episodes 197000-197750) -> run_sql(episodes 30sec/3min rows by id) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": 33, "what_happened": "run_sql fetched episodes:30sec:006589 (197537-197567) whose caption text reads '...the man, identified as ishowspeed, notes the segment will run about 15 minutes...'; the model took this out-of-context '15 minutes' remark and reported it directly as the rap duration, without corroborating it against the actual rap start/end timestamps it had also retrieved (197087 start, step-10 wrap-up at 197537)."}
+      ],
+      "failure_point": "Misread/misattributed a caption phrase ('the segment will run about 15 minutes') as answering the question about rap duration, when it most plausibly refers to something else (e.g. remaining travel time), ignoring the model's own retrieved rap-window evidence (197087-197537, i.e. 7.5 min) that was consistent with rollout 2's correct answer.",
+      "evidence_checked": "Verified the same episodes:30sec:006589 text via trace-item; it is a single ambiguous caption sentence with no further corroboration in event_steps/event_chains that the rap itself lasted 15 minutes; the fine event_chains:0000820 steps this rollout also retrieved (index 27) place the rap end at 197537, contradicting its own final answer."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "event_chains:0000820 ('freestyle rap attempt on the train', start_s 196277-198077 as chain-level bounds, but 12 fine-grained event_steps at 197087-197627) contains the ground truth. The rap-specific steps run from step_index 0 (197087, 'launches into a rap') to step_index 10 (197507-197537, 'wraps up the chaotic freestyle moment, declaring they're done') = 450s (~7.5 min), matching the reference '~7 minutes' and closely bracketing total_intervals [197212,197645] (433s). Steps 11-12 (197567-197627) describe singing a song and ordering a drink, not rap, and should be excluded. Coarser wrapper event_steps/event_chains (event_chains:0003337, 0003675, row event_steps:00028458/00031629, and topic_facts spans) collapse the rap plus the following tunnel-signal-lag narration into one 197087-197687 (600s) block, which is the trap several rollouts fell into."
+  },
+  "root_causes": [
+    "Granularity-selection error: multiple levels of event summarization exist for the same real-world span (fine per-30s event_steps under event_chains:0000820 vs. coarser wrapper event_steps/event_chains that bundle the rap with adjacent unrelated activity). Rollouts that queried/used only the coarse wrapper (1, 3) or partially blended fine+coarse (0) overestimated duration at 9-10 minutes.",
+    "Endpoint misidentification: the fine event_steps data contains an explicit 'they're done'/wrap-up marker (step_index 10, ending 197537) that correctly bounds the rap; rollouts that didn't use this marker as the cutoff (0, 1, 3) extended the interval into subsequent non-rap activity (singing, drink-ordering, tunnel-lag talk).",
+    "Caption misattribution/hallucination-adjacent error: rollout 4 lifted an ambiguous caption phrase ('the segment will run about 15 minutes') and reported it as the rap duration without checking it against its own retrieved rap start/end timestamps, which would have contradicted it.",
+    "No rollout used clip_qa to visually verify rap start/end against the source video; all 5 relied entirely on text-derived event_steps/topic_facts/episodes captions."
+  ],
+  "what_worked": [
+    "Rollout 2 queried both the fine per-step breakdown (event_steps under event_chains:0000820) and the coarse wrapper chains, explicitly compared them, and chose the fine-grained rap-only window bounded by the 'declaring they're done' step -- this precise use of the explicit end-of-activity marker produced the correct ~7.5 minute answer."
+  ],
+  "transferable_lessons": [
+    "For 'how long did X happen' questions, prefer the finest-grained event_steps/episodes rows within the specific event_chain about that activity over coarser wrapper chains/steps that span multiple sequential activities -- coarse chains commonly bundle the target activity with adjacent, unrelated follow-on activity.",
+    "Look for explicit activity-boundary language in the retrieved text (e.g. 'declaring they're done', 'wraps up') and use it as the authoritative end timestamp rather than defaulting to the outer chain's end_s.",
+    "Treat single ambiguous caption phrases (like a passing remark about '15 minutes') with suspicion, especially when they conflict with directly-measured start/end timestamps of the target activity already in hand; cross-check such quotes against the rest of the retrieved evidence before using them as the final answer.",
+    "When multiple SQL queries return overlapping but differently-scoped intervals for the same nominal event, explicitly reconcile them (as rollout 2 did) rather than picking whichever number appeared first or last."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the judge's rubric for '~7 minutes' would have scored rollout 0's 9-minute answer more leniently if it had not also hedged with a 10-minute alternative; the hedge itself may have contributed to its middling score of 2 rather than a partial-credit higher score.",
+    "Whether clip_qa (visual verification of exact rap start/stop) would have converged all 5 rollouts on the correct window, since no rollout used it despite having the tool available."
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "question_id": "day-100",
+  "timeline": "day",
+  "index": 100,
+  "question": "After the fourth meditation point in Chapter 3, which talent did the player upgrade using Inspiration Points?",
+  "reference_answer": "Borrow a Moment",
+  "question_type": "Entity Recognition",
+  "temporal_certificate": "Long",
+  "total_intervals": [[34020, 34127]],
+  "clue_interval": [[34020, 34127]],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "Attack Increase (攻击增幅) in Constitution Cultivation (体质修行), anchored at 63120s",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/event_steps/topic_facts) x3 -> run_sql(episodes meditat keyword 44200-63200) -> run_sql(episodes 62000-63200) -> run_sql(event_steps 60000-63200) -> run_sql(topic_facts 60000-63200) -> semantic_search(visual_clips) x2 -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": 14, "what_happened": "semantic_search on topic_facts for 'talent upgraded using inspiration points' surfaced topic_facts:00013857 at 63120s ('攻击增幅 node in 体质修行 branch confirmed upgraded with 已升级此天赋'), a strong exact-match hit"},
+        {"segment_file": "answer-segment-00.json", "item_index": 20, "what_happened": "keyword SQL search for meditat/冥想/禅修 restricted to 44200-63200s found nothing near the true window, reinforcing the 63120 anchor"}
+      ],
+      "failure_point": "Anchored on a DB row at 63120s whose own auto-generated text explicitly (and, per cross-check, likely mistakenly) says 'the player confirms entry into chapter 3 (第三回 日落红尘) after upgrading the 攻击增幅 talent node' -- even though the DB already shows chapter-3 title cards ('第三回') at 21420s and 21720s, well before this. The agent never reconciled the two conflicting 'chapter 3' labels and never looked inside 21600-44200s, which is where the real clue interval (34020-34127) sits.",
+      "evidence_checked": "Confirmed via sql that topic_facts contains three separate '第三回' chapter-title facts (21420, 21720, 44250) plus the 63120 'confirms entry into chapter 3' fact used by this rollout; the true clue window (34020-34127) falls inside the 21600-44200 chapter span, not near 63120."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "散身 ('Dispersed Body'), anchored at ~30666s",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> semantic_search x2 -> run_sql(episodes keyword meditat/冥想/静坐 21750-40000) -> run_sql(event_chains meditat) -> run_sql(event_steps meditat/rest/skill/talent) -> run_sql(episodes meditat 38700-38900) -> run_sql(episodes 30570-30720) -> read_skill(visual-verification) -> clip_qa(30645-30690) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 37, "what_happened": "keyword SQL for meditat/冥想/静坐 in 21750-40000s returned only a row at 29820s ('northern shore of the bitter sea' region), which the agent used to justify zooming into ~30600-30700s"},
+        {"segment_file": "answer-segment-01.json", "item_index": 60, "what_happened": "clip_qa(30645-30690) visually confirmed a talent node named 散身 being highlighted/upgraded, which the agent then submitted as final answer without further widening the search"}
+      ],
+      "failure_point": "Never issued a broad unfiltered SQL scan of the 21600-44200s chapter span (unlike rollout 3), so it never saw the actual 34020-34140s shrine/talent-screen episode rows at all; settled for the first clip_qa-confirmed talent it found near an earlier, unrelated shrine visit.",
+      "evidence_checked": "sql on episodes 32400-36000 shows the true window opens with 'the second half (34200-36000s) opens with a fox spirit cutscene', i.e. 34020-34140 sits squarely inside chapter-span episode rows this rollout's searches never retrieved."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "散身 ('Disperse Body'), anchored at ~30664-30666s",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x3 -> run_sql(episodes meditation keyword, all timeline) -> semantic_search x3 -> run_sql(episodes 21000-32000) -> run_sql(episodes 30000-30800) -> run_sql(event_steps+event_chains join 30500-30700) -> read_skill(visual-verification) -> clip_qa(30630-30690) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 22, "what_happened": "run_sql keyword scan for 'meditation'/'meditate' across the WHOLE timeline returned episodes:3min:000015 (2700-2880s) as the only literal hit, which did not anchor chapter 3, so the agent fell back to browsing episodes 21000-32000s and stopped at the first skill-tree episode it liked (30000-30800s)"},
+        {"segment_file": "answer-segment-01.json", "item_index": 49, "what_happened": "clip_qa(30630-30690) visually confirmed 散身 being highlighted, and this was submitted directly"}
+      ],
+      "failure_point": "Same as rollout 1: search stopped at the first plausible shrine+skill-tree episode inside the 21000-32000s range instead of continuing to 32000-44200s where the real clue interval lives; no counting of meditation points was actually performed, so 'fourth' was never verified.",
+      "evidence_checked": "Same DB evidence as rollout 1: the true window is past 32000s, outside the range this rollout examined."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "\"频频\" talent at ~42753-42758s",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> semantic_search x4 -> run_sql(episodes 63120-75300 meditat) -> run_sql(episodes meditat/冥想/静坐/禅定 all-time) -> run_sql(event_chains meditat) -> semantic_search x3 -> run_sql(episodes 21000-44600, full unfiltered scan) -> run_sql(topic_facts 21750-44580 talent/skill keyword) -> read_skill(visual-verification) -> clip_qa(42720-42810) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 47, "what_happened": "run_sql unfiltered scan of episodes 21000-44600s DID return the full set of rows including the 34020-34140s shrine+talent-screen episode text (the correct clue window), giving the agent access to the right evidence"},
+        {"segment_file": "answer-segment-01.json", "item_index": 50, "what_happened": "run_sql on topic_facts 21750-44580 filtered for talent/skill keywords returned multiple confirmed-upgrade facts scattered across the span (e.g. at ~34110s and later ~42750s), and the agent picked a later one (42753s) instead of counting shrine visits to find the true 4th meditation point"},
+        {"segment_file": "answer-segment-01.json", "item_index": 55, "what_happened": "clip_qa(42720-42810) visually confirmed a talent named 频频 near 42753s and this was submitted as the answer"}
+      ],
+      "failure_point": "Retrieved the correct evidence window in its raw SQL scan but never explicitly enumerated/counted the shrine ('meditation point') visits in chapter 3 to identify which upgrade follows the 4th one; picked a different, later talent-upgrade event instead of the one at 34020-34140s.",
+      "evidence_checked": "The run_sql output this rollout already had (item 47) contains the 34020-34140s rows verified above as the true clue interval; the rollout had the data but misidentified which shrine visit was the 4th."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "乘胜追击 ('Pursue Victory') in 棍法 tree, anchored at ~38760-38850s",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> semantic_search x4 -> read_skill(sql-schema) -> run_sql(episodes 21400-44600 meditat keyword) -> run_sql(episodes 21400-44600 meditat keyword, 30sec granularity) -> run_sql(event_steps meditat/upgrad keyword) -> run_sql(event_steps 36360-44600 upgrad keyword) -> run_sql(episodes 38760-38880) -> read_skill(visual-verification) -> clip_qa(38760-38850) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 40, "what_happened": "run_sql on event_steps 36360-44600 filtered for 'upgrad' keyword found a talent-upgrade event around 38760s and the agent treated it as the target without verifying it was preceded by exactly a 4th meditation point"},
+        {"segment_file": "answer-segment-01.json", "item_index": 48, "what_happened": "clip_qa(38760-38850) visually confirmed 乘胜追击 being learned ('已领悟此天赋') and this was submitted"}
+      ],
+      "failure_point": "Same class of error as rollout 3: keyword-filtered SQL scans never covered 34020-34140s specifically (searches were restricted to windows like 36360-44600s that excluded it), so the real clue interval was never inspected; picked a different confirmed-upgrade event later in the same chapter.",
+      "evidence_checked": "34020-34140s falls outside the 36360-44600s window this rollout's decisive SQL query covered, confirming the true clue interval was never queried by this rollout."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The clue interval (34020-34127s) IS present in the memory DB: episodes/topic_facts rows describe the player reaching a shrine ('character reaches the shrine, a chinese-language interaction menu appears offering options such as resting and saving'), opening the talent screen (本事/根器/神通, 23/37, 32/57), then browsing the 奇术 tab where nodes under 定身法 and 安身法 branches are confirmed with '已升级'/'已消耗无尤人'. Manual frame inspection (memcli frame at 34119-34135s) confirms a node whose info panel reads '假借须臾' is highlighted and taken through the hold-to-confirm ('长按参悟') gesture with a currency counter showing 3/2, matching the reference answer 'Borrow a Moment' (假借须臾 = literally 'borrow[ing] an instant/moment'). However, the auto-generated episode caption for this exact window mis-OCR's the node name as '银精须臾' (a plausible-looking but wrong reading), which would mislead any text-only retrieval. The keyword 'meditation point' itself only appears verbatim in the DB once, at 2820s (chapter 1, event_steps:00000101/00014678), and is never applied to the shrine visit inside the true clue window, so keyword search for 'meditation point' cannot find the clue at all. Chapter labeling is also genuinely ambiguous in the DB: '第三回' chapter-title cards recur at 21420s, 21720s, and 44250s, and a separate auto-caption at 63120s claims the player 'confirms entry into chapter 3' after a different, unrelated talent upgrade -- a strong, semantically on-topic but likely mislabeled distractor that pulled one rollout far outside the correct chapter span entirely."
+  },
+  "root_causes": [
+    "Vocabulary mismatch: the question's phrase 'meditation point' does not consistently appear in the DB's captions for the actual shrine visit in the clue window (captions instead say 'resting and saving', 'interaction menu', 'shrine'); the one literal 'meditation point' hit in the DB is an unrelated chapter-1 event, so keyword and embedding search for 'meditation point' never surfaces the true 34020-34140s window.",
+    "Ambiguous/duplicated chapter boundaries: multiple DB rows independently claim 'chapter 3' status at different times (21420s, 21720s, 44250s, and a conflicting 63120s auto-caption), so agents anchor on different, sometimes very distant, candidate spans without reconciling which one is authoritative.",
+    "No agent actually performed the 'count shrine/meditation-point visits and take the 4th' step explicitly; even the two rollouts (3 and 4) whose SQL scans did include or nearly include the correct window picked a different, later confirmed-talent-upgrade event in the same chapter rather than systematically enumerating all shrine visits in order.",
+    "OCR/captioning error on the correct clue frame itself: the episode caption in the true window reads the talent name as '银精须臾' instead of the ground-truth '假借须臾' visible in frames, so even an agent that reached this exact interval via text search alone (without clip_qa) would have derived a wrong Chinese name and, consequently, a wrong English translation.",
+    "All 5 rollouts stopped after one clip_qa confirmation on a plausible-looking talent-upgrade scene rather than cross-checking that scene followed exactly the 4th, not some other-numbered, meditation point in chapter 3."
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly followed the general-retrieval -> locating-time-intervals -> semantic-search/sql-schema -> visual-verification skill sequence and used clip_qa to visually confirm a candidate talent-upgrade event before submitting, rather than guessing from text alone.",
+    "Rollout 3's broad, unfiltered SQL scan across the full 21000-44600s chapter span is the correct general strategy for this kind of 'find the Nth event of type X' question, and it did pull in the true clue-window rows as raw data (even though the agent did not act on them)."
+  ],
+  "transferable_lessons": [
+    "For 'the Nth <landmark> in <chapter>' questions, do a systematic ordered enumeration (SQL over a broad time range, sorted by time, filtered loosely e.g. by 'shrine'/'rest'/'save'/'meditat' OR-ed together) and explicitly count occurrences to identify the Nth one, rather than trusting semantic_search to land on the right ordinal instance -- semantic/embedding search tends to return the single most 'typical'-looking match, not the correct ordinal occurrence.",
+    "Do not trust a single auto-caption's claim of 'chapter N' at face value, especially if it conflicts with earlier chapter-title cards already seen in the DB; when multiple 'chapter 3' labels exist, prefer the one anchored to an explicit title-card cutscene (e.g. '第三回 ... ' fading in) over a narrative aside embedded in a caption about an unrelated action.",
+    "When the question's landmark term (e.g. 'meditation point') doesn't appear verbatim in captions, broaden the query with domain-specific synonyms actually used by this game's UI (shrine, rest, save, campfire, checkpoint) and cross-check against event_steps 'interaction menu' phrasing rather than relying on the literal phrase.",
+    "OCR of on-screen Chinese talent names in auto-captions can be wrong even when superficially plausible (e.g. 银精须臾 vs the true 假借须臾); when the answer hinges on an exact proper-noun read from a screen, always verify with clip_qa/frame extraction at the precise decisive second rather than trusting the episode-level caption text.",
+    "After a clip_qa visual confirmation, sanity-check that the confirmed event is preceded by the correct count of the anchor landmark (here: literally counting shrine visits from the start of the chapter) before submitting -- a visually-confirmed but mis-ordinal event is still a wrong answer."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Whether the true 4th-meditation-point count is itself unambiguous given the DB's ambiguous chapter boundaries -- I did not exhaustively enumerate every shrine/rest visit between 21420s (first '第三回' title) and 34020s to independently verify '4th', so it remains possible the reference answer's own chapter/ordinal framing relies on ground-truth game knowledge not fully recoverable from this DB.",
+    "Whether '假借须臾' is the officially localized in-game English name 'Borrow a Moment', or whether the reference answer was derived from an external walkthrough/wiki rather than purely from this video; I inferred the translation from the literal characters (假借 = borrow/pretend, 须臾 = a moment) and the visual confirm-gesture, not from an authoritative in-game English-localization string found in the DB."
+  ]
+}

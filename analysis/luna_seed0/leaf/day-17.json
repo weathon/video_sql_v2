@@ -1,0 +1,104 @@
+{
+  "question_id": "day-17",
+  "timeline": "day",
+  "index": 17,
+  "question": "Before the player fights the Mother of Stones (石母), how many Buddha's Eyeballs (佛目珠) were picked up in total?",
+  "reference_answer": "5",
+  "question_type": "Counting",
+  "temporal_certificate": "Long",
+  "total_intervals": [[11866, 11876], [11867, 11842], [12419, 12427], [12529, 12539], [12876, 12885]],
+  "clue_interval": [[11866, 11876], [11867, 11842], [12419, 12427], [12529, 12539], [12876, 12885]],
+  "scores": [0, 0, 5, 0, 0],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "1 Buddha's eyeball (~12,888s)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/episodes/entities) x4 -> run_sql(episodes/event_steps/topic_facts/visual_clips text-LIKE '%佛目珠%'/'%石母%') x4 (all empty) -> semantic_search x4 -> run_sql(episodes/event_steps/object_states/visual_clips 10500-12600) x4 -> semantic_search x3 -> run_sql(episodes 12600-13440) -> read_skill(visual-verification) -> clip_qa(12840-13020) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 62, "what_happened": "Only one clip_qa call was made, restricted to 12840-13020s (just before the boss). It found the single pickup at ~12,888s and the agent never visually inspected the earlier candidate windows around 11,878s/12,204s/12,432s/12,540s despite having pulled the raw episode/event_steps/object_states rows for 10500-12600s in steps 40-43."}
+      ],
+      "failure_point": "Agent scanned the full 10500-12600s text evidence but did not recognize the repeated 'stone head interaction + item pickup notification' pattern as multiple separate 佛目珠 events, and restricted its only visual check to the narrow pre-boss window, so it undercounted by 4.",
+      "evidence_checked": "Confirmed via sql that the raw text tables never contain the literal string '佛目珠' or '石母' (all LIKE queries in this and other rollouts return 0 rows), so the count is only recoverable by clip_qa sampling the on-screen toast text; the agent's own broad SQL scan of episodes 10500-12600 (30sec granularity) contains the pickup-adjacent episodes at 12420-12450 and 12510-12540 that other rollouts later used to justify checking those windows."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "3 Buddha's eyeballs (~11,878s, 12,204s, 12,888s)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4 -> run_sql(text-LIKE searches, all empty) x5 -> run_sql(episodes 10800-15000 full dump) -> semantic_search x4 -> read_skill(visual-verification) -> clip_qa(11820-11910) -> clip_qa(12150-12240) -> clip_qa(12870-12930) -> clip_qa(13180-13310, boss-start check) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-04.json", "item_index": 34, "what_happened": "run_sql pulled all 30sec episodes for 10800-15000s, which includes episodes:30sec:000414 (12420-12450, 'item pickup notification appearing') and episodes:30sec:000417/418 (12510-12570, defeated enemy collapses into a giant stone face with glowing amber eyes, player walks up to it) -- i.e. the 4th and 5th pickup events were visible in this dump."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-04.json", "item_index": 49, "what_happened": "Instead of following up on the 12420-12450 and 12510-12570 episodes, the agent only issued 3 narrow (90s or 60s) clip_qa calls at pre-guessed timestamps (11820-11910, 12150-12240, 12870-12930), each confirming one pickup, and never checked 12390-12450 or 12480-12570."}
+      ],
+      "failure_point": "Anchored on 3 self-selected candidate timestamps from an earlier pass and never converted the two additional stone-face/pickup episodes it had already retrieved (12420-12450, 12510-12570) into clip_qa checks -- a scan-coverage gap, not a visual misread.",
+      "evidence_checked": "sql of episodes 30sec BETWEEN 12380 AND 12580 confirms both missed windows contain visible pickup-notification / stone-face-collapse text that other rollouts (02) later verified visually as two more 佛目珠 pickups."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "5 Buddha's eyeballs (~11,878s, 12,204s, 12,432s, 12,540s, 12,887-12,890s)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/episodes/topic_facts/visual_clips) x9 -> run_sql(text-LIKE, empty) -> semantic_search x3 -> run_sql(event_steps 11000-15000, then 12400-13700) -> read_skill(visual-verification) -> clip_qa(11850-12600) -> clip_qa(12600-13200) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-02.json", "item_index": 52, "what_happened": "clip_qa over the wide-but-not-too-wide window 11850-12600s returned all 4 earlier pickups (11878, 12204, 12432, 12540.5) with frame evidence for each, because the window density let it sample enough frames to catch every toast."},
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-02.json", "item_index": 53, "what_happened": "A second clip_qa over 12600-13200s found the 5th pickup at ~12887-12890s just before the boss health bar appears at ~12906-12910s, and the two counts were summed to 5."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Verified the two clip_qa outputs directly: first call's evidence_times_s = [11878.007, 12204.007, 12432.007, 12540.507], second call's = [12887.007, 12888.007, 12904/07/10] with the boss fight starting only after the last pickup -- matches all 5 clue intervals in the question file."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "3 Buddha's eyeballs (~11,878s, 12,205s, 12,888s)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4 -> run_sql(text-LIKE, empty) -> run_sql(event_chains/entities) x2 -> run_sql(episodes 10500-15000) -> semantic_search x2 -> read_skill(visual-verification) -> clip_qa(11840-11900) -> clip_qa(12170-12220) -> clip_qa(12860-12910) -> clip_qa(13250-13310, boss check) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-04.json", "item_index": 40, "what_happened": "run_sql pulled episodes 10500-15000 (30sec granularity), which again included the 12420-12450 pickup-notification episode and the 12510-12570 stone-face-collapse episode."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-04.json", "item_index": 53, "what_happened": "Only 3 narrow clip_qa windows were issued (11840-11900, 12170-12220, 12860-12910), identical in spirit to rollout-01; the 12419-12427 and 12529-12539 clue windows were never visually checked."}
+      ],
+      "failure_point": "Same coverage gap as rollout-01: retrieved the text evidence for all 5 pickup episodes but converted only 3 of them into visual verification, missing the 4th and 5th.",
+      "evidence_checked": "Same DB check as rollout-01 (episodes 30sec BETWEEN 12380 AND 12580) confirms the skipped windows contained retrievable textual hints of two more pickups."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "4 Buddha's eyeballs (~11,880s, 12,210s, 12,430s, 12,900s)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x7 -> run_sql(text-LIKE, empty) -> semantic_search x2 -> run_sql(episodes 11400-13320, event_steps 11500-13050) -> semantic_search x2 -> read_skill(visual-verification) -> clip_qa(11800-13050, rejected: >20min... actually 1250s ok but rejected for a different reason) -> clip_qa(11800-12990) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 50, "what_happened": "First clip_qa call over 11800-13050 (1250s) was rejected by the tool as too long."},
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 53, "what_happened": "Single clip_qa call over the wide window 11800-12990 (1190s) returned only 4 pickups at 11880, 12210, 12430, 12900 -- it merged/mis-sampled the 12540 and 12887 events into a single detected pickup near 12900, unlike rollout-02 which split the same total span into two narrower clip_qa calls (750s and 600s) and recovered all 5 distinct pickups including the one at 12540.5s."}
+      ],
+      "failure_point": "Used one wide-span clip_qa call instead of splitting the interval; the visual sub-agent under-sampled frames across the full 1190s span and dropped one of the five toast events (most likely the 12529-12539 one, since the 12540 pickup found by rollout-02 in a narrower window is absent here).",
+      "evidence_checked": "Compared this rollout's clip_qa evidence_times_s [11880.007, 12210.007, 12430.007, 12900.007] against rollout-02's two-call breakdown [11878, 12204, 12432, 12540.5] + [12887, 12888]; the 12540.5s pickup is the one missing here, consistent with sparser frame sampling over a longer single-call window."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The literal item name 佛目珠 and the boss name 石母 never appear as text in episodes, event_steps, topic_facts, or visual_clips (every LIKE '%佛目珠%'/'%石母%' query across all 5 rollouts returned 0 rows), so this is not a text-searchable fact -- it can only be established by visually sampling the on-screen Chinese pickup-notification toast via clip_qa. The captioned episode/event_steps text does describe the surrounding action generically enough (stone-head/stone-face interactions, 'item pickup notification appearing', 'defeated enemy collapses into a giant stone face') to localize all 5 candidate windows textually, and 3 of the 5 rollouts (00, 01, 03) retrieved that text but still failed to convert all 5 candidate windows into clip_qa calls."
+  },
+  "root_causes": [
+    "The ground-truth item name and boss name are never present as searchable text in the DB; success depends entirely on how thoroughly and how densely the visual sub-agent (clip_qa) is used across the full pre-boss span.",
+    "Rollouts 0/1/3 stopped short of full temporal coverage: they either anchored on a small number of self-picked candidate timestamps from an early pass (01, 03, missing 2 of 5 windows) or checked only the single window right before the boss fight (00, missing 4 of 5 windows), even though their own SQL dumps of the 30sec episode captions already showed pickup-adjacent events in the unchecked windows.",
+    "Rollout 4's failure was a visual-sampling-density issue rather than a coverage issue: it covered the full span but in one clip_qa call spanning ~1190s, and the sub-agent under-sampled frames and missed one distinct pickup that a narrower two-call split (rollout 2) caught.",
+    "Rollout 2 succeeded by splitting the same overall span into two moderate clip_qa windows (~750s and ~600s), giving the visual sub-agent enough frame density per call to catch every one of the 5 toast events."
+  ],
+  "what_worked": [
+    "Rollout 2's strategy of first localizing the pre-boss span from event_steps/episodes text, then splitting that span into two clip_qa calls of moderate length (not one wide call, not many overly narrow calls) so the visual sub-agent could densely sample frames within each.",
+    "Explicitly asking clip_qa to distinguish an actual 佛目珠 pickup toast from mere stone-head inspection or other loot, which avoided over-counting from duplicate/lingering toasts."
+  ],
+  "transferable_lessons": [
+    "For on-screen-text/counting questions where the target string never appears in the DB's captioned text, do not rely on semantic_search/run_sql to find the exact events -- use them only to localize the approximate time span, then hand the full span to clip_qa.",
+    "When calling clip_qa for a counting question, split a long candidate span into a small number of moderate-length windows (a few hundred to ~750s) rather than one very wide window or many very narrow hand-picked windows; very wide windows under-sample frames and merge/drop events, while narrow windows chosen from an incomplete first pass silently skip whole candidate intervals.",
+    "Before finalizing 3 or fewer clip_qa calls for a 'count total occurrences over an interval' question, double-check that every anomalous or pickup-adjacent episode already surfaced by earlier SQL/semantic_search (e.g. 'item pickup notification appearing', 'stone face collapses') has been assigned to some clip_qa window -- don't stop at the first few visually-confirmed hits.",
+    "Treat a rejected clip_qa call (interval too long) as a signal to bisect the interval into 2 balanced windows, not to just shrink to one maximal allowed window that may still be too coarse."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "The reference clue_interval [11867, 11842] has end < start, which looks like a data entry error in the question/annotation file; it is unclear which corrected interval (e.g. 11842-11867) it was meant to represent, though this did not appear to affect any rollout's behavior.",
+    "It was not directly confirmed via frame inspection (only via clip_qa's own textual answer) that the 12540.5s and 12887s events are genuinely two separate, non-duplicate 佛目珠 pickups rather than one lingering toast split across two sampled frames; this rests on trusting the visual sub-agent's own dedup judgement in rollout 2."
+  ]
+}

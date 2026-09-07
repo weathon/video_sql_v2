@@ -1,0 +1,97 @@
+{
+  "question_id": "month-167",
+  "timeline": "month",
+  "index": 167,
+  "question": "During the streamer's trip to Shanghai, after the streamer took an ice cream and got into a taxi, how many people came to take photos with the streamer after getting out of the taxi?",
+  "reference_answer": "5",
+  "question_type": "Counting",
+  "temporal_certificate": "Long",
+  "clue_intervals": [{"video_id": "14", "intervals": [[19213, 20497]]}],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "One person—the masked woman who came up and posed for a selfie with the streamer after he exited the taxi.",
+      "tool_call_sequence": "read_skill x4 (general-retrieval, locating-time-intervals, counting-and-ordering, semantic-search, sql-schema) -> semantic_search(episodes) -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(visual_clips) -> run_sql(episodes 176700-177500) -> read_skill(visual-verification) -> clip_qa(176838-176868) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 28, "what_happened": "clip_qa given only a 30s window (176838-176868), the first third of the actual exit/crowd scene; it sampled 3 frames (~176863-176867) and reported '1 distinct person' (the masked woman)."}
+      ],
+      "failure_point": "clip_qa window too narrow (30s, only start of the crowd interaction) and too sparsely sampled to distinguish multiple fans in a dense, chaotic mob; agent trusted the single-digit visual count and submitted it verbatim.",
+      "evidence_checked": "Read frames t176838-t176893 directly (memcli frame); confirms a dense crowd of many phone-holding fans pressed against the car door, consistent with more than 1-2 people plausibly approaching, but individual identities are hard to disambiguate from sampled frames alone."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "2 people. After the streamer exited the taxi, a masked woman in gray and a young man in white approached with their phones to take photos/selfies; the surrounding crowd was only filming.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(visual_clips) -> semantic_search(topic_facts) -> run_sql(episodes) -> run_sql(visual_clips) -> run_sql(event_steps) -> run_sql(topic_facts) -> run_sql(semantic_triples) -> clip_qa(176838-176898) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 37, "what_happened": "clip_qa covered the fuller 60s window (176838-176898) and identified 2 distinct approachers (masked woman, young man in white); still far short of 5."}
+      ],
+      "failure_point": "Broader SQL sweep across episodes/visual_clips/event_steps/topic_facts/semantic_triples did not surface any explicit count of 5 people (the DB text only ever mentions 'a woman with long dark hair briefly leans into frame' plus generic 'dense crowd of fans holding up smartphones'); clip_qa's frame-sampled visual pass under-detected distinct individuals in the mob.",
+      "evidence_checked": "Queried visual_clips 176491-176898 directly; text never enumerates a count of photo-takers, only describes a generic dense crowd filming/pressing near the car."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "One person. After he exited the taxi, one woman approached and took a selfie/photo with the streamer; the other people visible were recording from the crowd rather than coming up for photos.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(visual_clips) -> semantic_search(topic_facts) -> run_sql(episodes 176700-177100) -> clip_qa(176838-176898) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-01.json", "item_index": 28, "what_happened": "clip_qa (60s window) reported '1 distinct person', identifying the same long-haired/masked woman as the only clear approacher."}
+      ],
+      "failure_point": "Same narrow visual-count failure as other rollouts: chaotic crowd scene, sparse frame sampling, undercounted distinct photo-takers.",
+      "evidence_checked": "Same visual_clips text confirmed; no DB row anywhere states a count of 5."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "1 person — a single masked woman approached the streamer for a selfie/photo after he got out of the taxi.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(visual_clips) -> semantic_search(episodes) -> run_sql(episodes 176700-177300) -> clip_qa(176838-176898) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 28, "what_happened": "clip_qa (60s window) again converged on '1 distinct person', the masked woman."}
+      ],
+      "failure_point": "Identical visual undercount pattern.",
+      "evidence_checked": "Consistent with visual_clips text for this window."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "One person. After the streamer got out of the taxi, one masked woman with long hair clearly came up and took/posed for a selfie with him; the others were filming or providing security.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(visual_clips) -> clip_qa(176838-176898) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 23, "what_happened": "Shortest investigation of the five (no run_sql before clip_qa); clip_qa (60s window) reported '1 distinct person'."}
+      ],
+      "failure_point": "Same visual undercount pattern, reached fastest with least corroborating SQL evidence.",
+      "evidence_checked": "n/a beyond shared visual_clips text already reviewed for other rollouts."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "All 5 rollouts correctly located the right anchor event (ice-cream + taxi entry at ~176808-176838) and the right exit/crowd window (~176838-176928, i.e. video-14 local ~19560-19650) using semantic_search and run_sql — anchor localization was not the failure mode. However the textual memory tables (episodes/visual_clips/event_steps/topic_facts/semantic_triples) only describe the scene qualitatively ('dense crowd of fans holding up smartphones', 'a woman with long dark hair briefly leans into the frame') and never state a specific count; no row anywhere in the DB gives '5'. The count is only recoverable by close frame-by-frame visual inspection of the ~60-90s crowd scene, which is genuinely chaotic (dozens of overlapping fans, motion blur, occlusion, phones raised for filming vs. for a joint photo look identical for much of the footage). Manually reviewing frames t176838-t176893 confirms a dense multi-person crowd pressed against the open taxi door, consistent with more than the 1-2 people the clip_qa sub-agent isolated, but confidently enumerating exactly 5 distinct 'came up to take a photo with him' individuals (vs. crowd members merely filming from a few feet away) is itself a hard, borderline-subjective visual judgment call even on manual review."
+  },
+  "root_causes": [
+    "Systematic visual undercount: every clip_qa call, regardless of the exact window (30s vs 60s) or the calling rollout's SQL thoroughness, converged on 1-2 distinct photo-takers versus a reference of 5, indicating the clip_qa sub-agent's frame sampling in a dense, fast-moving mob scene consistently misses/merges distinct individuals rather than any one rollout making an isolated mistake.",
+    "No textual DB evidence anywhere states or implies a count of 5; the ambiguity between 'crowd filming from nearby' and 'came up to take a photo with him' is not resolvable from stored text and requires fine-grained visual tracking that none of the visual sub-agent calls performed (only a handful of frames were inspected per call).",
+    "None of the 5 rollouts tried a second clip_qa call with a different/longer window or asked the sub-agent to re-examine ambiguous crowd members after getting a low count, despite the question's phrasing ('how many') inviting a sanity check when the visual answer felt low relative to the described 'dense crowd'."
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly identified the anchor event (ice-cream + taxi entry) and the correct post-exit time window via semantic_search/run_sql, so retrieval/localization of the right moment was accurate and consistent across rollouts.",
+    "The read_skill sequence (general-retrieval, locating-time-intervals, counting-and-ordering, semantic-search, sql-schema, visual-verification) correctly routed the agent from text search to a mandatory visual verification for a count that text couldn't resolve."
+  ],
+  "transferable_lessons": [
+    "For 'how many people came up to X' counts inside a dense/chaotic crowd scene, a single clip_qa call sampling a handful of frames is insufficient and biased low; the agent should request multiple overlapping clip_qa calls (or a longer window with denser frame sampling) and explicitly ask the sub-agent to track each individual across consecutive frames rather than judge from 2-3 stills.",
+    "When the visual sub-agent's count feels low relative to a DB description like 'dense crowd of fans holding up smartphones' and 'photo-filled scene', treat that as a signal to re-verify with a wider or denser visual pass before submitting, rather than trusting the first clip_qa answer.",
+    "Counting questions with ambiguous inclusion criteria (posed selfie vs. filming from the crowd) benefit from having the sub-agent enumerate every candidate person with evidence (frame id + description) rather than returning only a final number, so the calling agent can sanity-check borderline cases itself."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Whether the reference count of 5 was produced by a human/automatic annotator with access to the full uncompressed video (able to track individuals frame-by-frame) versus a looser definition of 'came to take photos' that counts more of the crowd than the models did — this could not be fully confirmed without a full manual frame-by-frame count of the entire 176838-176928 window.",
+    "Whether extending the clip_qa window slightly beyond 176898 (up to when he actually closes the car door, ~176928) would surface additional distinct approachers the rollouts missed by stopping at 176868/176898."
+  ]
+}

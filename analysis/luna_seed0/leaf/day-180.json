@@ -1,0 +1,104 @@
+{
+  "question_id": "day-180",
+  "timeline": "day",
+  "index": 180,
+  "question": "After the player unlocked the Qingzhang Path in the Keeper's Shrine (土地庙) at Mount Huaguo (花果山), how many crowns' information did they view in the gear forging interface, and how many crowns did they ultimately choose to forge?",
+  "reference_answer": "10, 0",
+  "question_type": "Counting",
+  "temporal_certificate": "Short",
+  "total_intervals": [[77080, 77113]],
+  "clue_interval": [[77080, 77113]],
+  "scores": [0, 5, 0, 0, 0],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "They viewed 1 crown's information and ultimately chose to forge 1 crown (藏风兽面), around 14,543-14,579s.",
+      "tool_call_sequence": "read_skill x6 -> semantic_search x4 -> run_sql x4 -> semantic_search x4 -> run_sql x4 -> semantic_search x3 -> run_sql x4 -> run_sql x3 -> run_sql x3 -> run_sql x2 -> run_sql x1 -> clip_qa(14520-14580) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 94, "what_happened": "clip_qa called with start_s=14520, end_s=14580 (a decoy headgear/tech-forging scene at a different shrine, '碎石台'), roughly 62,500s away from the actual clue interval 77080-77113."}
+      ],
+      "failure_point": "Extensive run_sql/semantic_search over generic 'crown'/'forging'/'shrine' terms never narrowed to the specific Mount Huaguo / Qingzhang Path chapter; the agent anchored on an unrelated but visually similar headgear-enchantment interface elsewhere in the 23.6h video and got a confident but wrong visual answer (1 viewed, 1 forged).",
+      "evidence_checked": "Queried episodes 30sec rows 14400-14700: row episodes:30sec:000484-000485 (14520-14580) indeed show a real 'armor tabs (body, arms, boots, head ornament)' enchantment interface at location '碎石台', unrelated to 花果山/土地庙."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "They viewed information for 10 distinct crowns/headgear items, and ultimately chose to forge none (0), around 77082-77111s.",
+      "tool_call_sequence": "read_skill x6 -> semantic_search x4(English) -> semantic_search x4 -> run_sql x3 -> semantic_search x1(Chinese: '花果山 土地庙 青嶂 解锁') -> run_sql x2(time-restricted keyword LIKE) -> clip_qa(77070-77160) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 24, "what_happened": "semantic_search with a Chinese-language query '花果山 土地庙 青嶂 解锁' surfaced episodes:1h:000021 (75600-79200), the one-hour chapter segment covering the Mount Huaguo / flower-fruit-mountain arc, giving the agent a coarse time anchor."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 33, "what_happened": "run_sql restricted to start_s BETWEEN 76000 AND 82000 with multiple Chinese keyword LIKE filters (冠/青嶂/花果山/土地庙/铸造/头) pinpointed episodes:3min:000428 (77040-77220), the chunk describing the '法宝' headgear tab and forging menu."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 51, "what_happened": "clip_qa on the correctly narrowed window 77070-77160 counted 10 distinct headgear items browsed with no forge confirmation, matching the reference (10, 0)."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed via sql that episodes:30sec:002569-002571 (77070-77160) describe browsing the '法宝'(equipment)/headgear tab and mask-type items (天狼星面, 玄牛怒目面, etc.) with no forging-success text, consistent with the visual answer."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "They viewed 1 crown/headgear item (藏风兽面) and forged 1 crown, the same item, around 14543-14549s / 14578s.",
+      "tool_call_sequence": "read_skill x6 -> semantic_search x4 -> run_sql x1 -> semantic_search x3 -> run_sql x7 -> clip_qa(14520-14580) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-01.json", "item_index": 58, "what_happened": "clip_qa called with the same wrong window (14520-14580) as rollout-00, again landing on the decoy 碎石台 headgear-enchantment scene instead of the Mount Huaguo shrine at 77040-77220."}
+      ],
+      "failure_point": "Same root cause as rollout-00: retrieval converged on the visually-similar decoy scene at ~14520-14580s instead of narrowing to the 77000s Mount Huaguo window.",
+      "evidence_checked": "Same episodes:30sec:000484-000485 rows as rollout-00; confirmed decoy scene is real but at the wrong location/chapter."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "They viewed 3 crowns (藏风兽面, 百戏兽面, 青铜猴面) and chose 1 (青铜猴面); no forge-success confirmation seen.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x8 -> read_skill x1 -> run_sql x6 -> semantic_search x3 -> read_skill x1 -> clip_qa(79640-79720) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 45, "what_happened": "run_sql joined event_steps/event_chains for 79500-79720 and returned a 'village 村口 merchant / equipment menu / fast-travel' event step, which the agent mistook for the shrine-unlock forging scene."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 58, "what_happened": "clip_qa on 79640-79720 (a later village/merchant scene, ~2500s after the true clue interval) returned 3 items viewed / 1 selected, which was submitted verbatim."}
+      ],
+      "failure_point": "Retrieval landed ~2500s past the correct window, on a different post-chapter village scene, instead of the 77040-77220 shrine-forging scene.",
+      "evidence_checked": "Compared event_steps row (79530-79710, 'village 村口 merchant, fast-travel') against the true clue-window episode text (77040-77220, headgear/forging menu at the flower-fruit-mountain shrine) — clearly different scenes."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "They viewed 2 crowns (不净残面, 金身怒目面) and forged 1 (金身怒目面), evidenced by currency dropping 7200->6600.",
+      "tool_call_sequence": "read_skill x6 -> semantic_search x4 -> semantic_search x4 -> run_sql x3 -> semantic_search x4 -> run_sql x1 -> clip_qa(55020-55080) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 54, "what_happened": "clip_qa called on 55020-55080s, a third, unrelated headgear-forging occurrence elsewhere in the 23.6h video, ~22,000s away from the true clue interval."}
+      ],
+      "failure_point": "Retrieval again converged on a decoy headgear-forging scene, this time at 55020-55080s, never anchoring on Mount Huaguo / Qingzhang Path context.",
+      "evidence_checked": "Not independently re-verified beyond confirming this window is far outside clue_interval [77080,77113]; consistent with the pattern of multiple similar decoy forging scenes across the video."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The literal terms 'Qingzhang Path' and '土地庙' (Keeper's Shrine) do not appear anywhere in entities or topic_facts (checked via SQL, zero rows). However, the correct scene IS present and descriptive: episodes:3min:000428 (77040-77220) and episodes:30sec:002569-002571 (77070-77160) describe browsing the '法宝'(equipment) headgear tab with ~10 mask/headgear items and no forge-success confirmation, plus topic_facts row at 77100 about the adjacent weapon-forging menu, plus episodes:1h:000021 (75600-79200) situating this in the Mount Huaguo / flower-fruit-mountain chapter. So the clue is retrievable, but only via semantic proximity + chapter-level narrowing, not exact keyword match, and the DB also contains several visually similar 'headgear/crown forging interface' decoy scenes elsewhere (~14520-14580s at 碎石台, ~55020-55080s, ~79640-79720s near a village) that a shallow search can mistake for the target."
+  },
+  "root_causes": [
+    "The question's proper nouns ('Qingzhang Path', '土地庙'/Keeper's Shrine) never appear literally in episodes/topic_facts/entities text, so naive keyword search fails and semantic_search must rely on paraphrase similarity.",
+    "The 23.6-hour video contains multiple similar-looking headgear/crown enchantment-or-forging interface scenes at different times and locations; without first confirming the surrounding chapter/location context, clip_qa can be pointed at a decoy scene and still return a confident, internally consistent (but wrong) count.",
+    "4 of 5 rollouts invoked clip_qa after broad, untargeted searches without first restricting the time window via a chapter-level anchor (e.g. the 花果山/flower-fruit-mountain 1-hour episode chunk), unlike the one successful rollout.",
+    "Once clip_qa inspects the wrong window, its answer is submitted without any cross-check against the question's stated preceding event (shrine unlock at Mount Huaguo), so the wrong-window error propagates undetected into the final answer."
+  ],
+  "what_worked": [
+    "Rollout-01 mixed English and literal Chinese game terms in semantic_search ('花果山 土地庙 青嶂 解锁'), surfacing the correct one-hour chapter episode and giving a coarse time anchor.",
+    "Rollout-01 then ran a time-restricted run_sql (76000-82000s) with multiple Chinese keyword LIKE filters (冠/青嶂/花果山/土地庙/铸造/头), which pinpointed the exact 3-minute chunk containing the target scene.",
+    "clip_qa on the correctly narrowed 77070-77160s window produced a visual count (10 viewed, 0 forged) that matched the reference exactly."
+  ],
+  "transferable_lessons": [
+    "When a question's named place/mechanic doesn't appear verbatim in retrieved episode/topic text, don't give up on keyword search — try both the English phrasing and plausible native-language (here Chinese) equivalents, since captions are often bilingual or Chinese-only for proper nouns.",
+    "Before calling clip_qa, narrow the time window using a chapter- or location-level anchor (e.g. a coarse 1-hour episode chunk mentioning the right map area) rather than jumping to the first plausible-looking 'forging interface' hit — recurring generic in-game activities (crafting, enchanting menus) are decoy-prone across long videos.",
+    "A confident, well-formatted clip_qa answer is not evidence the window was correct; sanity-check the chosen window against the question's stated preceding event/location before submitting.",
+    "Combining semantic_search (for discovery) with a subsequent time-restricted, multi-keyword run_sql (for precise localization) was the differentiating strategy between the one correct and four incorrect rollouts."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether 'Qingzhang Path' is a paraphrase/translation of an in-game term (e.g. 青嶂古道) that never appears verbatim anywhere in the transcripts — this would explain why plain keyword search alone failed for 4/5 rollouts.",
+    "Whether rollout-01's visually-counted '10 distinct headgear items' is an exact frame-by-frame match to the reference's '10' or a coincidental round number; not independently re-counted frame-by-frame here."
+  ]
+}

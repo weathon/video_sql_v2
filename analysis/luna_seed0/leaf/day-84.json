@@ -1,0 +1,104 @@
+{
+  "question_id": "day-84",
+  "timeline": "day",
+  "index": 84,
+  "question": "Which of the following statements are correct? 1. The player obtained the 争先红 Gourd (葫芦) in Chapter 3. 2. The player obtained the 乾坤彩 Gourd (葫芦) upon clearing Chapter 6. 3. The player obtained the 宝莲玉 Gourd (葫芦) upon clearing Chapter 3. 4. In Chapter 4, the player upgraded the 药王 Gourd (葫芦) to the 药师 Gourd (葫芦).",
+  "reference_answer": "2, 3",
+  "question_type": "Hallucination Detection",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[1945, 1955], [79625, 79635], [30539, 30549], [68722, 68732]],
+  "clue_interval": [[1945, 1955], [79625, 79635], [30539, 30549], [68722, 68732]],
+  "scores": [0, 0, 0, 0, 3],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "None of the four statements are correct.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/topic_facts x5) -> run_sql(episodes/topic_facts around ch3/ch6) -> semantic_search x5 -> run_sql(episodes text LIKE '%红葫芦%' etc, topic_facts, event_chains) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": 42, "what_happened": "run_sql SELECT episodes WHERE start_s BETWEEN 79200 AND 80100 -> returns a 1h-granularity episode summary that (per DB captioning error) names the item '乾坤紫葫芦' instead of '乾坤彩葫芦', causing the agent to reject statement 2 as a near-miss name."},
+        {"segment_file": "answer-segment-00.json", "item_index": 40, "what_happened": "run_sql over episodes 59400-59820 returns the chapter-3 boss-loot text naming 彩玉葫芦, which the agent (correctly) uses to reject statement 1, but never queries the 30539-30549 clue window for statement 3 with enough granularity to see the purchase succeed; it relies on the pre-existing 30540 topic_facts fact 'gourd menu highlights 宝莲玉葫芦 priced at 7200 with 材料不足 warning' and concludes statement 3 is false."}
+      ],
+      "failure_point": "Never called clip_qa; trusted a DB-captioned '材料不足' phrase that describes a later sub-event inside the same 30s bucket, missing the actual successful purchase; also trusted a mislabeled item name (紫 vs 彩) for statement 2.",
+      "evidence_checked": "Verified via sql + frame extraction that at 30539-30545s the buy screen shows sufficient currency (47418/7200) for 宝莲玉葫芦 and by 30549s currency drops to 40276 with an item-acquired banner, i.e. the purchase actually completes inside the clue window despite the DB text's '材料不足' framing. Verified via frame at 79625s/79632s that the item is literally '乾坤彩葫芦' (not '乾坤紫') and currency drops from 166809 to 154809 in the same window, consistent with a purchase right after the chapter-6 transition (event_chains row 75600-79200 'mural/scroll lore and chapter transition ... transitions to chapter 6')."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "None of the four statements is correct.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes x5) -> semantic_search(topic_facts/event_steps x6) -> run_sql x3 -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": null, "what_happened": "Same text-only retrieval pattern as rollout 0: cites the 23100/30540 宝莲玉葫芦 vendor+材料不足 evidence as proof of non-acquisition for statement 3, and cites 59430-59670 彩玉葫芦 loot for statement 2's rejection basis without checking the 79625-79635 clue window content, misreading which chapter/gourd corresponds to statement 2."}
+      ],
+      "failure_point": "No clip_qa call; text-only DB queries reproduced the same misleading '材料不足' framing for statement 3 and did not verify statement 2's exact item name against the correct 79625-79635 clue window.",
+      "evidence_checked": "Same as rollout 0's evidence checks apply; this rollout's SQL/semantic_search history was not queried against the 79625-79635 window at all, so it never had the chance to see the correct item name."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "None of the four statements is correct.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes x5) -> run_sql x5 -> semantic_search x3 -> run_sql x5 -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": null, "what_happened": "Cites 23100-30540s vendor/材料不足 evidence for statement 3 and a chapter-6 transition timestamp of ~75600s vs. a gourd time of ~59700s for statement 2, again never directly inspecting the 79625-79635 clue window's exact item name or the successful purchase inside 30539-30549."}
+      ],
+      "failure_point": "Text-only retrieval; picked an unrelated 彩玉葫芦 mention at 59700s to evaluate statement 2 instead of the clue-relevant merchant purchase at 79625-79635, and repeated the 材料不足 misreading for statement 3.",
+      "evidence_checked": "Same DB/frame checks as above confirm both statements were retrievable as true within the given clue windows but this rollout queried different, non-clue timestamps."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "None of the four statements is correct (revises statement 4 to 'true but wrong chapter').",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x5 -> run_sql x5 -> semantic_search x3 -> run_sql x6 -> clip_qa(4650-4740, stmt1) -> clip_qa(23070-23160, stmt3) -> clip_qa(79560-79650, stmt2) -> clip_qa(68670-68760, stmt4) -> semantic_search x4 -> submit",
+      "decisive_steps": [
+        {"segment_file": "clip-b97c627b85ef4df3939ff5101d641f93-segment-02.json", "item_index": 5, "what_happened": "clip_qa was pointed at 23070-23160s (an earlier, unrelated 宝莲玉葫芦 shop-listing scene) instead of the true clue window 30539-30549s; it correctly reports no purchase in THAT window, and the main agent treats this as disproving statement 3 entirely, never sampling the actual clue interval."},
+        {"segment_file": "clip-91a259b2991944b9b22419e0580ea8d6-segment-03.json", "item_index": 15, "what_happened": "clip_qa sampled 79560-79650 and correctly zoomed into 79616s confirming the exact item name '乾坤彩葫芦' (visually correct), but its densest sampling stopped at 79622s and it reported 'no purchase confirmation, inventory-added notice, or currency change visible' -- missing the currency drop (166809->154809) and menu transition that occur at 79630-79636s, just past where it stopped looking closely."}
+      ],
+      "failure_point": "clip_qa was aimed at the wrong (statement-3) or insufficiently-sampled (statement-2) time window; despite having a visual sub-agent, the main agent picked candidate intervals from its own text search results (23100s and 79616-79622s) rather than the exact clue intervals (30539-30549 and 79625-79635), so the visual check never crossed the moment of actual purchase confirmation.",
+      "evidence_checked": "Confirmed via frame extraction that a currency drop and an item-notification banner occur at 30539-30549s (statement 3's true clue window, never sampled by this rollout's clip_qa) and at 79630-79636s (just past this rollout's clip_qa sampling range for statement 2)."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 3,
+      "answer": "Only statement 2 is correct.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(topic_facts x5) -> semantic_search(episodes x4, event_steps x2) -> run_sql(topic_facts/event_chains) -> run_sql(episodes at 64680-64860, 23040-23220, 43140-43440, 75540-75840 x4) -> run_sql(event_chains 50000-65000) -> semantic_search(visual_clips x4) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": 50, "what_happened": "run_sql over episodes 75540-75840 (the chapter-6 transition window, closely adjacent to the 79625-79635 clue interval) gave enough temporal context to correctly conclude statement 2 (乾坤彩葫芦 upon clearing chapter 6) is true, despite not directly re-verifying the exact glyph 彩 vs 紫."},
+        {"segment_file": "answer-segment-00.json", "item_index": 48, "what_happened": "run_sql over episodes 23040-23220 (the earlier, non-clue 宝莲玉葫芦 shop-listing window) was used as the sole evidence for statement 3, again missing the true clue window 30539-30549 where the purchase actually completes."}
+      ],
+      "failure_point": "Got statement 2 right by querying a window close to its correct clue interval, but repeated the same statement-3 mistake as all other rollouts: never queried/sampled 30539-30549s, relying instead on the earlier 23100s listing plus the 30540s '材料不足' text.",
+      "evidence_checked": "Same DB/frame verification as above: the 75540-75840 window it queried does correctly establish the ch6->乾坤彩葫芦 causal link; the 23040-23220 window it queried does not contain the actual purchase, which instead occurs at 30539-30549s."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "Statement 1 (争先红, false) and statement 4 (药王->药师 upgrade real but not in chapter 4, false) are both correctly and consistently retrievable from episodes/topic_facts/event_chains text and every rollout gets them right, matching the reference's implicit falsity. Statement 2 (乾坤彩葫芦, true) is retrievable but the closest 1h/30sec episode caption around 79620-79650s misnames the item '乾坤紫葫芦' (an apparent OCR/vision-captioning color-character error, 紫 vs 彩) while the true item name and a large currency drop confirming a purchase are only visible in raw frames at 79625-79636s, just inside/adjacent to the given clue window -- text evidence actively contradicts the ground truth here. Statement 3 (宝莲玉葫芦, true) is retrievable in principle: the exact clue window 30539-30549s shows the buy screen with 47418 currency (sufficient for the 7200 price) and, by the end of the window, currency has dropped to 40276 with an item-acquired banner -- but the DB's object_states/topic_facts caption for the surrounding 30540-30570s bucket foregrounds a '材料不足' (insufficient materials) phrase that actually describes a later sub-event (toggling a different gourd/材料 combination) in the same bucket, so every rollout that read only the text (all 5) concluded the purchase failed, and even the one clip_qa call aimed at statement 3 (rollout 3) targeted the wrong, earlier interval (23070-23160s) instead of the true clue window."
+  },
+  "root_causes": [
+    "DB caption/topic_facts text for the 30539-30549s clue window (statement 3) foregrounds a '材料不足' warning that belongs to a different sub-event later in the same 30s bucket, burying the actual successful purchase that happens earlier in the same bucket -- a captioning-granularity error that misleads every rollout that relied on text alone.",
+    "DB caption text around the 79625-79635s clue window (statement 2) names the item '乾坤紫葫芦' instead of the ground-truth '乾坤彩葫芦' (a color-glyph captioning/OCR error), directly contradicting the reference and misleading rollouts 0-2 into rejecting a true statement on a name mismatch.",
+    "None of the 4 zero-scoring rollouts used clip_qa/visual sub-agent verification for statements 2 or 3 at all (rollouts 0,1,2), or when they did (rollout 3), they aimed clip_qa at a self-chosen nearby interval (23070-23160s, 79560-79622s) rather than the exact given clue interval (30539-30549s, 79625-79635s), so the visual check never reached the frames that actually disprove the text.",
+    "All 5 rollouts converge on an 'insufficient materials therefore not obtained' narrative for statement 3 without checking whether currency/inventory changed across the full clue window, i.e. they read a single negative-sounding phrase as conclusive rather than checking the currency counter before/after."
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly rejected statement 1 (争先红葫芦 obtained around 4710s, long before chapter 3) using episodes/topic_facts text search.",
+    "All 5 rollouts correctly rejected statement 4 (the 药王->药师 upgrade at 68722-68732s is real, per rollout 3's clip_qa, but occurs in the chapter 5 window, not chapter 4) using event_chains chapter-boundary queries.",
+    "Rollout 4 additionally queried episodes text right at the chapter-6 transition window (75540-75840s), which was close enough to the true clue interval to correctly conclude statement 2 despite the misleading item-name text elsewhere, earning partial credit."
+  ],
+  "transferable_lessons": [
+    "For 'did the player obtain/purchase X' questions, do not stop at a single caption phrase like '材料不足' or 'browsing/previewing' -- pull the exact clue interval's frames (or a tightly-scoped clip_qa call on the EXACT given clue_interval, not a nearby self-chosen window) and check for a currency/counter change or an item-acquired banner across the whole window, since a 30s caption bucket can conflate a successful sub-event with a failed one.",
+    "When a caption's item name is off by one visually similar glyph (e.g. 紫 vs 彩) and it's the sole piece of evidence contradicting a plausible statement, escalate to a frame/clip_qa check on the exact clue window before concluding the statement is false -- text captions from this pipeline can contain single-character OCR-style errors.",
+    "When clip_qa is used, pass it the literal clue_interval / total_intervals bounds from the question, not a coarser or shifted interval picked from earlier text search hits; a few seconds' difference (e.g. sampling only up to 79622s instead of 79635s) can miss the exact frame that confirms or refutes the claim.",
+    "For hallucination-detection questions with multiple sub-statements, verify each sub-statement against its own dedicated evidence window rather than reusing an earlier, superficially-similar mention of the same item name found elsewhere in the timeline."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the DB's '乾坤紫葫芦' vs '乾坤彩葫芦' naming and the '材料不足' bucket-conflation are systematic issues affecting other questions built on the same underlying vision-captioning pipeline, or isolated to this scene.",
+    "Whether the currency drop observed at 79630-79636s (166809->154809, a ~12000 delta against an 18000 listed price) reflects the exact 乾坤彩葫芦 purchase or a combination of purchases/other menu actions in that window; a tighter frame-by-frame check between 79625 and 79636 would pin this down more precisely."
+  ]
+}

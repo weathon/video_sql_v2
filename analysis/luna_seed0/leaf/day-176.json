@@ -1,0 +1,112 @@
+{
+  "question_id": "day-176",
+  "timeline": "day",
+  "index": 176,
+  "question": "Which of the following events are correct? 1. The Magic Treasure (法宝) used by the player when fighting the Sui Commander is the Fire Shield (避火罩) 2. The Magic Treasure (法宝) used by the player when fighting the Gray Bronze War Chariot is the Embroidered Needle (绣花针) 3. The Magic Treasure (法宝) used by the player when fighting the Sui Vanguard is the Fire Shield (避火罩) 4. The Magic Treasure (法宝) used by the player when fighting Wang Lingguan at Mount Huaguo (花果山) is the Embroidered Needle (绣花针) 5. The Magic Treasure (法宝) used by the player when fighting Great Shigandang (大石敢当) is the Banana Leaf Fan (芭蕉扇)",
+  "reference_answer": "1, 2, 3, 5",
+  "question_type": "Hallucination Detection",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[67480, 67516], [65229, 65270], [74969, 75054], [77414, 77453], [80846, 80885]],
+  "clue_interval": [[67480, 67516], [65229, 65270], [74969, 75054], [77414, 77453], [80846, 80885]],
+  "scores": [1, 2, 2, 1, 3],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 1,
+      "answer": "Only event 1 correct (based on item acquired at ~6150s). 2,3,4,5 marked false.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps/topic_facts) x~10 -> run_sql(episodes text LIKE, entities LIKE) x4 -> run_sql(episodes 30sec windows near 14k/15k/24k/71k/76k) x5 -> semantic_search(visual_clips/episodes) x~10 -> submit (no clip_qa at all)",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": 22, "what_happened": "semantic_search on topic_facts for '避火罩' returns the item-ACQUISITION popup at 6150s as top hit; agent treats this as the 'used' event for Sui Commander instead of searching for a later USE near the clue window (67480-67516)."},
+        {"segment_file": "answer-segment-00.json", "item_index": 23, "what_happened": "semantic_search for chariot/绣花针 returns event_steps at 71970s (a different, wrong chariot fight, 赤金战车) rather than the correct chariot fight near 65229-65270."},
+        {"segment_file": "answer-segment-00.json", "item_index": 75, "what_happened": "submit_answer issued from text-only reasoning; no visual/clip_qa verification was ever performed for any of the 5 claims."}
+      ],
+      "failure_point": "Never called clip_qa; anchored on the item-acquisition scene (6150s) and on textually-similar but temporally wrong boss encounters (14k/17k/71k s) instead of the true clue windows (65k-81k s), where no literal boss-name text exists in the DB.",
+      "evidence_checked": "Confirmed via sql that 避火罩/辟火罩 text only appears once in episodes/topic_facts, at the 6150s acquisition scene, not again near any of the 5 clue windows -- so this rollout's anchor point was real but not the 'used' event the question asks about."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 2,
+      "answer": "Only events 1 and 3 correct (both attributed loosely to fire shield without pinpointing the true windows). 2,4,5 marked false.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes/event_steps) x~9 -> run_sql(episodes LIKE, event_chains LIKE, 30sec windows, object_states, semantic_triples, event_steps) x~6 -> read_skill(visual-verification) -> semantic_search(visual_clips) x3 -> run_sql(event_steps 5700-7200) -> clip_qa(77040-77160 Wang Lingguan) -> clip_qa(71910-72030 chariot) -> clip_qa(14370-14580 Shigandang) -> clip_qa(7200-7500 Black Bear Guai) -> clip_qa(15990-16200 Tiger Vanguard) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-05.json", "item_index": 63, "what_happened": "clip_qa on the wrong chariot fight (71910-72030, entity 赤金战车) reports 芭蕉扇 is used there -> agent marks event 2 (绣花针) false, but this is the wrong chariot encounter, not the one at clue window 65229-65270."},
+        {"segment_file": "answer-segment-05.json", "item_index": 75, "what_happened": "clip_qa on Black Bear Guai fight (7200-7500) confirms a shield-like treasure is used, reinforcing (by analogy, not the actual clue window) the belief that 避火罩 generalizes to 'fire-themed fights', leading the agent to mark 1 and 3 true from unrelated evidence."},
+        {"segment_file": "answer-segment-05.json", "item_index": 78, "what_happened": "clip_qa on Tiger Vanguard (15990-16200), conflating it with the question's 'Sui Vanguard', confirms similar treasure use there and is used as (mis-located) support for claim 3."}
+      ],
+      "failure_point": "All 5 clip_qa calls targeted wrong time windows (none within the true clue intervals); the agent conflated distinctly-named but visually/thematically similar bosses (Tiger Vanguard vs Sui Vanguard, 赤金战车 vs the gray bronze war chariot, an early Shigandang-like golem vs the real one) because the true instances near 65k-81k s carry no literal boss-name text in the DB.",
+      "evidence_checked": "Compared all 5 clip_qa windows against the 5 clue_intervals: zero overlap in any case."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 2,
+      "answer": "Only event 5 correct. 1,2,3,4 marked false.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x~8 -> run_sql x~6 -> clip_qa(77190-77460 Wang Lingguan) -> clip_qa(79740-79800 Shigandang/fan) -> clip_qa(15990-16110 Tiger Vanguard) -> clip_qa(71970-72240 chariot) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-04.json", "item_index": 72, "what_happened": "clip_qa on 79740-79800 finds the banana-leaf fan used around 79755s and the agent marks event 5 true; this window (79740-79800) does not overlap the true clue interval (80846-80885) but the visible fan use happens to match the reference label -- likely a second/earlier fan use in the same late-game boss run."},
+        {"segment_file": "answer-segment-04.json", "item_index": 75, "what_happened": "clip_qa on Tiger Vanguard (15990-16110) reports no fire shield used, and the agent applies this (wrong boss identity) result to disprove claim 3 (Sui Vanguard), while the true Sui Vanguard fight at 74969-75054 was never inspected."},
+        {"segment_file": "answer-segment-04.json", "item_index": 78, "what_happened": "clip_qa on the wrong chariot fight (71970-72240) reports no embroidered needle, used to (wrongly, on a mislocated fight) disprove claim 2."}
+      ],
+      "failure_point": "4 of 5 clip_qa windows again miss the true clue intervals; only the Shigandang check landed close enough (79755 vs true 80846-80885) to accidentally match the reference label, and even that was on an adjacent-but-different scene.",
+      "evidence_checked": "Verified via sql that a distinct 花果山 map view and boss defeat text ('慈悲') sit at 80846-80885, separate from the 79740-79800 window this rollout actually inspected."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 1,
+      "answer": "Only event 2 correct. 1,3,4,5 marked false.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search/run_sql x~8 -> clip_qa(63930-64080 chariot/绣花针) -> clip_qa(77100-77460 Wang Lingguan) -> clip_qa(14370-14520 Shigandang) -> clip_qa(6060-6120 Jinchi elder) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-04.json", "item_index": 63, "what_happened": "clip_qa on 63930-64080 (close to, but not exactly, the true clue window 65229-65270) confirms 绣花针 is used against the chariot -> agent correctly marks event 2 true; this is the one rollout that landed near the right temporal region for at least one claim."},
+        {"segment_file": "answer-segment-04.json", "item_index": 66, "what_happened": "clip_qa at 6060-6120 identifies the boss there as Elder Jinchi (金池长老), not the Sui Commander, so the agent (correctly) does not find fire-shield evidence for claim 1 there -- but never searches near the true clue window 67480-67516 for the Sui Commander fight, so claim 1 is marked false instead of true."},
+        {"segment_file": "answer-segment-04.json", "item_index": 65, "what_happened": "clip_qa at 14370-14520 (early-game Shigandang-like golem) finds no fan use and disproves claim 5 using the wrong boss instance instead of the true one at 80846-80885."}
+      ],
+      "failure_point": "Only 1 of 5 claims was checked at (approximately) the right location; the other 4 clip_qa calls, and the underlying semantic_search/run_sql that picked those windows, all landed on earlier, differently-identified bosses that share superficial name/visual similarity with the question's targets.",
+      "evidence_checked": "Confirmed 63930-64080 is close to but short of clue window 65229-65270; confirmed 6060-6120 is the Jinchi elder fight, not the Sui Commander fight at 67480-67516."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 3,
+      "answer": "Events 1 and 2 correct (highest score of the 5, but from text-only reasoning). 3,4,5 marked false.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/event_steps/semantic_triples/visual_clips/entities/object_states) x~15 -> run_sql(episodes LIKE, entities LIKE, event_chains JOIN event_steps, object_states windows, semantic_triples windows) x~10 -> submit (no clip_qa at all)",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": 54, "what_happened": "run_sql joining event_chains/event_steps over the 5000-20000s and 70000-78000s ranges surfaces the 'rainy forest -> temple courtyard -> jinchi elder boss' chain (5400-7200s) as the closest textual match for a fire-shield-relevant fight, again anchoring on the 6150s acquisition rather than the true 67480-67516 usage window."},
+        {"segment_file": "answer-segment-00.json", "item_index": 66, "what_happened": "run_sql on object_states 71800-72400 finds currency/hud counters near the wrong chariot fight (71970s) and the agent infers the needle is 'equipped/available' there, coincidentally landing on the correct label for claim 2 despite inspecting the wrong chariot encounter."},
+        {"segment_file": "answer-segment-00.json", "item_index": 72, "what_happened": "submit_answer issued purely from SQL/semantic_search text evidence; no clip_qa call was made in this rollout at all, so none of the 5 claims were visually confirmed."}
+      ],
+      "failure_point": "Highest-scoring rollout by coincidence of partial answer overlap (1,2 vs reference 1,2,3,5), not because retrieval found the true evidence; like rollout 0, it never used clip_qa and never located the true clue windows.",
+      "evidence_checked": "Confirmed no clip_qa tool call appears anywhere in this rollout's trace; all conclusions drawn from episodes/event_steps/object_states/semantic_triples text near wrong-boss locations."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "Boss identities near the true clue windows are confirmed in the DB: 赤焰麒麟 boss fight at 67470-67530 (event 1, Sui Commander), an unnamed 'horned demon' fight ending 65370 (event 2, chariot -- though the earlier 63930-65270 stretch is where 绣花针 use was actually visually confirmed by rollout 3), a molten-golem boss fight at 74760-75150 (event 3, Sui Vanguard), 王灵官 explicitly named and defeated at 77250-77460 (event 4, Wang Lingguan -- literal text match, easy to find, and correctly judged false by every rollout that checked it), and a 'blue-nodule boss (慈悲)' defeated at 80846-80885 (event 5, Great Shigandang). Only event 4's boss name is literally present as text near its clue window; events 1, 2, 3 and 5 have no literal boss-name or magic-treasure-name text near their clue intervals -- the treasure names (避火罩, 绣花针, 芭蕉扇) only appear as literal text at earlier, unrelated acquisition/equip scenes (e.g. 避火罩 acquired at 6150s, 芭蕉扇 shown in inventory at 76650-78540s), which repeatedly lured every rollout's text-based search away from the correct usage windows. Confirming the treasure actually used in each of the 5 target fights requires clip_qa frame inspection of the HUD/skill-slot icon precisely inside each clue interval; no rollout did this for all 5 claims, and most did it for none of the correct windows."
+  },
+  "root_causes": [
+    "Semantic_search and run_sql text queries built from the question's English boss names (Sui Commander, gray bronze war chariot, Sui Vanguard, Great Shigandang) matched earlier, differently-identified but visually/thematically similar encounters (e.g. Tiger Vanguard vs Sui Vanguard, 赤金战车 vs the true chariot fight, an early stone-golem boss vs the true Great Shigandang) because the DB captions never use the question's exact English/Chinese names for the true late-game instances.",
+    "The three positive-label magic-treasure names (避火罩, 绣花针, 芭蕉扇) appear as literal text in the DB only at item-acquisition/inventory scenes far from the clue windows (e.g. 6150s, 76650-78540s), so lexical search repeatedly anchored rollouts on acquisition rather than in-combat usage.",
+    "Two of five rollouts (0 and 4, the highest-scoring pair by coincidence) never invoked clip_qa at all, despite the question requiring visual HUD confirmation of which treasure icon is active during each specific fight -- an inherently non-textual fact.",
+    "Even the three rollouts that did use clip_qa (1, 2, 3) mostly pointed the visual sub-agent at the wrong, textually-derived time windows, so the visual answers were accurate about the wrong scene rather than wrong about the right scene.",
+    "No rollout cross-checked its chosen time window against the boss defeat/HUD banner text (e.g. '王灵官 已击败' at 77430-77460, 'blue-nodule boss (慈悲)' defeated at 80880) for all five sub-claims before committing to a window, which would have caught most of the misidentifications."
+  ],
+  "what_worked": [
+    "Event 4 (Wang Lingguan) was almost universally handled correctly because 王灵官 is explicit literal text in the DB right at the clue window (77250-77460), letting every rollout that checked it correctly conclude no clear needle evidence and mark it false, matching the reference.",
+    "Rollout 3's clip_qa at 63930-64080 landed close enough to the true chariot clue window (65229-65270) to visually confirm 绣花针 use and score that one sub-claim correctly.",
+    "Rollout 1's read_skill('visual-verification') step correctly recognized in principle that item usage claims need clip_qa rather than text search, even though the chosen windows were wrong."
+  ],
+  "transferable_lessons": [
+    "For 'which magic treasure was used in fight X' questions, do not stop at the first text hit for the treasure's name -- that is very likely the acquisition/inventory scene, not a combat-usage scene; instead locate the boss-defeat/boss-name text (which is far more literal and reliable in this DB) and only then clip_qa the HUD within that exact window.",
+    "When a video contains multiple similarly-typed encounters (multiple 'vanguard', 'chariot', or 'golem' bosses), verify boss identity via a literal victory/defeat banner or map-context text before trusting a semantic_search hit, since near-duplicate boss types are a major source of wrong-window errors here.",
+    "Always run clip_qa on the exact clue-adjacent time window before answering multi-part 'true/false per claim' questions that hinge on transient HUD state (equipped treasure icon); five separate mini-verifications are needed here, not one aggregate guess.",
+    "Cross-check candidate windows against total_intervals/clue-adjacent boss-defeat text for every sub-claim individually before submitting, rather than reusing one plausible-looking window (e.g. one 'chariot' fight) for the whole question."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the true chariot 'used embroidered needle' instant sits closer to 63930-64080 (rollout 3's window) or squarely inside 65229-65270 (the given clue interval) -- the two are close but not identical, and it is unclear if there are two separate needle-use moments or one continuous fight spanning both.",
+    "Whether the reference answer's boss names (Sui Commander, Sui Vanguard, Great Shigandang) are official localized names that map 1:1 to the DB's Chinese captions (赤焰麒麟, unnamed molten golem, 慈悲/blue-nodule boss) or whether some mapping is itself uncertain, which would affect how confidently any agent could resolve this question from captions alone without deep game-specific knowledge."
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "question_id": "month-163",
+  "timeline": "month",
+  "index": 163,
+  "question": "During the streamer's visit to Shanghai, the streamer played table tennis with Wang Jiaer. Who ultimately won?",
+  "reference_answer": "Wang Jiaer",
+  "question_type": "Social Interaction",
+  "temporal_certificate": "Long",
+  "total_intervals": [[164308, 165293]],
+  "clue_interval": [{"video_id": "14", "intervals": [[7030, 8015]]}],
+  "scores": [5, 5, 5, 5, 5],
+  "score_spread": "all_high",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "Wang Jiaer (Jackson Wang) ultimately won. At about 165:255, he—the opponent in the black sleeveless shirt and cap—clinched the final point, stood on the table with his paddle raised as confetti fell, and then hugged the streamer. The chat also identifies him as “W JACKSON” around 165:270.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> read_skill x3 -> run_sql x3 -> semantic_search x3 -> clip_qa(165228-165288) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 41, "what_happened": "clip_qa asked directly whether the opponent (black sleeveless shirt/cap) or the streamer won the final point, and whether the opponent is Wang Jiaer/Jackson Wang; visual agent returned frames showing the opponent standing on the table with paddle raised amid confetti, on-screen chat text reading 'JACKSON'/'W JACKSON', confirming the opponent (Wang Jiaer) won."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed clip_qa's frame evidence and on-screen chat text at ~165254-165278s matches the celebration described in visual_clips text."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "Wang Jiaer (Jackson Wang) ultimately won. Near the end of the match (around 165:228–165:288), the player in black—Wang’s side—clinched the final point, celebrated on top of the table, and received the crowd’s applause, while the streamer hugged him.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4 -> run_sql(episodes) -> run_sql(event_chains, error dup cols) -> run_sql(visual_clips) -> run_sql(event_chains retry) -> semantic_search(entities) -> run_sql(entities name search) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 24, "what_happened": "run_sql on visual_clips for 165150-165320 returned row visual_clips:005512 (165228-165258) describing 'the player on the right, dressed in black, clinches the point, leaps onto the table ... as confetti rains down' and the next row 005513 describing 'a man in a black sleeveless shirt stands atop a blue ping-pong table, raising a red paddle in triumph' who then hugs the streamer in black shirt/red shorts -- textually disambiguating the sleeveless-shirt opponent as the winner."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 33, "what_happened": "run_sql on entities for name LIKE wang/jackson/jiaer/jason found entity 'jackson' first_seen_s=164358 (inside the match window) and 'jase / jason (mentioned by name in captions)' first_seen_s=164508, tying the opponent to the name Jackson/Wang Jiaer."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Verified visual_clips rows 005512/005513 via sql; text alone (without clip_qa) unambiguously places the sleeveless-shirt opponent as celebrant/winner."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "Wang Jiaer (Jackson Wang) ultimately won. The match’s final rally shows the opponent in black clinching the point, celebrating on the table with confetti, and then hugging the streamer (around 165,228–165,288 seconds).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x3 -> run_sql(episodes 164100-165400) -> run_sql(visual_clips 164100-165400) -> run_sql(event_steps+event_chains join) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 19, "what_happened": "run_sql on visual_clips for the whole clue window (164100-165400) retrieved the same celebration text describing the sleeveless-shirt/tank-top opponent clinching the point and being hugged by the streamer, sufficient to answer without clip_qa."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same visual_clips text pattern as rollout 1, retrieved via a single wide-window query."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "Wang Jiaer (Jackson Wang) ultimately won. Near the end of the match (about 165:249–165:255), the opponent in the black sleeveless shirt and cap celebrates on the table with his paddle raised; he then hugs the streamer.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql(visual_clips) -> semantic_search x3 -> clip_qa -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 30, "what_happened": "clip_qa called on the celebration window, same pattern as rollout 0: visual agent confirmed the sleeveless-shirt opponent stood on the table celebrating and was hugged by the streamer, consistent with Wang Jiaer winning."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Not independently re-traced in detail; tool sequence and final answer content mirror rollout 0's clip_qa-confirmed pattern."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "Wang Jiaer (Jackson Wang) ultimately won. The match ended around 165:228–165:258, when the opponent in black clinched the final point, jumped onto the table, and celebrated as confetti fell.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x3 -> read_skill -> run_sql x5 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Multiple run_sql calls over the clue window (episodes/visual_clips/event tables); given the identical textual evidence available to rollouts 1 and 2 (visual_clips celebration description), this rollout reached the same text-only conclusion without needing clip_qa."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Not independently re-traced item-by-item; tool sequence (no clip_qa, 5 run_sql calls) and matching answer content indicate the same DB text was used as in rollouts 1/2."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "The memory DB's visual_clips table directly contains a clean, unambiguous textual description of the deciding moment at 165228-165258s: 'the player on the right, dressed in black, clinches the point, leaps onto the table ... as confetti rains down', immediately followed by a row (165258-165288s) describing 'a man in a black sleeveless shirt stands atop a blue ping-pong table, raising a red paddle in triumph' who then hugs the streamer (black shirt/red shorts). Since the streamer and opponent are consistently described elsewhere as 'black shirt and red shorts' vs 'black sleeveless shirt/tank top/cap' respectively, the sleeveless-shirt figure is unambiguously the opponent, and the opponent is the one shown standing on the table celebrating -> opponent (Wang Jiaer) won. An entities row 'jackson' (first_seen_s=164358) plus caption entity 'jase/jason (mentioned by name in captions)' near 164508-164628 links the opponent's identity to the name Wang Jiaer/Jackson Wang. This evidence is retrievable purely via SQL text search over the clue window; clip_qa (used by rollouts 0 and 3) provides an independent visual confirmation including on-screen chat text reading 'W JACKSON', reinforcing the same conclusion."
+  },
+  "root_causes": [
+    "Not applicable in the failure sense -- this is a uniform success case (all 5 rollouts scored 5/5)."
+  ],
+  "what_worked": [
+    "The captioning/description pipeline for visual_clips produced two consecutive, well-separated, unambiguous celebration-scene descriptions (who clinches the point vs. who stands on the table raising the paddle) that let a pure-SQL retrieval strategy (rollouts 1, 2, 4) answer correctly without any visual sub-agent call.",
+    "Consistent clothing descriptors across the episode/visual_clips text ('black shirt/red shorts' = streamer, 'black sleeveless shirt/tank top/cap' = opponent) let agents disambiguate 'the player in black' language that would otherwise be ambiguous between two black-wearing players.",
+    "clip_qa (rollouts 0, 3), when invoked, was given a precise, well-scoped question ('who wins the final point, is the opponent Wang Jiaer/Jackson Wang') and returned correct, corroborating visual evidence including readable on-screen chat text naming Jackson, giving an independent confirmation path.",
+    "All rollouts correctly widened their SQL window to bracket the full total_intervals evidence window (164100-165400 or similar), successfully capturing the clue_interval region rather than missing it with too-narrow a query."
+  ],
+  "transferable_lessons": [
+    "For 'who won' / outcome questions about a physical contest, search visual_clips/episodes text directly for the resolution moment (paddle-raise, confetti, celebration, hug) rather than relying only on player-name entity search, since captions often describe the winner by visible action and clothing before any name is spoken.",
+    "When two participants share a base color (e.g. both wearing black), rely on the more specific secondary descriptor (sleeveless shirt vs. shirt+shorts, cap vs. no cap) that appears consistently across multiple caption rows to disambiguate who is who.",
+    "A text-only SQL sweep over the full total_intervals window is often sufficient for these outcome questions and cheaper than invoking clip_qa; clip_qa is still useful as a confirmation/tie-breaker when caption text is ambiguous, and can additionally read on-screen chat/name text that plain visual captions miss."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Rollouts 3 and 4 were not traced item-by-item in as much depth as 0/1/2; their decisive steps are inferred from tool-call sequence and final-answer content rather than fully verified line-by-line, though the pattern is consistent with the other three rollouts."
+  ]
+}

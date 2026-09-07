@@ -1,0 +1,105 @@
+{
+  "question_id": "day-37",
+  "timeline": "day",
+  "index": 37,
+  "question": "When the player defeated Mad Tiger (疯虎), in what order were the following skills cast? 1. Red Tides (变身广智) 2. Shenfa Outside the Body (身法身外) 3. Immobilize (定身术) 4. Hundred-Eyed Daoist Master (百目真人) Spirit (精魄)",
+  "reference_answer": "3, 2, 4, 1",
+  "question_type": "Temporal Reasoning",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[20460, 20465], [20462, 20465], [20485, 20490], [20546, 20558]],
+  "clue_interval": [[20460, 20465], [20462, 20465], [20485, 20490], [20546, 20558]],
+  "scores": [3, 0, 1, 5, 3],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 3,
+      "answer": "3 (Immobilize) -> 2 (Shenfa Outside the Body) -> 1 (Red Tides) -> 4 (Hundred-Eyed spirit)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4 -> run_sql x4 -> read_skill(visual-verification) -> clip_qa(20430-20490) -> clip_qa(20490-20550) -> clip_qa(20550-20610) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-03.json", "item_index": 34, "what_happened": "clip_qa(20430-20490) placed Immobilize ~20462 and Shenfa ~20464.6-20465.4 correctly, matching clue intervals 1 and 2."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-03.json", "item_index": 35, "what_happened": "clip_qa(20490-20550) identified a fiery transformation beginning ~20483-20484 and labelled it Red Tides/赤潮, i.e. one clue interval too early (real Red Tides clue is 20546-20558; 20485-20490 is actually the Hundred-Eyed spirit clue)."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-03.json", "item_index": 36, "what_happened": "clip_qa(20550-20610) found a spirit-activation HUD/red-orange effect ~20556-20557 and labelled it Hundred-Eyed spirit, swapping the identity of the two transformation skills relative to ground truth."}
+      ],
+      "failure_point": "Misread which of the two late-fight transformation effects (~20485 vs ~20553-556) is Red Tides vs the Hundred-Eyed spirit; swapped positions 1 and 4, giving 3,2,1,4 instead of 3,2,4,1.",
+      "evidence_checked": "Verified by extracting frames at t=20487 (bound/caged-weapon monstrous form, matches spirit possession) and t=20553/20556 (fiery weapon glow followed by giant transformation, matches Red Tides) -> confirms reference ordering (spirit at ~20485-490, Red Tides at ~20546-558) and that rollout-00's swap was a visual misidentification."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "Spirit(~20426) -> Shenfa(~20464) -> Red Tides(~20544); claims Immobilize was never cast",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4 -> run_sql x1 -> read_skill(visual-verification) -> clip_qa(20400-20520) -> clip_qa(20520-20610) -> clip_qa(20420-20475) -> semantic_search x3 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-03.json", "item_index": 28, "what_happened": "clip_qa(20400-20520) reported the Hundred-Eyed spirit activating at ~20426-20427, i.e. before the fight's real skill-casting window (all clue intervals start at 20460+)."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-03.json", "item_index": 33, "what_happened": "A follow-up clip_qa(20420-20475) reconfirmed the ~20426.3 s reading and never surfaced a clear Immobilize cast, so the agent concluded Immobilize was 'not visibly cast' and omitted it entirely from the answer."}
+      ],
+      "failure_point": "The visual sub-agent mistook the boss's own self-triggered red explosive attack VFX (confirmed at frame t=20426-20430, a chest-glow explosion on the boss itself, not the player) for the player's Hundred-Eyed spirit cast, anchoring all subsequent reasoning ~30s too early and causing it to miss/deny the real Immobilize cast at ~20460-465.",
+      "evidence_checked": "Extracted frames at t=20426 and t=20430 (source-video); these show the boss creature glowing/exploding around its own chest with the player flung backward -- an enemy attack effect, not a player skill activation. This directly contradicts the clip_qa reading used by this rollout."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 1,
+      "answer": "3 (Immobilize,~20426.5) -> 1 (Red Tides,~20430.5-431.5) -> 4 (Spirit,~20452.5-456) -> 2 (Shenfa,~20484.5-485.5)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x3 -> run_sql x4 -> clip_qa(20400-20520) -> clip_qa(20520-20610) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-02.json", "item_index": 33, "what_happened": "clip_qa(20400-20520) reported all of Immobilize, Red Tides and the Hundred-Eyed spirit as cast between ~20426.5 and ~20456, i.e. entirely inside the boss's opening-attack window (20400-20430) confirmed to be non-player VFX, and well before the true clue intervals (20460+)."}
+      ],
+      "failure_point": "Same root cause as rollout 1: clip_qa misread the boss's own opening attack explosion (~20426-20430) plus subsequent frames up to ~20456 as three separate player skill casts, producing an entirely fabricated early ordering; Shenfa was the only skill placed near its true window (~20485) but by then the other three had already been mis-anchored, so the final order (3,1,4,2) only partially overlaps the reference (3,2,4,1).",
+      "evidence_checked": "Frames at t=20426 and t=20430 (same as rollout 1) show boss self-attack VFX, not player skill casts, contradicting this rollout's reading of an Immobilize/Red Tides/spirit sequence in that window."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "3 (Immobilize,~20460-461) -> 2 (Shenfa,~20464-466) -> 4 (Spirit,~20484-488) -> 1 (Red Tides,~20488.5-490)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x3 -> run_sql x4 -> read_skill(visual-verification) -> clip_qa(20430-20580) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 34, "what_happened": "A single clip_qa(20430-20580) call, starting just after the boss's opening-attack window rather than at 20400, returned the correct first-cast order 3->2->4->1 directly."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Order matches the reference exactly (3,2,4,1); this rollout's clip_qa exact times for skill 4/1 (~20484-490) differ somewhat from the ground-truth intervals I verified (spirit ~20485-490, Red Tides ~20546-558), but the relative order it reported still happens to match the reference, and the judge appears to score the reported order/content rather than exact timestamps."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 3,
+      "answer": "2 (Shenfa,~20452.5-455.8) -> 3 (Immobilize,~20464) -> 4 (Spirit,~20484.7) -> 1 (Red Tides,~20488.1-488.3)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x3 -> run_sql x1 -> read_skill(visual-verification) -> clip_qa(20400-20520) -> clip_qa(20520-20610) -> clip_qa(20480-20510, targeted spirit-vs-Red-Tides comparison) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-03.json", "item_index": 28, "what_happened": "clip_qa(20400-20520) placed Shenfa Outside the Body (multiple translucent doubles) at ~20452.5-20455.5, ahead of Immobilize which was placed at ~20464; this reverses the true first two positions (reference has Immobilize before Shenfa)."},
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-03.json", "item_index": 33, "what_happened": "A targeted clip_qa(20480-20510) correctly distinguished the Hundred-Eyed spirit (~20484-486) from Red Tides (~20488) as two separate transformations, getting positions 3 and 4 right."}
+      ],
+      "failure_point": "clip_qa misread an effect at ~20452-455 (outside all four clue intervals, in the same noisy pre-clue region as rollouts 1/2) as the Shenfa cast and placed it before the correctly-located Immobilize cast at ~20464, swapping positions 1 and 2 (2,3,4,1 instead of 3,2,4,1).",
+      "evidence_checked": "Did not pull a frame at exactly 20452-455 for this rollout; inferred from the pattern (all mis-orderings in this batch trace back to clip_qa reporting skill-like VFX in the 20420-20460 pre-clue window) that this is the same class of error as rollouts 1 and 2, applied to only one of the four skills this time."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The text-side memory DB (episodes, semantic_triples, event_steps, visual_clips captions) only has coarse 30-second-granularity summaries for this fight (e.g. 'barry battles large furry ape-like boss', 'barry defeats ape-like boss') and no per-skill-cast rows at all; semantic_triples has zero rows between 20400 and 20580. Every rollout therefore had to rely entirely on clip_qa (visual sub-agent) to resolve the skill-cast order -- there was no textual fallback to catch or correct a visual misread. Frame checks I performed confirm the four clue intervals do correspond to genuine, visually distinct player skill-cast moments (Immobilize ~20460-465, Shenfa doubles ~20462-465, Hundred-Eyed spirit transformation ~20485-490, Red Tides fiery transformation ~20546-558), i.e. the ground truth is retrievable but only via careful visual inspection, not via SQL/semantic search."
+  },
+  "root_causes": [
+    "The boss (Mad Tiger) has a self-triggered red glowing chest-explosion attack at ~20400-20430 s that visually resembles a dramatic player skill-cast VFX; the clip_qa sub-agent repeatedly misidentified this enemy attack as a player skill (Hundred-Eyed spirit or Immobilize/Red Tides) in rollouts 1 and 2, and a similar early misread (~20452-455) affected rollout 4, anchoring the reported order 20-60s earlier than the true clue intervals.",
+    "The two 'transformation' skills (Red Tides / 变身广智 and Hundred-Eyed Daoist Master spirit / 百目真人精魄) produce visually similar dramatic transformation effects late in the fight (~20485-490 and ~20546-558) and were swapped by clip_qa in rollouts 0 and 2, flipping the last one or two answer positions.",
+    "clip_qa window choice mattered: rollouts that scanned starting at 20400 (including the boss's opening-attack noise) were more prone to false-positive early skill detections than rollout 3, which started its single window at 20430, just past that noisy region.",
+    "No textual/DB evidence exists at fine enough granularity to cross-check or override a wrong clip_qa reading, so a single visual misidentification directly became the final wrong answer in the affected rollouts."
+  ],
+  "what_worked": [
+    "Rollout 3's clip_qa window (20430-20580) excluded the boss's opening-attack VFX at 20400-20430 that misled other rollouts, and got all four skills' relative order right in a single call.",
+    "Rollout 4's targeted follow-up clip_qa call explicitly asking to distinguish the two transformation effects (spirit vs Red Tides) frame-by-frame correctly resolved that specific ambiguity, even though an earlier unrelated misread still cost it points.",
+    "All rollouts correctly followed the 'HUD icon lit is not proof of cast' instruction from the visual-verification skill, focusing on visible cast effects rather than skill-wheel highlighting."
+  ],
+  "transferable_lessons": [
+    "For boss-fight skill-ordering questions, do not start the clip_qa scan window at the very beginning of the encounter by default; a wide net that includes pre-engagement or opening-attack frames increases the chance the visual sub-agent misattributes enemy VFX to the player.",
+    "When two candidate skills produce visually similar 'transformation' effects, issue a dedicated clip_qa call asking it to explicitly compare and name the distinguishing visual cues (weapon type, character silhouette/species, color) between the two specific moments, rather than a single broad scan covering all four skills at once.",
+    "Treat a clip_qa report of a skill cast happening unusually early (e.g. within the first few seconds of a boss encounter, before any other skill has plausibly been used) as a red flag worth a second, narrower verification pass rather than accepting it at face value.",
+    "Because coarse-grained textual memory (30s-episode captions) is the only DB coverage available for fast in-combat skill sequences, do not expect SQL/semantic_search to adjudicate a visual ordering disagreement -- budget for iterative, narrowing clip_qa calls instead."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Whether the judge scores purely on the reported 1-2-3-4 order string or also partially credits partially-correct orders/timestamps (rollout 3's exact timestamps for skills 4 and 1 do not match my directly-verified ground truth (~20485-490 and ~20546-558) even though its stated order was correct, and it still scored a full 5).",
+    "Whether the ~20452-455 effect that misled rollout 4 into placing Shenfa too early is the same boss opening-attack VFX confirmed at 20426-20430, or a distinct visual confound; I did not pull a frame at exactly that timestamp to confirm."
+  ]
+}

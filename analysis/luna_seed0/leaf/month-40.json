@@ -1,0 +1,112 @@
+{
+  "question_id": "month-40",
+  "timeline": "month",
+  "index": 40,
+  "question": "During the streamer's trips to Shanghai and Chengdu, which of the following ingredients did the streamer eat while having hot pot? 1. Fat beef rolls; 2. Shrimp paste; 3. Duck tongue; 4. Luncheon meat?",
+  "reference_answer": "1, 3, 4",
+  "question_type": "Hallucination Detection",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[168078, 168148], [232397, 234316]],
+  "clue_interval": [
+    {"video_id": "14", "intervals": [[10800, 10870]]},
+    {"video_id": "17", "intervals": [[12733, 14652]]}
+  ],
+  "scores": [3, 3, 2, 3, 3],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 3,
+      "answer": "2. shrimp paste, 3. duck tongue, 4. luncheon meat (says beef rolls NOT eaten)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4 -> semantic_search x4 -> semantic_search x4 -> run_sql(episodes 167700-168500 OR 231600-233900) -> semantic_search x4 -> clip_qa(168078-168228, Shanghai only) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 41, "what_happened": "run_sql pulled episodes across BOTH Shanghai (167700-168500) and Chengdu (231600-233900) windows, including the row at 232534-232564 that explicitly says 'he's allergic to shrimp' -- but the 57KB dump was apparently not fully digested, and no Chengdu clip_qa was ever issued despite this being the only rollout to pull that text."},
+        {"segment_file": "answer-segment-01.json", "item_index": 53, "what_happened": "single clip_qa call restricted to 168078-168228 (Shanghai only) identifies duck tongue, luncheon meat and an orange piece it labels 'shrimp paste' as eaten; explicitly notes the beef-roll tray arrives at ~168188-168194 but is never shown being eaten in this window."}
+      ],
+      "failure_point": "Never called clip_qa on the Chengdu interval at all, so it missed the 232354-232384 beef-eating episode; the final answer's claim that 'Chengdu footage also explicitly shows him finding and eating duck tongue' is not backed by any clip_qa call in this trace -- it is inferred/hallucinated from episode-text search rather than verified visually.",
+      "evidence_checked": "Confirmed via sql that episodes:30sec:007750 (232354-232384) says 'discovering it's beef' and episodes:30sec:007762 (232714-232744) says 'discovers a duck tongue' -- both inside/adjacent to the Chengdu clue window this rollout never visually checked."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 3,
+      "answer": "All four (1,2,3,4) eaten",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> run_sql -> semantic_search x4 -> run_sql -> read_skill -> clip_qa(Shanghai 167580-168240) -> clip_qa(Chengdu 232300-232820) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 36, "what_happened": "clip_qa on Shanghai window reports shrimp paste and luncheon meat clearly eaten (no duck tongue/beef rolls seen there)."},
+        {"segment_file": "answer-segment-02.json", "item_index": 37, "what_happened": "clip_qa on Chengdu window 232300-232820 (wide enough to include the 232354-232384 beef-discovery episode) reports 'fat beef rolls and duck tongue' clearly eaten -- this is the rollout that correctly recovered item 1."}
+      ],
+      "failure_point": "Correctly found beef rolls (item 1) and duck tongue (item 3) by using a Chengdu window that started before 232397 and thus covered the beef-discovery episode, but still accepted the visual sub-agent's 'shrimp paste' identification in Shanghai for item 2, which conflicts with the DB's explicit 'he's allergic to shrimp' note -- a visual misread of an ambiguous orange item, never cross-checked against text evidence of the character's shellfish allergy.",
+      "evidence_checked": "Same episode rows as above confirm beef rolls / duck tongue were correctly retrievable in the window this rollout used."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 2,
+      "answer": "2. shrimp paste, 3. duck tongue, 4. luncheon meat (says beef rolls NOT eaten)",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> semantic_search x4 -> semantic_search x4 -> run_sql x3 -> semantic_search x4 -> read_skill -> clip_qa(Shanghai 168048-168228) -> clip_qa(Chengdu 232684-233704) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 58, "what_happened": "Shanghai clip_qa (168048-168228) reports shrimp paste + luncheon meat eaten, duck tongue and beef rolls not eaten (beef tray only arrives near 168188)."},
+        {"segment_file": "answer-segment-02.json", "item_index": 59, "what_happened": "Chengdu clip_qa window is 232684-233704, which starts AFTER the 232354-232384 beef-discovery episode; it only samples the duck-tongue moment and reports beef rolls not seen."}
+      ],
+      "failure_point": "Wrong/too-narrow time window for the Chengdu clip_qa call: it starts at 232684, 300 seconds after the episode where the streamer discovers and eats beef (232354-232384), so the visual agent never had a chance to see it. Same shrimp-paste misidentification as other rollouts. Ends up missing both item 1 (should be yes) while still wrongly including item 2 (should be no) -- worst combination of the five, hence the lowest score (2 vs 3 for near-identical rollout 0, likely also judge-noise given the two answers are almost the same text).",
+      "evidence_checked": "Confirmed the beef-discovery episode (232354-232384) falls entirely outside this rollout's queried Chengdu clip window (232684-233704)."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 3,
+      "answer": "All four (1,2,3,4) eaten",
+      "tool_call_sequence": "read_skill x2 -> semantic_search x4 -> semantic_search x4 -> read_skill -> run_sql x2 -> semantic_search x4 -> read_skill -> clip_qa(Shanghai 167300-168400) -> clip_qa(Chengdu 232300-233800, rejected >20min) -> clip_qa(Chengdu 232300-233400) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 47, "what_happened": "Shanghai clip_qa reports shrimp paste and luncheon meat eaten."},
+        {"segment_file": "answer-segment-02.json", "item_index": 48, "what_happened": "First Chengdu attempt (232300-233800, 1500s) is rejected by the tool for exceeding the 20-minute interval cap."},
+        {"segment_file": "answer-segment-02.json", "item_index": 52, "what_happened": "Retried Chengdu clip_qa with a shorter but still-early-starting window (232300-233400), which covers the 232354-232384 beef-discovery episode; reports fat beef rolls and duck tongue eaten, no evidence for shrimp paste/luncheon meat in that window."}
+      ],
+      "failure_point": "Same pattern as rollout 1: correctly recovers item 1 and item 3 by using a Chengdu window starting before 232397, but keeps the Shanghai-derived 'shrimp paste eaten' claim for item 2 without reconciling it against the DB's shellfish-allergy text, which none of its own run_sql/semantic_search calls surfaced explicitly.",
+      "evidence_checked": "Verified the successful retry window (232300-233400) brackets the beef-discovery episode; the first (rejected) call would have also covered it had the tool allowed >20min intervals."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 3,
+      "answer": "All four (1,2,3,4) eaten",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> semantic_search x4 -> run_sql x2 -> semantic_search x4 -> read_skill -> clip_qa(Shanghai 168000-168240) -> clip_qa(Shanghai 167580-167760) -> clip_qa(Chengdu 232680-232770) -> clip_qa(Shanghai 168080-168220, shrimp-paste-specific) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-04.json", "item_index": 45, "what_happened": "Shanghai clip_qa (168000-168240) reports 'visibly supported: fat beef rolls and luncheon meat' based on a server bringing an ice platter of raw beef slices -- this is presence/serving, not confirmed eating, and is in Shanghai not Chengdu."},
+        {"segment_file": "answer-segment-04.json", "item_index": 47, "what_happened": "Chengdu clip_qa window (232680-232770) is too narrow to include the 232354-232384 beef-discovery episode; it only confirms duck tongue eaten in Chengdu, explicitly does NOT confirm beef rolls there."},
+        {"segment_file": "answer-segment-04.json", "item_index": 52, "what_happened": "A targeted shrimp-paste-specific clip_qa on Shanghai (168080-168220) reports 'Yes, eats shrimp paste' based on an orange piece, reinforcing the item-2 misidentification."}
+      ],
+      "failure_point": "Got item 1 (beef rolls) right in the final answer, but via a misattribution: the model's own Chengdu clip_qa call denied beef rolls there, and the only positive beef-roll evidence it gathered was the Shanghai 'platter served' frame (raw, not confirmed eaten) which its final answer wrongly relocates to '1. Fat beef rolls -- during the Chengdu hot-pot meal.' Also keeps the shrimp-paste misread for item 2, same as all other rollouts.",
+      "evidence_checked": "Cross-checked that the Chengdu clip_qa result at index 47 explicitly excludes beef rolls, contradicting the final answer's Chengdu attribution for item 1."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "episodes:30sec text around 232354-232384 ('discovering it's beef, inviting rudy to try it') and 232714-232744 ('discovers a duck tongue') give strong textual support for items 1 and 3 in Chengdu, and are retrievable by a plain time-windowed run_sql over the Chengdu total_interval -- rollouts 1 and 3 (and partially 4) recovered item 1 only when their clip_qa window happened to start before 232397 and include the 232354 episode; rollout 0 and 2's narrower/absent Chengdu windows missed it. Critically, episodes:30sec:007756 (232534-232564) explicitly states the streamer 'notes that both are beef and that he's allergic to shrimp', and the broader show repeatedly establishes a running shellfish-allergy bit (rows 175368, 189197-189797). This directly explains why the reference answer excludes item 2 (shrimp paste). This row was returned by rollout 0's own run_sql call (which spanned both Shanghai and Chengdu windows) but was buried in a ~57KB dump and never acted on; no rollout's semantic_search or run_sql was ever specifically targeted at 'allergy'/'shrimp' text, and no rollout reconciled the clip_qa 'eats shrimp paste' visual call against this textual evidence. All five clip_qa calls that examined the Shanghai orange-piece item independently converged on labeling it 'shrimp paste' being eaten, suggesting either a genuinely ambiguous visual (an orange/pink processed item that looks like shrimp paste) or a systematic visual-agent bias toward that label from the question's own ingredient list priming it."
+  },
+  "root_causes": [
+    "Wrong/inconsistent Chengdu clip_qa time windows: item 1 (fat beef rolls) is only recoverable if the visual sub-agent's window starts before ~232397s to catch the 232354-232384 beef-discovery episode; rollouts 0 and 2 used windows that excluded this moment and both concluded (or partly concluded) beef rolls were not eaten.",
+    "Systematic visual misidentification of item 2 (shrimp paste): all 5 rollouts' clip_qa calls independently identify an orange/pink piece in the Shanghai footage as 'shrimp paste' being eaten, contradicting the reference answer and the DB's explicit text that the streamer is allergic to shrimp and avoids it.",
+    "Retrieved-but-unused text evidence: the shellfish-allergy line (episodes:30sec:007756) was pulled into context by at least one rollout's run_sql call but never surfaced in reasoning or cross-checked against the clip_qa 'shrimp paste eaten' claim -- no rollout ran a targeted semantic_search/run_sql for allergy or shellfish context specifically.",
+    "One rollout (4) exhibits a location-misattribution error, moving Shanghai-only beef-platter evidence into a Chengdu answer clause despite its own Chengdu clip_qa explicitly denying beef rolls there.",
+    "Rollout 0 asserts a Chengdu duck-tongue finding in its final answer without ever having called clip_qa on the Chengdu interval, indicating unverified/hallucinated corroboration layered on top of a single Shanghai-only visual check."
+  ],
+  "what_worked": [
+    "Rollouts 1 and 3 used clip_qa windows starting before the Chengdu clue interval's nominal start and thereby correctly recovered fat beef rolls (item 1) and duck tongue (item 3).",
+    "All rollouts correctly identified luncheon meat and duck tongue as eaten, matching the reference on 2 of 3 'yes' items via direct clip_qa visual confirmation.",
+    "The judge's partial-credit scoring (2-3 out of 5) reasonably reflects that every rollout got roughly 2-3 of the 4 items right rather than being wildly off."
+  ],
+  "transferable_lessons": [
+    "For multi-location 'which of these did X eat' questions, run clip_qa windows that start a bit before the given total_interval start, since the specific discovery/eating moment for an item can occur just before the labeled clue window.",
+    "When a visual sub-agent identifies an ambiguous food item by appearance alone (e.g. an orange/pink piece labeled 'shrimp paste'), cross-check it against any textual/dialogue evidence in the memory DB (e.g. allergy statements, explicit ingredient naming) rather than trusting the visual call alone -- a specific run_sql/semantic_search for allergy or ingredient-naming keywords across the whole trip would have caught the shellfish-allergy line.",
+    "Do not carry a finding from one location's clip_qa call (e.g. Shanghai beef-platter arrival) into the final answer's claim about a different location (Chengdu) -- attribute each visual finding strictly to the window it came from.",
+    "Do not state a location-specific visual finding (e.g. 'Chengdu footage shows X') in the final answer unless a clip_qa call was actually made on that location's interval; otherwise it is an unverified inference."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Why did the judge score rollout 0 (score 3) higher than rollout 2 (score 2) for nearly textually identical wrong answers ('2,3,4 eaten, beef rolls not eaten') -- likely judge scoring noise rather than a substantive difference.",
+    "Whether the orange/pink item eaten in Shanghai is genuinely ambiguous between shrimp paste and another processed item (e.g. a fish/pork paste ball) was not resolved by directly inspecting a frame in this analysis; all conclusions about item 2 rely on the DB's allergy text plus the reference answer, not on independently viewing the Shanghai frames."
+  ]
+}

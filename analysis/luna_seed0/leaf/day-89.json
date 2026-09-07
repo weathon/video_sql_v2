@@ -1,0 +1,105 @@
+{
+  "question_id": "day-89",
+  "timeline": "day",
+  "index": 89,
+  "question": "Which of the following statements is correct?\n1. The player obtained the Curio (珍玩) Copper Buddha Pendant in Chapter 3\n2. The player obtained three Egg Middle Bones in Chapter 4\n3. The player obtained the Auspicious Lantern in Chapter 3\n4. The player obtained the Tiger Sinew Cord in Chapter 4",
+  "reference_answer": "2",
+  "question_type": "Hallucination Detection",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[46990, 47003], [47055, 47066], [49200, 49211]],
+  "clue_interval": [[46990, 47003], [47055, 47066], [49200, 49211]],
+  "scores": [0, 5, 0, 5, 0],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "3. The player obtained the auspicious lantern in chapter 3 (weak evidence: chapter-3 transition text and a 62,550s 'moves toward glowing lantern' event_step).",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(topic_facts/entities) x4 -> run_sql(topic_facts/event_steps regex, failed then fixed) x2 -> semantic_search(episodes) x4 -> semantic_search(semantic_triples) -> run_sql(triples/facts/events regex) -> run_sql(episodes/visual/triples regex) -> semantic_search(visual_clips) x4 -> clip_qa(57840-57900, 卵中骨 quantity) -> run_sql(chapter markers) -> run_sql(episode text lookup) -> semantic_search(event_steps 'lantern reward') x3 -> semantic_search(episodes/topic_facts 'tiger/pendant') x4 -> submit_answer('3')",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 41, "what_happened": "run_sql regex search over topic_facts/event_steps/episodes/semantic_triples found event_steps:00001477 at t=57870 'character browses obtained charms: ... 卵中骨 ...' -- correct item, correct chapter (Chapter 4 starts 44580s), but not the actual clue_interval given in the question (47000-49200s)."},
+        {"segment_file": "clip-4c527bb685c247b996e46f97484e1c10-segment-00.json", "item_index": null, "what_happened": "clip_qa on 57840-57900 asked whether the UI shows a quantity of 'three' for 卵中骨; visual sub-agent answered 'No -- the UI does not visibly show a quantity/count of three ... it is clearly present in the obtained charms list'. This negative count read caused the agent to discount statement 2 despite having the right item/chapter."},
+        {"segment_file": "answer-segment-01.json", "item_index": 95, "what_happened": "submit_answer picks statement 3 (lantern) based on weak/generic evidence (a chapter-3 transition marker and an unrelated 'moves toward glowing lantern' event at 62550s, itself in Chapter 5 territory, not obtaining a curio) instead of the stronger statement-2 evidence it had just gathered."}
+      ],
+      "failure_point": "Visual sub-agent (clip_qa) misread the item-count grid at 57840-57900 as not showing '3', so the agent abandoned the correct, well-evidenced item/chapter match (statement 2) and fell back on weak unrelated lantern evidence for statement 3.",
+      "evidence_checked": "Confirmed via sql that event_steps:00001477 (t=57870) does contain '... 卵中骨 ...' in an obtained-charms browse; confirmed this is not the same clip as the question's clue_interval (46990-49211), which instead contains OCR-garbled captions ('卯中骨' at 47160-47190, '肺中骨' at 49200-49230)."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "2. The player obtained three Egg-Shaped Bones (卵中骨) in Chapter 4 (57858-57878s obtained-charms grid showing three copies).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps) x4 -> semantic_search(entities) x3 -> run_sql(episodes/event_steps/topic_facts/semantic_triples/object_states text-LIKE) x5 -> semantic_search(visual_clips) x4 -> semantic_search(episodes, chapter title) -> semantic_search(episodes, item-specific) x4 -> read_skill(visual-verification) -> clip_qa(36690-36720, copper pendant check) -> clip_qa(57840-57900, 卵中骨 count) -> submit_answer('2')",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 68, "what_happened": "clip_qa on 57840-57900 asked whether 卵中骨 shows a quantity of three; visual sub-agent answered 'Yes ... Three copies are visible in the obtained-charms grid', directly contradicting rollout-0's reading of the same time window."},
+        {"segment_file": "clip-e7ee0f694bad4b72929018588e5d06c7-segment-01.json", "item_index": null, "what_happened": "Confirmed 铜佛坠 (copper Buddha pendant) is NOT in the obtained-curios grid at 36690-36720, ruling out statement 1."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same underlying frames as rollout 0's clip_qa call (57840-57900); the visual sub-agent's count read differs between rollouts on identical source video content."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. The player obtained the Copper Buddha Pendant (铜佛坠) as a curio in Chapter 3.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql x2 -> semantic_search x4 -> run_sql x2 -> run_sql x2 -> read_skill(visual-verification) -> clip_qa(57840-57900, 卵中骨 quantity) -> run_sql x2 -> clip_qa(36680-36720, lantern/pendant check) -> run_sql x2 -> semantic_search -> submit_answer('1')",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 53, "what_happened": "clip_qa on 57840-57900 again read 'No -- ... no visible x3/3 quantity appears' for 卵中骨, same negative read as rollout 0, ruling out statement 2 in this rollout's reasoning."},
+        {"segment_file": "answer-segment-02.json", "item_index": 62, "what_happened": "clip_qa on 36680-36720 ('obtained curios grid') found neither 吉祥灯 nor 铜佛坠 visible there, yet the final answer still asserts statement 1 (copper Buddha pendant obtained in Chapter 3) with no positive visual confirmation ever found for it -- the agent picked the least-disconfirmed option by elimination rather than a positively-evidenced one."}
+      ],
+      "failure_point": "Same clip_qa count-misread as rollout 0 eliminated the correct statement 2; agent then chose statement 1 by weak elimination despite never finding positive evidence the copper Buddha pendant was obtained in Chapter 3.",
+      "evidence_checked": "Same 57840-57900 window again read as 'no quantity 3 visible', confirming the visual sub-agent is inconsistent across identical calls on the same frames."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "2. Three 卵中骨 (Egg Middle Bones) visible in the 已取得的珍玩 (obtained curios) screen at 57870-57900s, within Chapter 4 (44580s-63000s).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search/run_sql exploration (multiple) -> clip_qa x3 (including 57870-57900 obtained-curios screen) -> submit_answer('2')",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-03.json", "item_index": null, "what_happened": "clip_qa on the 57870-57900 obtained-curios screen reported three distinct 卵中骨 icons visible in the collection (no numeric quantity label, but three separate matching icons), and the agent correctly bounded this within the Chapter 4 window (44580-63000s)."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Consistent with rollout 1's positive visual read of the same 57870s inventory screen."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "3. The player obtained the auspicious lantern in chapter 3 (based on repeated pagoda/stone-lantern shrine interactions at 30120-33420s).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps/entities) x9 -> run_sql(episodes/event_steps/topic_facts/semantic_triples/object_states text-LIKE) x7 -> semantic_search(episodes/visual_clips) x5 -> run_sql(event_steps lantern window 24000-40000) -> submit_answer('3') -- NO clip_qa ever called.",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": 33, "what_happened": "run_sql text-LIKE search found the same episodes:30sec:001929 row (t=57870) containing '卵中骨' obtained-charms text, i.e. it HAD the correct evidence in hand."},
+        {"segment_file": "answer-segment-00.json", "item_index": 44, "what_happened": "run_sql on object_states found 'lantern on wooden post ... character grabs lantern in interaction animation' at 49290-49320s (actually inside Chapter 4, close to the question's own clue window) but the agent instead cited generic pagoda/stone-lantern shrine interactions at 30120-33420s (Chapter 3, an unrelated recurring checkpoint object, not a named curio) as its basis for statement 3."},
+        {"segment_file": "answer-segment-00.json", "item_index": 64, "what_happened": "submit_answer chose '3' from text evidence alone, never invoking clip_qa to verify the 卵中骨 count or to check whether any lantern was actually picked up as a curio rather than a generic map-checkpoint shrine."}
+      ],
+      "failure_point": "No visual verification was performed at all; the agent had the correct textual clue (57870s 卵中骨 mention) but discounted it in favor of misreading generic recurring 'lantern shrine' checkpoint objects (present throughout the game as save points) as evidence of obtaining a named 'Auspicious Lantern' curio.",
+      "evidence_checked": "Confirmed episodes:30sec:001929 (t=57870) text contains 卵中骨 mention; confirmed object_states row at 49290-49320 describes grabbing a lantern object distinct from any curio-acquisition UI, i.e. not evidence for statement 3 either."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The question's own clue_intervals (46990-47003, 47055-47066, 49200-49211) fall in a stretch of gameplay where the caption/OCR pipeline renders the item name as garbled variants ('卯中骨' at 47160-47190, '肺中骨' at 49200-49230) rather than the canonical '卵中骨', so text/semantic search anchored on 'egg middle bone' or '卵中骨' does not directly hit the clue window. No row anywhere in the DB states the quantity '3' in words for this item -- the count is only inferable visually from the obtained-curios grid icon count. A later, clean-captioned scene at ~57840-57900s (episodes:30sec:001929/1928, event_steps:00001477) explicitly names '卵中骨' in an obtained-charms browse and is still within Chapter 4, so all 5 rollouts converged on inspecting this later scene via clip_qa rather than the literal clue_interval; three of five then received an incorrect/inconsistent visual read of the item count from clip_qa on the very same frames."
+  },
+  "root_causes": [
+    "Visual sub-agent (clip_qa) non-determinism: three separate clip_qa calls on the identical 57840-57900s frames produced contradictory counts (rollouts 0 and 2 read 'no quantity 3 visible', rollouts 1 and 3 read 'three copies visible'), directly flipping the final answer between correct and incorrect.",
+    "OCR/caption garbling of the item name near the true clue_interval ('卯中骨'/'肺中骨' instead of '卵中骨') meant text and semantic search never surfaced the literal evidence window; all rollouts substituted a later, cleanly-captioned inventory-browse scene at ~57870s as a proxy, which is valid (same chapter, same item) but pushes the actual quantity determination entirely onto a single ambiguous visual read.",
+    "When the visual count check came back negative or was skipped (rollouts 0, 2, 4), the agents fell back on weak, non-positive 'elimination' reasoning for the wrong statement (generic lantern-shrine checkpoints or absence-of-counterevidence) rather than treating a failed disambiguation as reason to search further or hedge.",
+    "Rollout 4 never invoked clip_qa at all despite the answer explicitly depending on a visual item count, and had already found the right textual clue but discounted it."
+  ],
+  "what_worked": [
+    "Rollouts 1 and 3 correctly triangulated Chapter 4 boundaries (44580-63000s) via a semantic_search hit on the chapter-title clip, then used clip_qa on the obtained-curios inventory screen at ~57870s to positively confirm three 卵中骨 icons, and correctly ruled out the other three distractor items via targeted clip_qa/run_sql checks before submitting."
+  ],
+  "transferable_lessons": [
+    "For a count-from-UI question, a single clip_qa call is not reliable -- when the disambiguating fact is a small on-screen quantity/icon count, issue at least two independent clip_qa calls (or ask for frame-by-frame icon enumeration) and require agreement before trusting the count either way; a lone negative read should not be enough to eliminate an otherwise well-evidenced option.",
+    "When item names appear OCR-garbled in captions near the question's own clue_interval, actively search for near-homophone / visually-similar character variants (卯/卵/肺 confusions) or widen the SQL LIKE pattern, rather than only trusting the clean spelling.",
+    "Treat 'we didn't find positive evidence for X' as insufficient grounds to choose X by elimination; if no statement has been positively visually confirmed, that is itself informative and the agent should keep searching or clearly flag low confidence rather than defaulting to the least-refuted option.",
+    "Generic recurring game objects (checkpoint lantern shrines, save-point tree shrines) that appear dozens of times throughout the playthrough should not be conflated with a one-time named curio acquisition; verify the specific curio/inventory-grid UI, not just thematically similar imagery."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the 57870s obtained-charms grid is the actual moment of acquisition or just a later browsing session; the true acquisition instant likely lies in the OCR-garbled window (47160-49200s) that no rollout directly visually inspected.",
+    "Whether a differently-worded clip_qa prompt (e.g. asking for pixel-level icon enumeration rather than a yes/no quantity judgment) would have produced a more consistent read across rollouts."
+  ]
+}

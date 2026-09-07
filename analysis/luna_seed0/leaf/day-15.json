@@ -1,0 +1,100 @@
+{
+  "question_id": "day-15",
+  "timeline": "day",
+  "index": 15,
+  "question": "During the player's battles against Second Rat Prince (沙二郎) and King of the Small Kingdom (沙国王), how many times were spells used in total?",
+  "reference_answer": "5",
+  "question_type": "Counting",
+  "temporal_certificate": "Short",
+  "total_intervals": [[10650, 10653], [10659, 10662], [10686, 10691], [10719, 10722]],
+  "clue_interval": [[10650, 10653], [10659, 10662], [10686, 10691], [10719, 10722]],
+  "scores": [0, 5, 0, 0, 0],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "4 times (Immobilize x2, Cloud Step x2); explicitly excluded staff attacks/healing.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/entities) x? -> run_sql(episodes/event_steps/visual_clips) -> clip_qa(10560-10740) -> clip_qa(10740-10800) -> submit",
+      "decisive_steps": [
+        {"segment_file": "clip-9712e6f246b4453c934a244e3c43134f-segment-01.json", "item_index": 9, "what_happened": "clip_qa on the correct battle window 10560-10740 at 1fps then 4fps zoom on 10649-10740 found exactly 4 spell casts (Immobilize x2 at ~10650.7/10687.5s, Cloud Step x2 at ~10660.0/10720.0s) and explicitly attributed the ~10712s gold-effect frame to a 'healing/item-use animation', missing the 5th spell."},
+        {"segment_file": "clip-2d9e01c9b0fd403da9c3a8a24eda6029-segment-00.json", "item_index": 22, "what_happened": "second clip_qa call on 10740-10800 (post-battle continuation) correctly found 0 further spells, confirming the count was capped at the first call's 4."}
+      ],
+      "failure_point": "clip_qa misclassified the 5th spell activation (~10711-10712s, a sustained golden aura on the player) as a healing/item-use animation rather than a spell cast, undercounting by one.",
+      "evidence_checked": "confirmed correct time window (10560-10800) was searched; visual_clips DB text for 10710-10740 only describes 'melee strikes ... sparks, dust kicks' with no spell-specific wording, so the miss originated in the visual sub-agent's frame interpretation, not retrieval."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "5 times: Immobilize x2 (~10651s, ~10688s), Cloud Step x2 (~10661s, ~10721s), and a Ring-of-Fire defensive aura (~10712s).",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/entities) x4 -> run_sql(episodes/event_chains/visual_clips/text-LIKE spell searches) x6 -> read_skill(visual-verification) -> clip_qa(10560-10800) -> submit",
+      "decisive_steps": [
+        {"segment_file": "clip-023d36337ce14591b700bb4a5743cbce-segment-00.json", "item_index": 9, "what_happened": "single clip_qa call covered the FULL battle window 10560-10800 in one pass (0.5fps overview then 2fps zoom on 10650-10772) and additionally identified a 5th activation at ~10712s, described as a 'Ring-of-Fire/defensive magical aura' (sustained golden spark-filled aura around the player), which the other rollouts' clip_qa calls classified as healing/melee and excluded."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "pulled source frames at t=10712-10713s directly: both frames show a visible golden/spark particle effect concentrated on the player distinct from ordinary weapon-impact sparks, consistent with rollout-1's 'aura' reading and inconsistent with a plain melee exchange."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "4 times in total (Immobilize x2, Cloud Step x2), same set as rollout 0.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search/run_sql (similar to rollout 0/1) -> clip_qa(10560-10800, 0.5fps then 4fps zoom on 10650-10732) -> submit",
+      "decisive_steps": [
+        {"segment_file": "clip-0f4ad49275004d7fb25a2c527005dc99-segment-00.json", "item_index": 8, "what_happened": "clip_qa's zoomed sampling window was 10650-10732 (narrower than rollout 1's 10650-10772) at 4fps; it found the same 4 casts and explicitly excluded 'the apparent healing/drink sequence' -- i.e. it also saw something around ~10710s but classified it as healing rather than a spell."}
+      ],
+      "failure_point": "same visual misclassification as rollout 0: the ~10712s golden aura event was seen but labeled non-spell (healing/drink), undercounting by one.",
+      "evidence_checked": "compared clip_qa transcript wording ('healing/drink sequence') against rollout 1's 'Ring-of-Fire aura' wording for the same time region; both attempts observed a distinct visual event near 10710s but disagreed on its identity."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "3 times in total, citing events at ~16666.5s, ~16808s, ~16829s -- a completely different, unrelated later boss fight.",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(event_steps x3, episodes x2, visual_clips) -> run_sql(entities exact-name match found correct 10560-10590 anchor, then multiple broad episodes/event_chains scans in unrelated ranges 15900-17400 etc) -> clip_qa(16560-16740) -> clip_qa(16740-16920) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 22, "what_happened": "run_sql on entities WHERE name LIKE '%沙二郎%' OR '%沙国王%' returned a single unambiguous row entities:000530 with first_seen_s=10560, last_seen_s=10590 -- the exact correct anchor for the battle."},
+        {"segment_file": "answer-segment-02.json", "item_index": 38, "what_happened": "instead of continuing from the 10560 anchor, the agent ran further broad SQL/semantic scans (event_chains, episodes 30sec rows 15900-17400) and ended up anchoring clip_qa on an unrelated interval (16560-16920s) with no entity/text evidence tying it to 沙二郎/沙国王."}
+      ],
+      "failure_point": "retrieval anchoring failure: the agent found the correct clue interval early via SQL but abandoned it in favor of a later, unsubstantiated time window, so the clip_qa calls examined the wrong scene entirely.",
+      "evidence_checked": "verified entities row 000530 (first_seen_s=10560) is the same correct interval used by the other 4 rollouts; rollout 3's own SQL surfaced this row but its subsequent tool calls never revisited it."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "3 spells: Cloud Step (~10660s), Immobilize (~10687-10688s), Cloud Step (~10720s) -- missed the ~10650.7s Immobilize as well as the ~10712s event.",
+      "tool_call_sequence": "read_skill x? -> semantic_search/run_sql -> clip_qa(10590-10800, 0.5fps then 2fps zoom on 10650-10772) -> submit",
+      "decisive_steps": [
+        {"segment_file": "clip-8e8f992af366419a8925e75d83a3171f-segment-00.json", "item_index": 9, "what_happened": "clip_qa's overview sampling started at 10590 (missing the pre-battle setup) and its answer omitted the first Immobilize cast at ~10650.8s entirely (found only 3 of the 4 text/frame-visible casts), in addition to missing the ~10712s 5th event that all rollouts except rollout 1 missed."}
+      ],
+      "failure_point": "visual sub-agent undercounted even the 4 'easy' spells by one (missed the ~10650.8s Immobilize), compounding the shared miss of the 5th (~10712s) event.",
+      "evidence_checked": "compared rollout 4's clip_qa transcript against rollouts 0/1/2 which all independently identified an Immobilize cast at ~10650.7-10650.8s; rollout 4's transcript has no mention of any event before ~10660s."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The correct anchor (entities row for 沙二郎/沙国王 at start_s=10560-10590) is trivially retrievable by SQL name match and was found by all 5 rollouts (directly or via semantic search), so the battle window itself is not the bottleneck. However, none of episodes/event_steps/visual_clips text mentions spell casts at all within 10560-10800s (LIKE '%spell%'/'%cast%'/'%magic%'/'%法术%'/'%施法%' all returned zero rows in rollout 1's checks); visual_clips text for 10710-10740 describes only 'melee strikes ... sparks, dust kicks, and stagger effects', which is why the 5th spell (~10712s) is invisible to any text-only retrieval and only recoverable via careful frame-level clip_qa. Ground-truth frames at t=10712-10713s do show a distinct golden/spark aura on the player consistent with a spell effect, supporting that the reference answer's 5th event is real and visually present, though not encoded anywhere in the DB text."
+  },
+  "root_causes": [
+    "The memory DB's textual layers (episodes, event_steps, visual_clips) never describe player spell casts by name/keyword in this interval, forcing every correct answer to depend entirely on the clip_qa visual sub-agent's frame-level judgment with no textual cross-check available.",
+    "The 5th spell event (~10712s, a sustained golden aura) is visually subtler and easily confused with a healing/item-use animation or ordinary weapon glow; 3 of 5 rollouts' clip_qa calls explicitly classified this frame region as non-spell (healing/drink), and one rollout's clip_qa never sampled fine-grained enough to notice it, causing a systematic undercount to 4 (or 3).",
+    "Rollout 3 is a distinct failure mode: it found the correct time anchor via an unambiguous SQL entity match but did not commit to it, continuing to explore and ultimately locking onto an unrelated interval ~16560-16920s for its clip_qa calls, producing an answer about a different scene entirely."
+  ],
+  "what_worked": [
+    "Rollout 1's clip_qa used a wider single-pass sampling window (10560-10800 at 0.5fps overview, then 2fps zoom spanning 10650-10772) that gave it enough frame coverage to notice and reason about the subtler ~10712s aura event, correctly labeling it a distinct 'Ring-of-Fire defensive aura' spell cast rather than dismissing it as healing.",
+    "SQL entity-name matching (`entities WHERE name LIKE '%沙二郎%' OR '%沙国王%'`) reliably and unambiguously anchors the correct battle interval (10560-10590) across rollouts, showing the retrieval-to-window step of the pipeline is not the bottleneck for this question."
+  ],
+  "transferable_lessons": [
+    "For fine-grained visual counting questions where the DB text contains no keyword hits (e.g. 'spell'/'cast'/'magic' all return zero rows), do not trust a single narrow-window clip_qa pass; sample the full clue interval at consistent, sufficiently high fps and explicitly ask the visual sub-agent to distinguish spell-effect auras from healing/item-use auras, since both can appear as sustained golden glows.",
+    "When run_sql returns a single unambiguous entity match for the question's named subjects, that time window should anchor subsequent clip_qa calls; further exploratory search that leads to abandoning a clean anchor (as in rollout 3) risks answering about the wrong scene entirely.",
+    "For counting questions, cross-validate spell-cast candidates against negative evidence (e.g. confirming no further casts occur immediately after or before the battle's defeat overlay) rather than stopping once a plausible small set is found, since undercount errors here were the dominant failure mode (4/5 rollouts undercounted)."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Whether the reference answer's implicit 5th clue interval (~10711-10713s) was intentionally left out of the question's provided clue_intervals (which list only 4 windows) or is a dataset annotation gap, since the annotated clue_intervals cover exactly the 4 events that 4/5 rollouts found and none of them cover the 5th event that only the score-5 rollout identified.",
+    "Whether the ~10712s golden aura is definitively a distinct spell cast versus a healing/buff animation cannot be fully resolved from the sampled frames alone; a closer frame-by-frame or in-game knowledge check (e.g. matching to a known Black Myth: Wukong ability icon in the HUD) would be needed to be certain the reference answer of 5 is not itself counting a non-spell effect."
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "question_id": "day-19",
+  "timeline": "day",
+  "index": 19,
+  "question": "Regarding the battle between the player and Xiao Lilong, which of the following statements are correct? 1. The player used Immobilize (定身术) five times 2. The player used the movement technique 'Shenwai' once 3. The player used Wandering Wight (幽魂) Spirit (精魄) twice 4. The player drank wine twice to restore health",
+  "reference_answer": "2, 4",
+  "question_type": "Hallucination Detection",
+  "temporal_certificate": "Short",
+  "total_intervals": [[17074, 17238]],
+  "clue_interval": [17074, 17238],
+  "scores": [1, 2, 1, 0, 2],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 1,
+      "answer": "1, 2, 3 correct (immobilize=5, shenwai=1, spirit=2, wine=3 not 2)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/episodes/visual_clips) x4 -> run_sql(episodes) -> run_sql(event_steps join event_chains) -> semantic_search(visual_clips) x4 -> clip_qa(52200-52680, open count) -> clip_qa(52200-52680, verify 4 exact claims) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 37, "what_happened": "First clip_qa full-interval count pass returns immobilize=4, shenwai=3, spirit=5, wine=9 drinks"},
+        {"segment_file": "answer-segment-02.json", "item_index": 40, "what_happened": "Second clip_qa full-interval pass over the SAME 52200-52680 interval, framed as verifying the 4 literal claims, returns immobilize=5, shenwai=1, spirit=2, wine=3 -- materially different counts from the first pass over identical footage, and the agent adopts these newer, still-wrong numbers"}
+      ],
+      "failure_point": "Visual counting via clip_qa is internally inconsistent across two calls on the same interval; agent trusted the second pass (closer to but not matching reference: wine should be 2 not 3, and it wrongly affirmed statement 1 and 3 as true)",
+      "evidence_checked": "Compared clip_qa outputs at trace-item 37 vs 40 in same segment file; confirmed both cover identical 52200-52680 window"
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 2,
+      "answer": "Only statement 2 correct (immobilize=4 not 5, shenwai=1, spirit=1 not 2, wine=3 not 2)",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps/episodes/visual_clips) x3 -> run_sql(episodes 30sec) -> semantic_search(episodes) x4 -> run_sql(visual_clips) -> read_skill(visual-verification) -> clip_qa(52230-52380) -> clip_qa(52380-52530) -> clip_qa(52530-52680) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-03.json", "item_index": null, "what_happened": "Split the fight into 3 sub-intervals for clip_qa instead of one pass; got immobilize total=4 (missed one activation), spirit=1 (missed one), wine=3 (over by one). Statement 2 (shenwai=1) landed correctly by chance/accuracy, statement 4 (wine=2) was missed by one count"}
+      ],
+      "failure_point": "Sub-interval splitting still undercounted immobilize/spirit by 1 and overcounted wine by 1; judge gave partial credit because the submitted set {2} is a subset overlap consideration but still not exactly {2,4}",
+      "evidence_checked": "trace-list tool sequence; did not need to re-verify DB since retrieval location (52200-52680) already confirmed correct for this cluster"
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 1,
+      "answer": "1, 2, 3 correct; wine=7 not 2",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/event_steps/visual_clips) x3 -> run_sql(event_steps) -> run_sql(episodes 30sec) -> read_skill(visual-verification) -> clip_qa(52200-52470) -> clip_qa(52470-52680) -> semantic_search(topic_facts/episodes/visual_clips) x3 -> clip_qa(52200-52680, whole-interval recheck) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-03.json", "item_index": null, "what_happened": "Multiple clip_qa passes (two half-splits, then one full-interval recheck) converge on immobilize=5, shenwai=1, spirit=2 but wine count balloons to 7 -- far above both the 2-3 range seen in other rollouts and the reference of 2, suggesting the visual sub-agent is counting non-drink events (e.g. repeated HUD heal icon flashes) as drinks in this pass"}
+      ],
+      "failure_point": "Wine-drinking count wildly overcounted (7 vs reference 2) despite otherwise correct-looking counts for 1/2/3; agent trusted its own overcounted number and also wrongly affirmed statements 1 and 3",
+      "evidence_checked": "trace-list only; wine miscounting is large enough to be visible without opening frames"
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "Only statement 3 correct; immobilize=4, shenwai=4, wine=8",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/episodes/visual_clips) x3 -> run_sql(episodes 30sec) -> semantic_search(visual_clips) x4 -> clip_qa(52200-52680, single pass, no re-verification) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 32, "what_happened": "Only ONE clip_qa call was made over the whole 480s interval, in a single open-ended counting question (not a claim-verification framing), returning immobilize=4, shenwai=4, spirit=2, wine=8; submitted directly with no second pass or cross-check"}
+      ],
+      "failure_point": "No verification/re-count step before submitting; single noisy clip_qa pass badly overcounted shenwai (4 vs true 1) and wine (8 vs true 2), and undercounted immobilize (4 vs true 5), leading to the worst answer (correctly flags only statement 3, misses both 2 and 4)",
+      "evidence_checked": "trace-item 32 full clip_qa output; confirmed single call and no follow-up verification before submit_answer"
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 2,
+      "answer": "All four statements correct (immobilize=5, shenwai=1, spirit=2, wine=2)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4 -> run_sql(episodes/event_steps) x2 -> clip_qa(segment 1) -> clip_qa(segment 2) -> clip_qa(segment 3) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-03.json", "item_index": null, "what_happened": "Three-way split clip_qa passes happen to land on immobilize=5, shenwai=1, spirit=2, wine=2 -- matching statements 2 and 4 (the reference-true ones) but also wrongly affirming 1 and 3 as true, so the agent concludes 'all four correct' instead of only 2 and 4"}
+      ],
+      "failure_point": "Got the individual per-statement counts closest to ground truth for 2 and 4 but failed the hallucination-detection framing: did not conclude statements 1 and 3 are false even though its own counts (5 and 2) exactly match the false claims in the question, i.e. treated numeric match as automatic truth without noting that 1 and 3 are the DISTRACTOR statements the question is testing (a Hallucination Detection question type expects some claims to be wrong)",
+      "evidence_checked": "trace-list tool sequence; compared reported per-statement counts against submitted verdict"
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The question's own total_intervals/clue_interval [17074, 17238] does NOT contain the Xiao Lilong fight. Querying episodes 30sec rows in that window (memcli sql, day timeline, 16900-17400) shows a completely different Black Myth: Wukong boss fight against an unnamed 'large mossy, antlered enemy' / 'hulking boss', ending in a defeat notice around 17220-17250 -- no mention of Xiao Lilong, immobilize 定身术, 身外身法, 幽魂, or wine-drinking anywhere in that text. By contrast, episodes rows at 52170-52710 (queried directly) explicitly name '小黄龙' (Xiao Huanglong/Xiao Lilong) at 52200-52230 and end with the on-screen text '已击败 妖王·小黄龙' ('defeated Demon King Xiao Huanglong') at 52650-52680 -- this is unambiguously the correct fight referenced by the question. All 5 rollouts independently retrieved this same 52200-52680 window via semantic_search/run_sql, so retrieval itself worked correctly; the question metadata's clue_interval/total_intervals field is mislabeled/wrong for this item. The specific skill-activation counts (definitely for wine-drinking, and the 1 vs 5 vs 2 activation counts) are not present as structured text in episodes/event_steps at all -- they exist only as visual detail requiring clip_qa, and clip_qa's counts are inconsistent between calls on the identical interval (see rollout 0's two passes: 4/3/5/9 vs 5/1/2/3 for the same four categories)."
+  },
+  "root_causes": [
+    "clip_qa (the visual sub-agent) gives materially different activation counts when called multiple times over the identical 52200-52680s interval (demonstrated within rollout 0: immobilize 4->5, spirit 5->2, wine 9->3), so whichever pass the agent trusts last determines the final answer and none of the 5 rollouts' final counts matched the reference exactly",
+    "This is a Hallucination Detection question with two true and two false claims; agents that got individual counts close to correct (rollout 4: 5/1/2/2, matching statements 2 and 4) still failed because they mechanically confirmed all four statements as true rather than recognizing 1 and 3 as the injected false claims to be rejected",
+    "Rollout 3 submitted after only a single clip_qa call with no cross-check, compounding a single noisy count into the worst answer (score 0)",
+    "The question's clue_interval/total_intervals metadata field points to the wrong 164-second window (17074-17238, an unrelated Black Myth: Wukong fight) rather than the actual Xiao Lilong fight at 52200-52680; this did not directly hurt any rollout since all 5 found the right window via semantic search on entity name and boss description, but it means this leaf's own total_intervals/clue_interval field (copied from the question file) should not be trusted as the ground-truth location"
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly localized the Xiao Lilong boss fight to 52200-52680 via semantic_search on entity/episode text and run_sql filtering by time window, despite the question metadata pointing elsewhere",
+    "Rollouts that split the interval into sub-segments for clip_qa (1, 2, 4) generally produced counts closer to the reference than the single whole-interval pass in rollout 3",
+    "Shenwai (once) and the general presence of wine-drinking and spirit-summoning were reliably detected as occurring at all, even when exact counts were wrong"
+  ],
+  "transferable_lessons": [
+    "For fine-grained visual counting questions (exact activation counts of a skill/action across several minutes of footage), a single clip_qa call is unreliable -- but even multiple calls over the identical footage do not converge, so the agent should not treat any single clip_qa count as ground truth without cross-checking via a second independent pass and reconciling discrepancies rather than blindly taking the latest number",
+    "For Hallucination Detection question types with N candidate statements, after gathering per-statement evidence the agent should explicitly ask 'which of these are the injected false claims' rather than defaulting to affirming every statement whose count happens to match",
+    "When the question's own clue_interval/total_intervals metadata does not match content matching the question's entities (e.g. a named boss like Xiao Lilong absent from that window), retrieval should be driven by entity/keyword search across the full timeline rather than trusting the metadata window, and evaluators reading temporal_certificate/total_intervals for this item should recompute the true window from the DB rather than trusting the stored clue_interval",
+    "Splitting a long combat interval into 2-3 sub-windows for clip_qa counting tends to produce more accurate per-category counts than one pass over the whole interval, but still is not reliable enough for exact-count claims without additional verification passes"
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the reference answer '2, 4' was itself scored against ground truth generated from a human/automated review of the 52200-52680 footage, or against the (wrong) 17074-17238 window -- if the latter, the reference answer's correctness for the ACTUAL Xiao Lilong fight content is unverified by this analysis (we only confirmed retrieval location, not that the true counts in the 52200-52680 fight are exactly immobilize!=5, shenwai=1, spirit!=2, wine=2)",
+    "Why the question's clue_interval/total_intervals field points to an unrelated Black Myth: Wukong boss fight window instead of the Xiao Lilong fight -- this looks like a metadata/labeling bug in question generation rather than anything the agent could have avoided"
+  ]
+}

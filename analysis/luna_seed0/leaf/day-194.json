@@ -1,0 +1,107 @@
+{
+  "question_id": "day-194",
+  "timeline": "day",
+  "index": 194,
+  "question": "When the player unlocked the 'Fire Scorch' first stage of the Keeper's Shrine (土地庙) for the first time, which level-1 options did they click, in order?",
+  "reference_answer": "Forging, Commerce, Breath Control",
+  "question_type": "Temporal Reasoning",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[63367, 63408]],
+  "clue_interval": [63367, 63408],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "缩地 -> 炼丹 (plus alchemy item sequences), unrelated to the shrine",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/episodes/visual_clips/topic_facts, 4x) -> run_sql(topic_facts x3) -> clip_qa(65880-66060) -> run_sql x3 -> semantic_search(episodes/topic_facts x3, chasing '火燎三关') -> clip_qa(71130-71190, '火燎三关') -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-02.json", "item_index": 13, "what_happened": "semantic_search on event_steps for the shrine-unlock query returned an event_steps row at 63960-64050 ('player death and revival at shrine; 回变·火焚') with score 0.68, close to but not overlapping the true clue window; the agent did not pursue it further"},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-02.json", "item_index": 31, "what_happened": "run_sql queried episodes between 71000-71400, a different, later shrine visit ('火燎三关', stage 3) that the agent mistook for the target 'first stage' shrine"},
+        {"segment_file": "clip-b17c8447a2b2408ea5cbcbaf249588a2-segment-00.json", "item_index": null, "what_happened": "clip_qa inspected 71130-71190, explicitly the '火燎三关' (fire scorch stage 3) shrine, not stage 1; wrong location entirely"}
+      ],
+      "failure_point": "never queried or visited the true clue window (63367-63408); confused a later, differently-numbered 'stage 3' shrine visit with the target 'first stage' shrine and also drifted into an unrelated 六六村/炼丹 alchemy sequence for its final answer",
+      "evidence_checked": "confirmed via sql that the clue window (63367-63408) is a distinct '火燎一关' shrine, and 71130+ is a different '火燎三关' shrine (stage 3) that rollout-00 investigated instead"
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "Only 泡制 (Brew/Soak) was confirmed; 调息, 修行, 铸造 were called mere hovers, not clicks",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(event_steps/topic_facts/visual_clips/episodes x4) -> semantic_search(episodes/visual_clips/event_steps/topic_facts x4, Chinese '火燎一关') -> run_sql(episodes 63300-63840 OR 70980-71310) -> run_sql(episodes 65700-66120) -> run_sql(episodes ILIKE '火燎'/'火烧'/'一关') -> run_sql(episodes 63900-64140) -> clip_qa(63500-63590, correct shrine) -> run_sql -> run_sql -> clip_qa(71130-71200, wrong 'stage 3' shrine) -> clip_qa(64070-64120) -> semantic_search x4 -> clip_qa(2820-2940 region not used) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-03.json", "item_index": 33, "what_happened": "run_sql over episodes BETWEEN 63300 AND 63840 correctly returned episodes:30sec:002113 (63390-63420) whose caption literally lists the shrine menu options '消息, 领地, 修行, 铸造, 货殖, 赠礼, 炼开, 离开' -- this is the ground-truth menu (it includes 货殖/Commerce, matching the reference answer) but the caption never says 'Fire Scorch' or '火燎', so the agent did not recognize it as the target and moved on"},
+        {"segment_file": "clip-1f114c1452994b0bacf7478f173ba0df-segment-02.json", "item_index": null, "what_happened": "clip_qa on 63500-63590 (a later slice of the SAME extended shrine visit, ~90-180s after the clue window's start) correctly identified the shrine title as 火燎一关, saw options 调息/缩地/修行/铸造/泡制/赏组/炼丹/离开, but judged only the highlighted 泡制 as an actual confirmed click, dismissing 调息/修行/铸造 as mere cursor hovers -- a visual misread of click-vs-hover state, and it never inspected the earlier 63367-63408 sub-window where the first click (铸造) actually happens"}
+      ],
+      "failure_point": "clip_qa was pointed at a later slice of the correct shrine visit and misjudged which options were truly clicked vs merely highlighted; the earlier run_sql call had already surfaced the exact ground-truth episode text (episodes:30sec:002113, containing 货殖/Commerce) but the agent did not connect it to the question because it lacks the literal 'Fire Scorch' phrase",
+      "evidence_checked": "manually pulled frames at 63367-63383s: shrine title '火燎一关' is on screen, and the option 铸造 (Forging) is highlighted/being confirmed at ~63379-63383s, expanding into a 兵器铸造/披挂铸造 sub-menu -- i.e. 铸造 (Forging) is genuinely clicked inside the true clue window, contradicting rollout-01's clip_qa conclusion that no top-level option besides 泡制 was confirmed"}
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "缩地 -> 泡制 at ~71158-71160s",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(event_steps/topic_facts/visual_clips/episodes x4) -> semantic_search(episodes/visual_clips/event_steps/topic_facts x4, Chinese) -> run_sql(episodes 70920-71640) -> clip_qa(71125-71205, 'stage 3' shrine) -> clip_qa(71155-71180) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-02.json", "item_index": 33, "what_happened": "the only run_sql call queried episodes 70920-71640, i.e. the later '火燎三关' (stage 3) shrine visit; the true clue window (63367-63408, stage 1) was never queried or searched with a matching sql range"}
+      ],
+      "failure_point": "never located the correct time window at all; semantic_search results (not separately inspected here but structurally identical to rollout-00's) apparently ranked the 71000s 'stage 3' shrine visit above the true 'stage 1' clue, and the single run_sql call locked onto that wrong region",
+      "evidence_checked": "confirmed 71125-71205 is a distinct, later shrine instance (labelled 火燎三关 per rollout-00/01/02's own clip_qa outputs) and not the clue interval"
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "贯索 -> 猿捷 (skill-tree talent nodes, unrelated menu)",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(episodes/event_steps/visual_clips/topic_facts x4) -> run_sql(episodes 2700-3300) -> semantic_search(episodes/topic_facts x4, Chinese variants) -> clip_qa(2820-2940) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 24, "what_happened": "run_sql queried episodes 2700-3300 -- this is the region of the only literal '土地庙' text mentions in the whole DB (event_steps at 3690s: '土地庙·洞悉之一' narrative screen, and 9180s), which the agent (mis)treated as the 'first' (i.e. earliest) 土地庙 occurrence in the video and anchored its answer there instead of the much later gameplay shrine-menu interaction (~63400s) that the question actually refers to"},
+        {"segment_file": "clip-75796a6c2e1948f58a2de9ee272d12c2-segment-00.json", "item_index": null, "what_happened": "clip_qa on 2820-2940 examined a completely different skill-tree screen (talent nodes 贯索, 识破, 猿捷, 铁树, 风云转, etc., part of the 根器/talent system), unrelated to the shrine's level-1 option menu"}
+      ],
+      "failure_point": "misinterpreted 'first time' as the earliest literal on-screen/narrative mention of '土地庙' in the whole video (~2820-3690s) rather than the specific gameplay moment the shrine's Fire-Scorch first-stage menu is actually opened and clicked (~63367-63630s); ended up describing an entirely unrelated talent-tree UI",
+      "evidence_checked": "confirmed the only literal '土地庙' string matches in the DB are event_steps at 3690s and 9180s, both narrative/dialogue markers unrelated to the shrine menu-click event the question asks about"
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "识破 -> 贯索 (same wrong talent-tree screen as rollout-03)",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(event_steps/topic_facts/visual_clips/episodes x4) -> run_sql(episodes 2700-3150) -> semantic_search(topic_facts/event_steps, '识破 贯索' x2) -> run_sql(episodes 2820-2910, granularity=30sec) -> clip_qa(2820-2910) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 15, "what_happened": "run_sql over episodes 2700-3150 anchored on the same early, wrong region as rollout-03 (near the earliest literal '土地庙' narrative mention), rather than the true clue window ~63367-63630"},
+        {"segment_file": "clip-b8ea00565df64af1905571c2c9a4d275-segment-00.json", "item_index": null, "what_happened": "clip_qa on 2820-2910 examined the 根器 talent-tree screen (贯索, 识破 nodes), the same unrelated UI rollout-03 found; counted a talent-counter increment (3/10 -> 4/10) as the 'unlock', which has nothing to do with the shrine's level-1 menu"}
+      ],
+      "failure_point": "same as rollout-03: anchored 'first time' on the earliest literal-string '土地庙' region instead of the actual gameplay shrine-menu event at ~63367-63630s",
+      "evidence_checked": "same as rollout-03"
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The true shrine visit spans roughly 63367-63630s. The on-screen shrine title '火燎一关' (Fire Scorch stage 1) and the click on 铸造 (Forging) are directly visible starting at ~63367-63383s (confirmed by manually pulled frames), squarely inside the given clue_interval. However, the 30-second episode captions in this window never mention '火燎'/'Fire Scorch'/'土地庙' by name -- episodes:30sec:002113 (63390-63420) only describes 'a dark shrine menu with two flaming sword-pillars and options such as 消息, 领地, 修行, 铸造, 货殖, 赠礼, 炼开, and 离开' (which does include 货殖/Commerce, matching the reference answer), so a plain run_sql range query CAN surface the right row (rollout-01 did this), but semantic_search on the literal phrase 'Fire Scorch'/'火燎'/'土地庙' does not reliably hit it, and clip_qa calls anchored on a later part of the same extended shrine visit (63500-63630s) saw a reordered/updated menu list (调息, 缩地, 修行, 铸造, 泡制, 赏组, 炼丹, 离开 -- missing 货殖) that looks like a different, confusable instance. A visually near-identical but distinct 'stage 3' shrine visit ('火燎三关') exists later at ~71130-71200s and repeatedly drew agents' searches and clip_qa calls away from the true stage-1 clue."
+  },
+  "root_causes": [
+    "Multiple near-duplicate, similarly-labeled shrine visits exist in the video ('火燎一关' stage 1 at ~63400s vs '火燎三关' stage 3 at ~71150s); 3 of 5 rollouts (00, 02, and partially 01) confused stage 3 for stage 1 because both are thematically and visually similar 'fire scorch shrine menu' scenes",
+    "2 of 5 rollouts (03, 04) misinterpreted 'first time' as the earliest literal on-screen/narrative mention of the string '土地庙' in the whole video (~2820-3690s, a narrative/dialogue marker), rather than the actual gameplay moment when the shrine's level-1 menu is opened and clicked",
+    "The 30-second episode/event captions around the true clue window never literally say 'Fire Scorch' or the shrine's on-screen title, so keyword-oriented semantic_search queries for 'Fire Scorch'/'火燎'/'土地庙' systematically failed to rank the true clue interval highly, even though a raw run_sql time-range query (rollout-01) did surface it",
+    "Rollout-01's clip_qa was pointed at a later slice (63500-63590s) of the same extended shrine visit rather than the clue window's start (63367-63408s), landing on a reordered menu list without 货殖(Commerce) visible and with 泡制 highlighted; it then misjudged highlighted-but-unclicked options (调息, 修行, 铸造) as mere hovers, producing a 1-option answer instead of the 3-option reference answer",
+    "None of the 5 rollouts ever inspected frames inside the true 63367-63408s window itself, where the first click (铸造/Forging) is directly visible on screen"
+  ],
+  "what_worked": [
+    "Rollout-01's run_sql time-range query (episodes BETWEEN 63300 AND 63840) did retrieve the ground-truth episode row describing the correct shrine menu (including 货殖/Commerce), showing that a broad SQL time-window scan around the given clue_interval can surface the right evidence even when keyword search fails",
+    "clip_qa correctly read the on-screen Chinese shrine title '火燎一关' when pointed at frames within the right shrine visit (rollout-01), confirming OCR-level visual grounding was working"
+  ],
+  "transferable_lessons": [
+    "When a question names a specific numbered/staged location (e.g. 'first stage'), explicitly check for and disambiguate near-duplicate later-stage instances (e.g. a 'stage 3' shrine with a similar name) before committing to a clip_qa window -- don't rely on semantic similarity alone to distinguish 'stage 1' from 'stage 3'",
+    "'First time X happened' should be resolved by finding the first occurrence of the actual event/action described (e.g. the shrine menu being opened and options clicked), not the first literal mention of a keyword/place-name elsewhere in the video (e.g. an unrelated narrative/dialogue screen using the same string)",
+    "When semantic_search on a literal phrase from the question (e.g. 'Fire Scorch', '土地庙') returns weak or no hits near the given clue_interval, fall back to a plain run_sql time-range scan centered on total_intervals/clue_interval -- captions may describe the same on-screen content without ever using the question's wording",
+    "When clip_qa inspects a scene, always include the very start of the given clue_interval, not just a nearby or slightly later window; menu state can visibly change (items reordered, added, removed) within tens of seconds, and 'what's highlighted now' at a later slice is not the same as 'what was clicked at the start'",
+    "Distinguish a highlighted/hovered menu item from an actually-confirmed click by looking for the transition into the resulting submenu/screen (e.g. 铸造 expanding into 兵器铸造/披挂铸造 and then an equipment-forging screen), not just cursor position in a single frame"
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Whether the full click order across the extended 63367-63630s shrine visit is really 铸造 -> 货殖 -> 修行 (matching the reference) was not fully re-derived frame-by-frame for the 货殖 and 修行 clicks (only the 铸造 click at ~63380s was directly confirmed via pulled frames); it is possible 货殖 and 修行 are clicked later in the same visit, or that the reference answer's order was derived from a different sub-window than assumed here",
+    "Why episodes 63420-63540 describe an apparently unrelated fast-travel/combat scene (金光观) sandwiched between the 63390-63420 shrine-menu episode and the 63540-63630 alchemy/泡酒 episodes of what looks like the same shrine visit -- possibly two temporally interleaved but distinct game sessions/scenes were captured in the same 30s caption stream, which would also explain why clip_qa windows anchored at different sub-times saw different, seemingly inconsistent menu option lists"
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "question_id": "day-143",
+  "timeline": "day",
+  "index": 143,
+  "question": "While defeating which tank did the player die a total of 2 times?",
+  "reference_answer": "Brown Iron Tank",
+  "question_type": "Entity Recognition",
+  "temporal_certificate": "Short",
+  "total_intervals": [[63978, 63982], [63998, 64002]],
+  "clue_interval": [[63978, 63982], [63998, 64002]],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "The player died 2 times while defeating 阴阳战车 (the Yin-Yang Chariot/Cart), around 63,985s and 64,010s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x8 -> run_sql x6 -> semantic_search x4 -> run_sql x3 -> read_skill -> clip_qa x5 -> run_sql -> semantic_search -> run_sql -> clip_qa -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-05.json", "item_index": 88, "what_happened": "Agent asked clip_qa to zoom into the boss health-bar name text over frames at 63942/63966/63968s (crop [300,780,700,900], the correct region containing the name). clip_qa returned answer '阴阳战车' (Yin-Yang Chariot)."}
+      ],
+      "failure_point": "Visual sub-agent zoomed into the correct on-screen boss-name text region but misread/OCR'd the small white-on-dark Chinese characters incorrectly (manually inspecting the same frame shows the actual text reads roughly '锈铁战车' i.e. a rust/iron-colored war-chariot, not '阴阳' yin-yang). Death count and timing were correct.",
+      "evidence_checked": "Extracted frame c9f616aaf6f0490483789fb380bbeb21 (same one clip_qa used) via copy-frame and viewed it directly; the boss-bar text visually reads as an 'iron war chariot' name (rust/brown-iron characters), not 'Yin-Yang'."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "The player died 2 times while defeating the Five Elements Chariot (五行车) around 63,900-64,080s.",
+      "tool_call_sequence": "attempt-1 crashed (error.json) -> attempt-2: read_skill x4 -> semantic_search x8 -> run_sql -> sql_qa -> run_sql -> semantic_search x4 -> run_sql -> read_skill -> clip_qa -> sql_qa -> clip_qa -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-2/traces/answer-segment-04.json", "item_index": null, "what_happened": "Used sql_qa/clip_qa sub-calls over the interval but did not settle on the DB's own dialogue-derived name ('coffin cart / five-step walking cart'); ended up with a different label '五行车' not present anywhere in entities/topic_facts/semantic_triples, suggesting a guess or a misread from a different clip_qa pass rather than a grounded DB or on-screen read."}
+      ],
+      "failure_point": "Name attribution not grounded in either the DB's captured dialogue name or a clean OCR of the HUD boss-bar; attempt-1 also failed outright and had to restart.",
+      "evidence_checked": "Confirmed via sql that no entity/topic_fact/semantic_triple in the DB contains '五行' or 'Five Elements' near this time window."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "The player died 2 times while defeating the coffin cart (五步车, 'five-step walking cart'), around 63,960-64,020s.",
+      "tool_call_sequence": "answer-segment-00 only (short trace, no clip_qa) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Answered purely from text retrieval (episodes/topic_facts) that describe the boss via in-game dialogue as 'coffin cart also called five-step walking cart (五步车)'; never called clip_qa to read the on-screen HUD boss-name bar, so it reported the dialogue name instead of the visible bar name."}
+      ],
+      "failure_point": "No visual verification of the HUD boss-name text at all; relied solely on the DB's dialogue-derived name, which differs from the on-screen/reference name.",
+      "evidence_checked": "sql over entities/topic_facts/event_steps confirms the DB text pipeline only ever recorded the dialogue name 'coffin cart / five-step walking cart (五步车)', never a HUD-bar name matching 'Brown Iron Tank'."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "The player died twice while defeating the coffin cart (五步运/'five-step walking cart'), around 63,990-64,015s, defeated ~64,070s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x8 -> run_sql -> ... -> clip_qa(71970-72900, unrelated boss) -> clip_qa(50670-50880, unrelated boss) -> clip_qa(83370-84300, unrelated) -> clip_qa(63800-64700, target) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/clip-e5bf352cfff64d3dadd28623bffc2c5a-segment-03.json", "item_index": null, "what_happened": "clip_qa over 63800-64700s correctly found 2 deaths/respawns (~63990s, ~64010s) but described the enemy only as 'the large ornate burning chariot/tank' without attempting to read/zoom the HUD name-bar text, so no on-screen name was ever extracted for this attempt."}
+      ],
+      "failure_point": "clip_qa was asked to count deaths (succeeded) but not explicitly to OCR the boss name; agent fell back to the DB's dialogue name '五步车/coffin cart' instead of the on-screen bar text.",
+      "evidence_checked": "Confirmed via trace-list that none of this rollout's 4 clip_qa calls include a crop/zoom on the boss health-bar name region for the target interval."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "The player died 2 times fighting the ornate flaming coffin-cart ('five-step walking cart', 五步车) boss, ~63982s and ~64002-64008s.",
+      "tool_call_sequence": "read_skill x? -> semantic_search -> run_sql -> clip_qa(63300-64050) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/clip-6f3a4e142e9544cebf7a1378a1d5c448-segment-00.json", "item_index": 5, "what_happened": "clip_qa cropped the health-bar area at [300,850,700,1000] to look for a boss name, but that crop misses the name text (which sits above the bar, around y~780-820 as shown by rollout-00's successful crop [300,780,700,900]); clip_qa reported 'a clear boss name is not legible in the sampled frames' and fell back to the dialogue name 'five-step walking cart'."}
+      ],
+      "failure_point": "Wrong crop region for the HUD boss-name text (too far down, only captured the bar itself not the name above it), so OCR attempt failed and the sub-agent fell back to the DB's dialogue-derived name.",
+      "evidence_checked": "Compared crop bounding boxes across rollouts: rollout-00 used [300,780,700,900] (name partially legible) vs rollout-04's [300,850,700,1000] (name missed)."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The 2 death/respawn events and their timing (~63960-63990 and ~63990-64020, matching the question's clue_intervals at 63978-63982 and 63998-64002) are clearly retrievable from episodes/event_steps text ('character collapses and dissolves into golden particles... screen fades to black', 'revival/respawn sequence replays the same scene'). But the boss's canonical/on-screen name matching the reference 'Brown Iron Tank' is NOT present anywhere in entities, topic_facts, semantic_triples, or episodes text -- the DB's captioning pipeline only ever recorded the enemy via in-game spoken dialogue as 'coffin cart / five-step walking cart (五步车)'. The only path to the reference name is OCR of the on-screen boss health-bar text during the fight, which sits in a narrow crop region (~y 780-820) that only one of five rollouts (rollout-0) attempted, and even that attempt misread the small dark-background Chinese text (returned '阴阳战车' instead of what the frame appears to show, an iron/rust-colored chariot name closer to 'Brown Iron Tank')."
+  },
+  "root_causes": [
+    "Two-pipeline naming mismatch: the memory DB's captions/dialogue transcription named the boss by its narrative/dialogue name ('coffin cart / five-step walking cart'), while the reference answer uses the distinct on-screen HUD boss-bar name ('Brown Iron Tank'/rust-iron chariot); the two names refer to the same entity but neither is a paraphrase of the other, so no amount of DB text search would surface the reference wording.",
+    "The on-screen HUD name text is small, low-contrast (white text on dark background) and only visible in a narrow, specific screen region; only 1 of 5 rollouts even attempted to crop and OCR that exact region, and it misread the characters.",
+    "Most rollouts (1, 2, 3) never asked clip_qa to explicitly read/zoom the boss name-bar text, defaulting instead to the DB's dialogue-derived label.",
+    "Rollout-4 cropped the wrong vertical band (captured the health bar itself, not the name label above it), causing a spurious 'not legible' result and a fallback to the dialogue name."
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly located the target time window (~63960-64020s) matching the clue_intervals.",
+    "All 5 rollouts correctly counted exactly 2 distinct death/respawn events, matching the reference's implied count.",
+    "Rollout-0 was the only one to attempt a targeted crop/zoom of the boss name-bar text region, showing the right retrieval strategy even though the OCR read was wrong."
+  ],
+  "transferable_lessons": [
+    "For 'which named enemy/tank/boss' questions, always explicitly instruct clip_qa to zoom into and OCR the on-screen name/label text (health bar, boss banner) rather than accepting a general visual description -- narrative/dialogue names captured in episode text can differ entirely from the HUD label used as ground truth.",
+    "When cropping for HUD text, use frames from mid-fight (not the very first frame) and crop a generous band above the health bar itself, since name labels typically sit just above the bar, not inside it.",
+    "Cross-check an OCR'd name against the DB's own dialogue/entity names; if they disagree, treat the OCR read as tentative and try multiple frames/crops before committing, since small stylized game-UI Chinese text is easy to misread at low resolution.",
+    "When the DB text pipeline gives one consistent name across episodes/topic_facts but the question format ('which tank') implies a distinct on-screen game-UI label, don't assume the DB name is the reference answer -- verify visually first."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Exact ground-truth transcription of the HUD boss-name text was not independently confirmed via a clean, high-res crop by this diagnosis (only rollout-0's already-blurry crop was inspected); the identification of it as an 'iron/rust chariot' name matching 'Brown Iron Tank' is a visual read, not a confirmed OCR.",
+    "Unclear how rollout-1 arrived at '五行车' (Five Elements Chariot) -- neither the DB nor the inspected clip_qa outputs contain that exact string, so it may be a hallucination or a misread from a clip_qa call not fully traced here."
+  ]
+}

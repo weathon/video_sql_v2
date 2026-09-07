@@ -1,0 +1,106 @@
+{
+  "question_id": "day-4",
+  "timeline": "day",
+  "index": 4,
+  "question": "Approximately how long did the fight between the player and the Wandering Wight (幽魂) last? 1. one minute 2. two minutes 3. five minutes 4. ten minutes",
+  "reference_answer": "2",
+  "question_type": "Temporal Reasoning",
+  "temporal_certificate": "Short",
+  "total_intervals": [[2670, 2805]],
+  "clue_interval": [[2670, 2805]],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. One minute — fight approx 12,990s to 13,050s.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(event_steps/episodes/entities) x3 -> read_skill(sql-schema) -> semantic_search(topic_facts/episodes/visual_clips) x3 -> run_sql(episodes 46500-50500) -> run_sql(episodes 10320-11400) -> run_sql(episodes 23800-25300) -> semantic_search(episodes/event_steps) x2 -> run_sql(episodes 12840-13320) -> run_sql(event_chains+event_steps near 12840) x2 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 39, "what_happened": "run_sql on episodes 12840-13320 surfaces a short skirmish it interprets as the 'ghostly enemy' fight, ~60s long"},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 47, "what_happened": "submit_answer picks option 1 (one minute) based on the 12,990-13,050s window, never having visited 2670-2805"}
+      ],
+      "failure_point": "Never queried or searched any time window overlapping 2670-2805 (true clue interval); anchored on an unrelated skirmish at 12990-13050s found via generic 'ghost'-flavored semantic search hits.",
+      "evidence_checked": "Confirmed via sql that episodes 12840-13320 do not correspond to the true fight; true fight is at 2670-2805 per direct db query."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. One minute — fight ~48,000-48,030s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> read_skill(sql-schema) -> run_sql(episodes/event_steps/visual_clips near 47500-48500) x3 -> semantic_search x4 -> run_sql(episodes 24800-27200, event_steps, semantic_triples) x3 -> run_sql(entities LIKE '%幽魂%' or similar) -> run_sql(event_steps 24200-25050) -> run_sql(episodes 7500-8200) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 22, "what_happened": "run_sql on episodes/visual_clips 47500-48500 finds a brief combat clip and it is treated as the target fight"},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 54, "what_happened": "submit_answer settles on 'one minute' from the 48,000-48,030s window without ever reaching 2670-2805"}
+      ],
+      "failure_point": "Same pattern as rollout 0: chased several 'ghost/skeletal' textual matches (24300-25050 skeletal enemies, 7590-8100 skeletal/ghost figure) and a decoy fight near 48000s; never queried near 2670-2805.",
+      "evidence_checked": "db query confirms entities near true window are unlabeled ('ape/troll boss'), not textually matching 'ghost'/'幽魂', explaining why this rollout's ghost-keyword searches missed it."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. One minute — 'ghostly skeletal enemy (幽魂/Wandering Wight)' fight, roughly a minute.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql(episodes/visual_clips/event_chains/object_states 71500-73000) x4 -> semantic_search(幽魂/wandering wight) x4 -> run_sql(episodes 10500-11550, 24700-25500, 47600-49000) x3 -> run_sql(event_chains, entities LIKE '%幽%'/'%魂%'/'%wight%'/'%ghost%') x2 -> run_sql(event_chains/event_steps 47000-49000) x2 -> run_sql(visual_clips 47900-48100) -> run_sql(episodes 7200-8300, event_chains/event_steps 7000-8500) x3 -> run_sql(event_chains name/summary LIKE ghost/wight/幽魂/wandering) -> run_sql(episodes 1500-3600) -> run_sql(event_steps 1950-2400) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 67, "what_happened": "run_sql SELECT ... FROM episodes WHERE start_s BETWEEN 1500 AND 3600 actually returns the full text for the true clue window (2670-2805, the ape/troll boss fight) inside its 52k-char row set"},
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 70, "what_happened": "immediately follows with a narrower run_sql on event_steps 1950-2400, which excludes 2670-2805 and returns nothing relevant"},
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 73, "what_happened": "submit_answer reverts to the earlier 'ghostly skeletal enemy' hypothesis near 24300-25050 instead of the boss fight actually present in the 1500-3600 episodes dump it had just fetched"}
+      ],
+      "failure_point": "Evidence-present-but-not-recognized: the true fight text (2670-2805, described as 'ape-like'/'troll-like'/'demon boss', ending in defeat text 已击败) was retrieved in the episodes(1500-3600) call but not labeled with 幽魂/wight/ghost terms, so the model did not identify it as the answer and fell back to a lexically-matching but wrong 'skeletal/ghostly enemies' window (24300-25050).",
+      "evidence_checked": "Directly queried episodes 2600-2900 and confirmed the exact fight text (hulking enemy -> boss w/ crown-like head -> troll-like enemy -> demon boss -> ape-like boss defeated '已击败') sits inside the 1500-3600 range this rollout already pulled."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. One minute — fight ~12,990-13,050s, ending with defeat/reward notification.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> semantic_search x4 (variants of 幽魂/wandering wight/blue-headed ghost) -> run_sql(event_chains+event_steps near candidate windows) x2 -> run_sql(entities LIKE '%幽魂%'/'%wandering%'/'%Wight%') -> semantic_search -> run_sql(episodes 47500-48500) -> semantic_search -> run_sql(episodes 12600-13650) -> semantic_search -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "run_sql on episodes 12600-13650 finds a short skirmish with a defeat/reward beat and is taken as the target fight (~60s)"}
+      ],
+      "failure_point": "Never queried a window overlapping 2670-2805; entities table lookup for '%幽魂%'/'%Wight%' returned nothing (confirmed: 0 rows), so the rollout kept guessing candidate windows from visual descriptions ('blue-headed ghost boss') that do not match the true fight's visual description (ape/troll-like boss), and settled on the wrong 12990-13050s skirmish.",
+      "evidence_checked": "sql confirms entities table has zero rows matching 幽魂/wight; the description guessed by this rollout ('tall blue-headed ghost') does not match the true fight's visual_clips text (ape-like/troll-like boss with crown-like head)."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. One minute — fight lasted ~13-14s, ending ~42,078-42,079s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps/episodes/topic_facts) x3 -> read_skill(sql-schema) -> run_sql(event_chains/event_steps 47000-49000) x2 -> run_sql(episodes 47800-48600) -> run_sql(entities LIKE '%幽魂%') -> run_sql(event_steps/topic_facts LIKE '%幽魂%'/'%wight%'/'%ghost%') x2 -> run_sql(event_steps/episodes 41400-42600) x2 -> run_sql(event_chains 41000-43000) -> read_skill(visual-verification) -> clip_qa(42000-42120) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 27, "what_happened": "run_sql literal LIKE '%幽魂%' OR '%wight%' OR '%ghost%' over event_steps returns no usable match for the true fight (confirmed independently: entities table has 0 rows for 幽魂)"},
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 42, "what_happened": "clip_qa is dispatched on the wrong window 42000-42120 (a different, unrelated pale-ghost-looking enemy) and reports a 13-14s fight"}
+      ],
+      "failure_point": "Literal-text search for '幽魂'/'wight'/'ghost' in the DB failed because the true boss fight (2670-2805) is captioned only by generic visual terms (ape/troll/demon boss), never the Chinese name; the rollout then trusted a decoy window at 41400-43000 and confirmed it visually with clip_qa, compounding the wrong-window error with a wrong visual read (13-14s vs the decoy clip's actual likely longer length is unverified, but regardless it is not the reference fight).",
+      "evidence_checked": "Directly ran the same LIKE '%幽魂%' filters against episodes/entities and confirmed 0 entity rows and only spell/menu-item mentions of 幽魂 (a 'Phantom Soul' spell/charm, not the boss) at 3630-3660, 15930-15960, 20640-20670 — none of which are combat."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The true fight (2670-2805, ~135s = 2.25 min, matching reference answer 'two minutes') IS present in episodes/visual_clips/object_states/semantic_triples at 30sec and 3min granularity, with a clear combat description, orange strike effects, and an explicit defeat marker ('已击败') plus loot reward. However, at no granularity or table does the text ever call this enemy '幽魂' or 'Wandering Wight' — it is only described visually as a 'large, hulking enemy', 'boss-like enemy with a spiky, crown-like head', 'troll-like enemy', 'muscular demon boss', and finally 'shirtless ape-like boss'. The entities table has zero rows for '幽魂'/'wight'/'wandering'; the only DB occurrences of the literal string '幽魂' are unrelated in-game menu/spell references ('幽魂' as a Phantom Soul spell/charm at 3630-3660s, 15930-15960s, 20640-20670s), which are red herrings for any literal-text search. Consequently every literal or semantic search keyed on the boss's name returns either nothing relevant or lexically-similar decoys ('skeletal/ghostly enemies' at 24300-25050, 'skeletal/ghost figure' at 7590-8100) rather than the true, unlabeled boss fight."
+  },
+  "root_causes": [
+    "Naming gap in the memory pipeline: the boss actually fought at 2670-2805 (matching the clue interval and duration) is never tagged with its in-game/quest name '幽魂'/Wandering Wight anywhere in episodes, entities, event_steps, or topic_facts — it is captioned only by generic visual descriptors (ape/troll/demon boss). This makes the question effectively unanswerable by name-based semantic or literal-text search alone.",
+    "Lexical decoys: other DB entries literally contain 'ghost'/'skeletal'/'幽魂' (as an unrelated spell name, or as descriptors of different enemies at 7590-8100 and 24300-25050), and every rollout's semantic_search over event_steps/episodes/entities/visual_clips surfaced these decoys as top hits, pulling the search away from the true 2670-2805 window entirely (rollouts 0, 1, 3, 4).",
+    "One rollout (2) did fetch the true window's raw text (episodes 1500-3600 covers 2670-2805) but its own follow-up narrowed to 1950-2400 (excluding the fight) and it never re-examined the earlier broad dump before submitting, so retrieved-but-unlabeled evidence was not connected to the question.",
+    "No rollout used semantic_search or run_sql with a duration/time-span-focused query on the candidate windows it did visit before committing to a specific interval; each converged on a plausible-looking decoy and stopped exploring."
+  ],
+  "what_worked": [
+    "All rollouts correctly followed the general-retrieval / locating-time-intervals / semantic-search / sql-schema skill-reading pattern and issued many diverse semantic_search and run_sql calls, showing broad recall effort.",
+    "Rollout 4 additionally used a literal SQL LIKE search for the exact term '幽魂' across multiple tables, which is a sound technique — it correctly ruled out the entities table but wasn't followed up with a broader sweep of ALL 30sec episode/visual_clips text for the literal string (which would have found the 3 menu/spell mentions and, by elimination, still not solved it, since the boss itself has no textual name in the DB)."
+  ],
+  "transferable_lessons": [
+    "When a named entity (here, a boss's Chinese name) yields zero entity-table hits and no literal text matches beyond a plainly unrelated context (a spell/menu item), treat that as a strong signal the DB captioning never captured the entity's proper name — pivot to describing the entity by its visual/behavioral traits from the question's plausible genre (e.g. 'boss fight', 'defeated enemy with reward') and scan broadly by time rather than by name.",
+    "Do not stop scanning once one plausible 'ghost-like' or 'skeletal' fight is found; when several candidate fights exist (7590-8100, 24300-25050, 12990-13050, 41400-42600, 47500-49000, 2670-2805), compare all of them against the full question context (defeat marker, reward text, duration matching one of the offered options) before committing.",
+    "When a broad run_sql query returns a large truncated result (e.g. episodes 1500-3600, 52k chars), don't let a narrower follow-up query silently replace it in the reasoning — re-scan the full broad result for defeat/reward markers ('已击败', loot panel, spirit essence counter) before submitting, since those are strong fight-boundary indicators.",
+    "For duration-estimation questions, use the 30sec-granularity episode/visual_clips rows to bracket the fight start (first combat-only clip) and end (defeat/reward marker), and count elapsed seconds directly — this is what would have correctly bracketed 2670 (first combat frame) to ~2805/2820 (defeat + loot) for a ~135s = 'two minutes' answer.",
+    "If literal-text and semantic search both fail to name an entity, consider that the DB's captioning is simply missing the label — verifying via clip_qa on the strongest visual-trait candidate (rather than a decoy chosen from keyword-matching) would be a better use of the visual sub-agent."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether '幽魂'/Wandering Wight is definitively the boss fought at 2670-2805 cannot be 100% confirmed without reading on-screen boss-name text in a frame (not done here); the inference rests on: duration (135s ≈ 'two minutes' matching reference answer), timeline position matching clue_interval/total_intervals exactly, and a clear defeat+loot marker bounding the fight — but the boss's name never appears in the DB text, so this identification is circumstantial, not DB-confirmed.",
+    "Whether the memory-building pipeline (upstream of this run) ever had access to an on-screen boss name-tag for this fight, or whether the boss name simply never appears on screen at this point in this playthrough, is unknown without re-inspecting raw video frames."
+  ]
+}

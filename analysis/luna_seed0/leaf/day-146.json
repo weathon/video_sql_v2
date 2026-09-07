@@ -1,0 +1,101 @@
+{
+  "question_id": "day-146",
+  "timeline": "day",
+  "index": 146,
+  "question": "For the \"Bishui Golden-eyed Beast,\" which additional negative effect appears in the second phase? 1. Thunder Sting 2. Burn 3. Freeze 4. Poison",
+  "reference_answer": "3",
+  "question_type": "Attribute Recognition",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[73976, 73988]],
+  "clue_interval": [73976, 73988],
+  "scores": [5, 5, 5, 5, 5],
+  "score_spread": "all_high",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "3. Freeze — the second phase shifts to icy/frost attacks, adding the freeze effect.",
+      "tool_call_sequence": "read_skill x2 -> semantic_search(topic_facts) -> semantic_search(entities) -> semantic_search(episodes) -> semantic_search(visual_clips) -> read_skill(sql-schema) -> run_sql(episodes 73800-74500) -> semantic_search(topic_facts) -> semantic_search(event_steps) -> semantic_search(episodes, chinese query) -> run_sql(topic_facts LIKE burn/freeze/poison/sting) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 20, "what_happened": "run_sql on episodes 73800-74500 returned captions describing the 73980-74160s clip as 'quadruped boss with pale spiked plating...white frost or smoke explosions fill the center...triggering icy particle effects', directly evidencing a freeze-type effect starting right after the clue interval."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 23, "what_happened": "semantic_search on topic_facts surfaced row topic_facts:00001582 (74010s) 'boss shifts between icy armored state and fleshy roaring state' and topic_facts:00013963 (73980s) 'quadruped boss with pale spiked plating and glowing orange eye; frost/smoke explosions', confirming the icy/freeze phase transition from text alone."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed via sql query on episodes/topic_facts around 73800-74400 that captions explicitly mention frost/ice/icy-particle effects right at and after 73980s, matching the clue interval."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "3. Freeze — the second phase adds the ice/freeze effect (shown by the snowflake status indicator), while the first phase is fire/burn-oriented.",
+      "tool_call_sequence": "read_skill x2 -> semantic_search(topic_facts, episodes, entities, visual_clips) -> read_skill(sql-schema) -> run_sql(episodes) -> run_sql(visual_clips) -> run_sql(topic_facts) -> run_sql(event_steps) -> semantic_search(episodes, topic_facts chinese, semantic_triples) -> read_skill(visual-verification) -> clip_qa(73920-74130) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": null, "what_happened": "run_sql pulls on episodes/topic_facts/event_steps in the 73800-74500 window surfaced the same frost/ice captions as rollout 0, but the agent chose to additionally verify visually."},
+        {"segment_file": "rollout-01/attempt-1/traces/clip-4f67e6895d014c089a62be0de33d07e9-segment-00.json", "item_index": null, "what_happened": "clip_qa sampled frames from 73920-74130s and visually confirmed a snowflake/ice status indicator appearing in the second phase, corroborating the text evidence."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Not independently re-verified visually; relies on the clip_qa sub-agent's report which aligns with the text-based db_evidence already confirmed for rollout 0."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "3. Freeze. The Bishui Golden-Eyed Beast's fight shifts from fiery attacks in the first phase to icy/frost attacks in the second, adding the freeze effect.",
+      "tool_call_sequence": "read_skill x2 -> semantic_search(episodes, topic_facts, entities, visual_clips, event_steps, episodes) -> read_skill(sql-schema) -> run_sql(event_steps) -> run_sql(topic_facts) -> run_sql(object_states) -> run_sql(episodes) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "run_sql across episodes/topic_facts/object_states in the 73800-74350 window found the same frost/ice-particle captions around 73980-74160s and answered directly from text, no visual check needed."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same DB window inspected via sql tool; text evidence for freeze/ice confirmed present."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "3. Freeze. In the second phase, the arena shifts to ice/crystal effects and the blue frost status marker (寒) appears as the player is frozen (around 74,100-74,110s).",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(topic_facts, episodes, entities, topic_facts, visual_clips, episodes chinese x2, visual_clips) -> run_sql(episodes 71900-72450) -> run_sql(episodes 73800-74400) -> read_skill(visual-verification) -> clip_qa(73950-74160) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": null, "what_happened": "run_sql on episodes around 73800-74400 surfaced the ice/frost captions; agent then dispatched clip_qa on 73950-74160s to visually pin down the exact frost/freeze status marker, which the sub-agent confirmed and even cited a specific frozen timestamp (~74100-74110s)."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Consistent with the sql-confirmed ice/frost captions in that window; the extra ~74100-74110s specificity is plausible given clip_qa's frame sampling but was not independently re-verified with the frame tool here."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "3. Freeze — the Bishui Golden-Eyed Beast's second phase adds the freeze effect.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes, topic_facts, event_steps) -> read_skill(sql-schema) -> run_sql(episodes, semantic_triples, object_states, visual_clips) -> semantic_search(episodes, topic_facts chinese, visual_clips) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "run_sql sweep across episodes/semantic_triples/object_states/visual_clips in 73800-74490 window surfaced the same frost/ice-particle captions; answered directly from text."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same DB window; text evidence for freeze/ice confirmed present."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "episodes rows covering 73980-74160s (immediately after the 73976-73988s clue interval) explicitly describe 'white frost or smoke explosions', 'icy particle effects', 'ice-shard particle effects', and the boss 'shifts between an icy armored state and a more fleshy, roaring state'. topic_facts rows at 73980s and 74010s independently paraphrase the same content ('quadruped boss with pale spiked plating...frost/smoke explosions', 'boss shifts between icy armored state and fleshy roaring state'). This textual evidence alone is sufficient and unambiguous to answer 'Freeze', which is why 3 of 5 rollouts (00, 02, 04) answered correctly purely from semantic_search/run_sql without ever calling clip_qa, while the other 2 (01, 03) additionally used clip_qa for visual confirmation and got the same correct answer."
+  },
+  "root_causes": [
+    "N/A for failure — all 5 rollouts scored 5/5 on this question; there is no failure to diagnose.",
+    "Success driver: multiple independent captioning passes (episodes 3-min summaries and topic_facts one-line facts) both mention frost/ice/icy-particle effects at/after the clue interval, giving strong, redundant, easily-matched textual signal regardless of exact query wording.",
+    "The candidate answer set (Thunder Sting/Burn/Freeze/Poison) has only one term ('freeze'/'ice'/'frost') with clear lexical overlap to the DB captions, making retrieval robust to query phrasing variance across the 5 rollouts."
+  ],
+  "what_worked": [
+    "Windowed run_sql queries (episodes/topic_facts/event_steps/object_states/visual_clips filtered by start_s or time_s BETWEEN ~73800 and ~74500) around the clue interval reliably surfaced the frost/ice captions in every rollout.",
+    "Semantic_search across multiple tables (episodes, topic_facts, entities, visual_clips) with varied English and Chinese query phrasings converged on the same ice/frost evidence.",
+    "Two rollouts used clip_qa as a confirmatory step even though text evidence was already sufficient, adding robustness without changing the (already-correct) outcome.",
+    "All 5 final answers correctly selected option 3 and gave a coherent justification (first phase = fire/burn, second phase adds freeze/ice) matching the reference answer '3'."
+  ],
+  "transferable_lessons": [
+    "For 'which additional negative effect appears' style multiple-choice questions, a windowed run_sql over episodes/topic_facts around the clue interval is often sufficient — the boss-fight captions already lexicalize elemental effects (fire, frost, ice, poison) directly, so heavy semantic_search fan-out or clip_qa is not strictly required when captions are this explicit.",
+    "When db captions already contain unambiguous English descriptors (e.g. 'frost', 'icy particle effects') for one of the answer options, calling clip_qa is a low-risk confirmatory step but not necessary — agents that skipped it were not penalized.",
+    "Bilingual (English + Chinese) query variants are a reasonable belt-and-braces approach but in this case both languages found the same underlying English-captioned rows, since the memory DB captions are in English."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "None of the rollouts failed, so there is nothing to further diagnose for this question; open question is only whether this style of question (single option with unique visual/textual referent) is a fair test of the pipeline's failure modes given it appears trivially retrievable from text alone."
+  ]
+}

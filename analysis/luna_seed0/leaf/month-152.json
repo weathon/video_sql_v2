@@ -1,0 +1,105 @@
+{
+  "question_id": "month-152",
+  "timeline": "month",
+  "index": 152,
+  "question": "During the streamer's visit to Shenzhen, who did the streamer see among the crowd that was a familiar face after leaving the tarmac and getting blocked while taking the shuttle bus?",
+  "reference_answer": "Uncle in floral shirt",
+  "question_type": "Social Interaction",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[310852, 311319]],
+  "clue_interval": [{"video_id": "20", "intervals": [[13524, 13991]]}],
+  "scores": [0, 0, 0, 4, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered (attempt-3, after 2 prior execution errors)",
+      "score": 0,
+      "answer": "The familiar face was the fan known as \"the Duck Guy.\" Speed spotted him behind the crowd and urged everyone to hurry to the car (around 310,798 seconds).",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/event_steps/topic_facts/visual_clips) x~10 -> run_sql(episodes/visual_clips/event_steps windows around 296k,304k,194k,317k,318k) -> run_sql(episodes LIKE '%tarmac%'/'%shuttle%') -> semantic_search(topic_facts 'duck guy') -> run_sql(episodes 310780-311020) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-3/traces/answer-segment-00.json", "item_index": 65, "what_happened": "run_sql on episodes WHERE start_s BETWEEN 310780 AND 311020 returned the correct neighborhood but the window cut off at 311020, just before episodes:30sec:010379 (311188-311218) which contains the actual 'uncle' fact; the returned rows instead contained episodes:30sec:010366 (310798-310828) with the decoy line 'ishowspeed spots the fan known as \"the duck guy\" behind them and urges everyone to rush to the car.'"},
+        {"segment_file": "rollout-00/attempt-3/traces/answer-segment-00.json", "item_index": 73, "what_happened": "submit_answer with 'Duck Guy' based on the truncated window; never re-queried forward to 311200-311300."}
+      ],
+      "failure_point": "SQL time-window too narrow — stopped ~170s short of the true clue interval end, landing on a same-scene decoy mention ('duck guy') instead of the target ('uncle') a few rows later.",
+      "evidence_checked": "sql on episodes 310700-311330 confirms 'duck guy' text sits at 310798-310828 (just before total_intervals start) and the true 'uncle' fact sits at 311188-311218 (inside total_intervals)."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "He saw Fernando in the crowd—a familiar fan/friend whom he greeted and wished a happy birthday before inviting him to take a photo together (around 313,828–313,858 seconds).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/visual_clips/event_steps/topic_facts) x6 -> run_sql(episodes windows 306000-309000, 299000-306000 w/ tarmac|shuttle LIKE filter, 284800-286500, 317000-318500) -> run_sql(event_steps, entities) -> run_sql(episodes 311500-313900) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 50, "what_happened": "run_sql on episodes WHERE start_s BETWEEN 311500 AND 313900 (adjacent to but not covering the true 310852-311319 window) surfaced episodes:30sec:010467 (313828-313858): 'ishowspeed asks a nearby fan to move aside, greets fernando, wishes him a happy birthday, and invites him to take a photo together' — a genuinely different, later fan encounter at a night theme park, not the Shenzhen shuttle-bus crowd."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 53, "what_happened": "submit_answer with 'Fernando', never having queried the actual 310852-311319 window."}
+      ],
+      "failure_point": "Never issued a run_sql/semantic_search whose window actually covers total_intervals [310852,311319]; anchored on a different, later 'familiar face in crowd' scene (Fernando at a theme park) that superficially matches the question pattern.",
+      "evidence_checked": "sql on episodes 313700-313900 confirms the Fernando line is real DB content but describes an unrelated scene at 313828-313858, well outside the reference clue window."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "He recognized \"the duck guy\" in the crowd. The stream description at about 310,798 seconds explicitly says Speed spotted the fan known by that nickname as the vehicle was trying to get through the packed crowd.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x~8 (episodes/visual_clips/event_steps/topic_facts) -> run_sql(episodes 168000-173000, 194000-196500) -> run_sql(episodes 309800-311200) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 61, "what_happened": "run_sql on episodes WHERE start_s BETWEEN 309800 AND 311200 DID return both the decoy 'duck guy' row (310798) and the correct row episodes:30sec:010379 (start_s 311188) containing '...asks if the fan he calls \"uncle\" is in the shot ... invites the uncle to join them.' Both facts were present in the same tool output."},
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 63, "what_happened": "submit_answer picked the earlier 'duck guy' mention and ignored the later 'uncle' row in the same result set, even though the uncle row was the last (most recently read) row and closer to matching 'familiar face ... blocked ... crowd'."}
+      ],
+      "failure_point": "Evidence retrieved but misread/ignored: the correct fact was present in the exact tool output the agent read, but it picked the wrong (earlier, more dramatic-sounding) entity mention from the same SQL result instead of the correct 'uncle' mention.",
+      "evidence_checked": "Re-ran the identical SQL window via memcli; confirmed 'uncle' text is present verbatim in the row for start_s=311188, within the same result set rollout-02 already had in context."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "He recognized a familiar fan with bright yellow hair (a yellow wig) and glasses in the crowd. The fan was among those welcoming him off the shuttle, chanting \"welcome to Changsha.\"",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x~8 -> run_sql(episodes 313000-316200, 316800-318150) -> semantic_search('yellow hair crowd shuttle bus Changsha') -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": 57, "what_happened": "semantic_search explicitly queried for a 'Changsha' scene (a different city later in the timeline, ~318072s) and retrieved a yellow-wig fan welcome scene; this became the final answer."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": 60, "what_happened": "submit_answer with the yellow-wig/Changsha fan, never having queried the 310852-311319 Shenzhen window at all."}
+      ],
+      "failure_point": "Wrong event/city entirely — the agent's own query conflated the Shenzhen shuttle-bus scene with a later Changsha welcome scene and never located or queried the true clue window.",
+      "evidence_checked": "None of rollout-03's SQL windows (313000-316200, 316800-318150) intersect total_intervals [310852,311319]."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 4,
+      "answer": "The familiar face was his fan known as \"Unc\" (Uncle)—the fan Speed said always manages to find him, even in a huge crowd.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/event_steps/topic_facts/visual_clips) -> run_sql(episodes/visual_clips/event_steps 306000-308500) -> semantic_search(episodes/topic_facts) -> run_sql(episodes/visual_clips 317500-319500, 328300-328900) -> semantic_search('Unc familiar face') -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": 32, "what_happened": "semantic_search on topic_facts for 'familiar face crowd' returned topic_facts:00008198 (start_s 328602): \"ishowspeed mentions a fan named 'unc' who always finds him in a crowded place\" — a separate, later mention of the SAME recurring fan nickname (Unc/Uncle), not inside total_intervals but semantically/entity-correct."},
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": 43, "what_happened": "submit_answer with 'Unc (Uncle)', matching the reference entity name despite never having directly retrieved the exact 311188-311218 clue-window sentence."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed 'uncle'/'unc' is the same recurring fan referenced repeatedly across the whole car-ride/crowd sequence (310852-311319, and again at 311308-311338 and 328602), so rollout-04 landed on the correct entity via a different, later mention rather than the primary clue sentence; judge gave 4/5, likely docking 1 point for omitting the 'floral shirt' visual detail."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "The exact fact matching the reference answer is present verbatim inside total_intervals: episodes:30sec:010379 (start_s=311188, end_s=311218) reads '...ishowspeed thanks the crowd, asks if the fan he calls \"uncle\" is in the shot, checks with jack about bringing him into the car, and invites the uncle to join them.' This sits ~30-330s after a strong decoy at episodes:30sec:010366 (start_s=310798): 'ishowspeed spots the fan known as \"the duck guy\" behind them and urges everyone to rush to the car,' which is textually very similar in shape ('familiar fan spotted in crowd, urgency to get in the car') but names a different person. The 'uncle'/'unc' nickname (matching reference 'Uncle in floral shirt') recurs multiple times later in the same continuous scene (311308-311338, and again far later at 328602), so it is retrievable from several different queries, but the decoy 'duck guy' sentence sits chronologically first and closer to the naive query windows agents tried."
+  },
+  "root_causes": [
+    "Decoy proximity: a highly similar-shaped but wrong-entity sentence ('duck guy' spotted in crowd, urging rush to car) sits ~30s before the true clue-window start and gets surfaced by every reasonably-targeted time-window query, while the correct 'uncle' sentence sits ~330-490s later in the same continuous multi-topic episode chunk.",
+    "Narrow/short SQL time windows: 3 of 5 rollouts (0, 1, 3) used run_sql windows that either stopped just short of, or entirely missed, the true clue window [310852,311319], landing on unrelated or decoy content instead.",
+    "Evidence-present-but-misread: rollout-02 retrieved a SQL result set that literally contained both the decoy and the correct 'uncle' sentence, and still picked the decoy.",
+    "Long, information-dense episode chunks (episodes:3min rows spanning 180s and containing many distinct fan/crowd micro-events) make it easy for the agent to anchor on the first salient named entity in a chunk rather than reading the full text for the one matching the question's precise phrasing ('after leaving the tarmac and getting blocked while taking the shuttle bus')."
+  ],
+  "what_worked": [
+    "Rollout-04 eventually converged on the correct recurring entity ('Unc'/'Uncle') via a semantically-matching but chronologically displaced topic_facts hit, rather than being pulled to the 'duck guy' decoy — broader multi-table semantic search (topic_facts specifically) surfaced the distinctive nickname even without hitting the exact clue sentence.",
+    "The judge scored rollout-04 4/5 despite the citation not being from the exact clue window, showing partial credit is given for correct entity identity even without full 'floral shirt' detail or the precise supporting sentence."
+  ],
+  "transferable_lessons": [
+    "When a run_sql time window is chosen around a candidate clue, extend it generously past total_intervals end (not just up to it) since a chunk-final match at the window boundary can get cut off before the agent reads the payoff sentence a few lines later.",
+    "When a fact fitting the question's shape is found early in a search, do not stop there if the exact same interval contains other named individuals in similar phrasing ('X spotted in crowd, urges rush to car' vs 'asks if X is in the shot, invites to join') — read the full episode chunk text, not just the first plausible match, since decoy events cluster near true clue events in dense crowd/travel scenes.",
+    "Prefer topic_facts/entity-level semantic search for recurring-nickname questions (like 'Unc'/'uncle') since a fan's nickname may be repeated at multiple non-adjacent timestamps, giving redundant paths to the correct entity even if the primary clue sentence is missed.",
+    "'Familiar face in the crowd' is a recurring narrative beat in this stream (multiple distinct instances: duck guy at 310798, uncle at 311188/311308, Fernando at 313828, Unc again at 328602, yellow-wig fan at Changsha ~318072) — questions with this phrasing require anchoring tightly to the literal qualifying clause ('after leaving the tarmac and getting blocked while taking the shuttle bus') rather than the generic 'familiar face' pattern, since generic semantic search returns many false positives."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the judge would have scored rollout-04 a 5 if it had also cited 'floral shirt' — not verified since judge gave no explanation for the -1 point.",
+    "Whether providing agents the full episodes:3min chunk text (rather than truncated previews in semantic_search hits) earlier in the trace would have let them notice the 'uncle' sentence within the same chunk they already had in context (relevant to rollout-00 and rollout-02)."
+  ]
+}

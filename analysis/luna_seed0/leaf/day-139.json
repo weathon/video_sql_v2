@@ -1,0 +1,117 @@
+{
+  "question_id": "day-139",
+  "timeline": "day",
+  "index": 139,
+  "question": "When the player is challenging the Redgold War Chariot, what is the first skill used? 1. Immobilization Spell 2. Rock Solid (铜头铁臂) 3. Ring of Fire (安身法) 4. A Pluck of Many (身外身法) 5. Forbidden Word Spell",
+  "reference_answer": "1",
+  "question_type": "Temporal Reasoning",
+  "temporal_certificate": "Short",
+  "total_intervals": [[71993, 72000]],
+  "clue_interval": [[71993, 72000]],
+  "scores": [5, 0, 5, 5, 5],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "1. Immobilization spell (定身法), activated ~71998.5s, boss coated in glowing gold immobilized state by ~71998.8s.",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(visual_clips) -> semantic_search(episodes, skill names) -> run_sql(episodes 71900-72450) -> clip_qa(71970-72030) -> submit",
+      "decisive_steps": [
+        {
+          "segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json",
+          "item_index": 28,
+          "what_happened": "clip_qa sampled frames at 71998.275/71998.508/71998.775s and correctly read the golden flash/sigil coating the boss as the player's immobilization-spell activation, occurring before any other listed skill."
+        }
+      ],
+      "failure_point": null,
+      "evidence_checked": "Pulled frames at 71998.5s and 71998.8s directly: boss visibly encased in a glowing gold statue-like shell at 71998.8s, matching clip_qa's read and the reference answer '1'."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "4. A Pluck of Many (身外身法), first activated ~72008.5-72009.0s when spell selection opens and duplicate monkey-like figures appear; dismissed the ~71998.5s gold shimmer as a 'boss effect, not a player skill'.",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(event_steps) -> semantic_search(episodes) -> semantic_search(visual_clips, skill names) -> semantic_search(entities) -> run_sql(episodes 71900-72300) -> run_sql(visual_clips 71800-72500) -> run_sql(event_steps+event_chains) -> clip_qa(71970-72030) -> submit",
+      "decisive_steps": [
+        {
+          "segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json",
+          "item_index": 32,
+          "what_happened": "clip_qa was given the same 71970-72030 window and question as the other rollouts, but its visual sub-agent explicitly noted the ~71998.5s gold shimmer around the boss and misclassified it as an enemy/boss visual effect rather than the player's immobilization-spell cast, instead latching onto a later spell-menu/duplicate-figure moment at ~72008.5s as 'A Pluck of Many'."
+        }
+      ],
+      "failure_point": "clip_qa (visual sub-agent) misread the same golden-flash frames that the other 4 rollouts correctly identified as the immobilization spell; it attributed the effect to the boss instead of the player, then over-interpreted a later, ambiguous 'spell selection / duplicate figures' frame as skill 4. Retrieval and SQL steps were correct and equivalent to the passing rollouts; the failure is purely a visual-agent misclassification carried through to submit_answer without cross-checking against the earlier, more visually obvious cue."
+      ,
+      "evidence_checked": "Compared clip_qa outputs across rollouts: rollout-01 is the only one of five that reports the 71998.5s golden effect as a non-player 'boss effect'; direct frame extraction (see db_evidence) shows the effect is a boss-body-encasing gold statue shell consistent with an immobilization/freeze effect, matching the majority reading."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "1. Immobilization spell, first skill effect ~71998.5-71999.0s, golden freeze/statue-like effect envelops the boss.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps) -> semantic_search(episodes) -> semantic_search(visual_clips, skill names) -> semantic_search(semantic_triples) -> run_sql(episodes 71800-72240) -> read_skill(visual-verification) -> clip_qa(71970-72030) -> submit",
+      "decisive_steps": [
+        {
+          "segment_file": "rollout-02/attempt-1/traces/answer-segment-01.json",
+          "item_index": null,
+          "what_happened": "clip_qa on the same 71970-72030 window again read the golden envelop/freeze effect at ~71998.5-71999.0s as the first skill, matching reference answer 1."
+        }
+      ],
+      "failure_point": null,
+      "evidence_checked": "Consistent with directly pulled frames showing the gold statue-shell effect at 71998.5-71998.8s."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "1. Immobilization Spell (定身法), activating ~71998.8s when the chariot becomes covered in a bright golden immobilization effect.",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(semantic_triples) -> semantic_search(episodes, skill names) -> run_sql(episodes 70700-72300) -> run_sql(event_steps+event_chains) -> run_sql(semantic_triples 70700-72300) -> clip_qa(71970-72030) -> submit",
+      "decisive_steps": [
+        {
+          "segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json",
+          "item_index": null,
+          "what_happened": "Broader SQL sweep across event_steps/semantic_triples found no explicit skill-name text (as expected, this is a purely visual cue), then clip_qa on the same window correctly read the golden immobilization effect as skill 1."
+        }
+      ],
+      "failure_point": null,
+      "evidence_checked": "Consistent with directly pulled frames."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "1. Immobilization spell (定身法), ~71998.6-71998.8s, freezing the chariot in a bright golden effect before staff strikes follow.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(episodes, skill names) -> semantic_search(visual_clips) -> run_sql(episodes 71940-72240) -> run_sql(event_steps+event_chains) -> read_skill(visual-verification) -> clip_qa(71970-72030) -> submit",
+      "decisive_steps": [
+        {
+          "segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json",
+          "item_index": null,
+          "what_happened": "clip_qa on the same window again correctly read the golden immobilization effect as the first skill."
+        }
+      ],
+      "failure_point": null,
+      "evidence_checked": "Consistent with directly pulled frames."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The structured DB (episodes/event_steps/semantic_triples) never names any of the five candidate skills explicitly in this window; episodes:30sec:002399 (71970-72000s) only describes generic combat ('trades blows', 'dodges the fire') and episodes:30sec:002400 (72000-72030s) describes ongoing melee. This is a purely visual cue that only clip_qa can resolve. Directly extracted frames at 71998.5s and 71998.8s (via memcli frame) show the boss becoming enveloped in a glowing gold statue/shell effect, consistent with an immobilization-type spell and with 4 of 5 rollouts' clip_qa reads, and with the reference answer '1'. All 5 rollouts used essentially the same clip_qa window (71970-72030s), so the window itself was never the problem."
+  },
+  "root_causes": [
+    "Rollout-01's clip_qa visual sub-agent misclassified the same salient early gold-flash frames (that 4/5 other rollouts correctly identified as the player's immobilization-spell cast) as a boss-side visual effect, then substituted a later, more ambiguous cue (spell-menu opening with duplicate figures at ~72008.5s) as the answer -- a visual misread, not a retrieval or SQL failure.",
+    "The structured memory DB (episodes, event_steps, semantic_triples) contains no explicit skill-name text for this moment, so all rollouts necessarily depended entirely on clip_qa's frame-level judgment, making the question's correctness single-point-of-failure on the visual sub-agent's read of one ambiguous effect (a golden glow that could plausibly be attributed to either the player's spell or the boss)."
+  ],
+  "what_worked": [
+    "All 5 rollouts converged on the same correct clip_qa time window (71970-72030s) derived from SQL/semantic_search around the clue interval, showing the retrieval and time-localization steps were reliable and not the bottleneck.",
+    "4 of 5 clip_qa sub-agent calls correctly read the golden statue/shell visual effect on the boss at ~71998.5-71999.0s as the player's immobilization-spell activation, matching ground truth."
+  ],
+  "transferable_lessons": [
+    "For 'which skill/effect happened first' visual-identification questions where the DB has no explicit skill-name text, the entire answer rides on clip_qa's frame read; asking clip_qa to explicitly compare and rule out competing candidate moments (e.g. both the ~71998.5s glow and the ~72008.5s spell-menu moment) rather than accepting the first salient effect it notices would reduce single-call misreads.",
+    "A visual effect that coats/envelops the enemy could ambiguously be read as either an enemy-side effect or a player-cast status effect; prompting clip_qa to justify why an effect belongs to the player vs. the boss (e.g. cross-check with the player's ability icon HUD changes) would catch this exact confusion.",
+    "When only one of five otherwise-identical rollouts diverges despite same retrieval/time-window, the fastest diagnosis path is to diff the clip_qa sub-agent outputs directly rather than the main agent's SQL/search steps, since retrieval was not the differentiator here."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the game mechanically confirms the golden shell effect is literally named '定身法/Immobilization Spell' (vs. a generic stagger/knockdown VFX) was not independently verified beyond the visual read shared by 4/5 rollouts and the reference answer; no HUD ability-icon confirmation was pulled."
+  ]
+}

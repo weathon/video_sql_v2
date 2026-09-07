@@ -1,0 +1,107 @@
+{
+  "question_id": "day-155",
+  "timeline": "day",
+  "index": 155,
+  "question": "Before the player's final challenge against the Yin Tiger (寅虎), what replacement did they make regarding Magic Treasure (法宝)?",
+  "reference_answer": "Replaced Fire Shield (避火罩) with Embroidered Needle (绣花针).",
+  "question_type": "State Change",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[68820, 68826]],
+  "clue_interval": [[68820, 68826]],
+  "scores": [5, 5, 5, 5, 0],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "Before the final 寅虎 challenge, they replaced the equipped magic treasure 辟火罩 with 绣花针. The menu briefly highlights 定风珠, but it was not equipped; the '已装备' status changes to 绣花针 at about 68824.5 seconds, just before the challenge at 68850 seconds.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(topic_facts/episodes/semantic_triples/event_steps) -> semantic_search(episodes/topic_facts/semantic_triples/visual_clips, refined) -> run_sql(episodes 68700-69120) -> run_sql(semantic_triples/topic_facts/object_states/visual_clips 68790-68860) -> read_skill(visual-verification) -> clip_qa(68820-68850) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 11, "what_happened": "Top semantic_search hit on topic_facts was a distractor: 'player approaches 寅虎 (tiger-headed demon) npc beside a glowing forge; menu lists 铸造,强化,挑战,离开' at 50160s -- a different NPC also named 寅虎 that is a blacksmith, not the boss fight."},
+        {"segment_file": "answer-segment-01.json", "item_index": 14, "what_happened": "Ran a targeted semantic_search for 'final challenge Yin Tiger' against event_steps and got a boss-fight-flavored hit near 69060-69090, correctly steering away from the 50160 forge scene."},
+        {"segment_file": "answer-segment-01.json", "item_index": 29-35, "what_happened": "Ran run_sql sweeps over 68700-69120 then narrowed to 68790-68860, surfacing topic_facts/visual_clips rows at exactly 68820 ('equipment/根器 menu: 定风珠, 绣花针') immediately followed by the 68850 boss-challenge dialogue ('快速/智谋/挑战/离开')."},
+        {"segment_file": "clip-7d170e0977c941d3af29dd7036a09b33-segment-00.json", "item_index": null, "what_happened": "clip_qa on 68820-68850 visually confirmed 辟火罩 (not 定风珠) had '已装备' status before being swapped to 绣花针 -- this direction/item name is NOT present in any stored text row, only recoverable visually."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed via sql that visual_clips/topic_facts text at 68820-68850 mentions only 定风珠 and 绣花针 (never 辟火罩); 辟火罩 is only visible in frames, matching what clip_qa reported."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "Before the final challenge against 寅虎, they replaced the equipped 辟火罩 with 绣花针 as their magic treasure (法宝). 定风珠 was only browsed. Visible around 68822-68825 seconds.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(multiple tables) -> run_sql(narrowing to ~68800-68860) -> clip_qa(~68820-68850) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": null, "what_happened": "Same overall pattern as rollout-0: avoided the 50160 forge-NPC distractor, narrowed via run_sql to the 68800s window, and used clip_qa there to visually confirm the 辟火罩->绣花针 swap direction."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same DB rows as rollout-0 confirmed by sql; answer matches reference exactly."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "在最终挑战寅虎前，玩家把已装备的法宝「辟火罩」换成了「绣花针」。画面中「定风珠」只是被查看，并未最终装备。",
+      "tool_call_sequence": "attempt-1 errored (see error_files) -> attempt-2: read_skill x4 -> semantic_search -> run_sql narrowing to 68800s window -> clip_qa(~68820-68850) -> submit",
+      "decisive_steps": [
+        {"segment_file": "attempt-2/answer-segment-01.json", "item_index": null, "what_happened": "attempt-1 failed with an execution error (see rollout-02/attempt-1/error.json); attempt-2 retried and followed the same successful pattern as rollout-0/1, landing on the correct 68820-68850 window and confirming via clip_qa."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Consistent with rollout-0/1 evidence; final answer matches reference."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "在最终挑战寅虎前，玩家将法宝「辟火罩」替换成了「绣花针」。证据显示：约68822秒装备页原先装备的是「辟火罩」，随后在法宝页选中「绣花针」（约68824秒），返回装备页后已装备「绣花针」（约68826秒）。",
+      "tool_call_sequence": "read_skill x4 -> semantic_search -> compaction (answer-segment-02) -> run_sql narrowing -> clip_qa(segment-00, ~68820) -> clip_qa(segment-01, follow-up confirm) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": null, "what_happened": "Used TWO clip_qa calls (unlike the other passing rollouts' one) to separately confirm the 'before' state (辟火罩 equipped) and the 'after' state (绣花针 equipped), giving the most granular/precise timestamps (68822/68824/68826) of any rollout."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Two independent visual checks converge on the same 辟火罩->绣花针 direction as rollout-0/1/2."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "他们没有更换法宝（法宝/符栏保持不变）。在挑战寅虎前实际切换的是装备：查看/换用了'青铜猴面'（面具）和'青铜纳压袍'（衣甲），随后才到寅虎处选择挑战（约50,130-50,160秒）。",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(topic_facts/event_steps/episodes/visual_clips) -> run_sql(episodes/object_states/topic_facts/semantic_triples over 68000-69200, the CORRECT window) -> run_sql(same 4 tables over 49800-50300, the WRONG/distractor window) -> semantic_search(episodes/topic_facts/visual_clips, broader) -> read_skill(visual-verification) -> clip_qa(50060-50160, WRONG window) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 11, "what_happened": "Top semantic_search hit was the same 50160 forge-NPC distractor row seen by other rollouts ('寅虎: item-upgrade interface with 威风兽面 and 青铜猴面'), but this rollout never issued a corrective search like rollout-0's 'final challenge Yin Tiger' query against event_steps."},
+        {"segment_file": "answer-segment-01.json", "item_index": 22, "what_happened": "run_sql over the CORRECT window 68000-69200 returned topic_facts row at exactly time_s=68820.0: 'equipment/根器 menu: 定风珠, 绣花针; ... approaches 翠云殿 shrine' immediately followed by the 68850.0 row describing the boss-challenge dialogue with 寅虎 (挑战 option) -- the actual clue was in hand but not pursued with clip_qa."},
+        {"segment_file": "answer-segment-01.json", "item_index": 29-32, "what_happened": "Instead pivoted to run_sql over 49800-50300 (the forge-NPC window) and treated that as the anchor for 'final challenge'."},
+        {"segment_file": "answer-segment-01.json", "item_index": 47, "what_happened": "clip_qa was launched only on 50060-50160 (wrong window); it correctly reported no 法宝 replacement happens there (only mask/armor browsing), and the agent trusted this negative visual result as the final answer without ever visually checking 68820-68850."}
+      ],
+      "failure_point": "Wrong time-window anchoring: conflated a distractor '寅虎' NPC encounter (blacksmith/forge scene at ~50160s, with menu options 铸造/强化/挑战/离开) with the actual final boss challenge (~68850s, dialogue options 快速/智谋/挑战/离开). The correct window's SQL evidence (68820 row mentioning 定风珠, 绣花针) was retrieved but not recognized as decisive and never visually verified with clip_qa; the agent verified the wrong window instead and submitted a confident negative answer.",
+      "evidence_checked": "Verified via sql that the run_sql query the agent itself issued over 68000-69200 already contained the topic_facts row at time_s=68820.0 naming 定风珠/绣花针 next to the 68850.0 challenge-dialogue row; the agent simply did not act on it."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "The clue interval 68820-68826 is well covered by episodes/topic_facts/semantic_triples/visual_clips rows (all four tables have a row at/around 68820-68850 mentioning 定风珠 and 绣花针 in an equipment/根器 menu, followed immediately by the 寅虎 boss-challenge dialogue at 68850). However, NONE of the stored text rows mention 辟火罩 (Fire Shield) by name anywhere in this window -- it is only visible in the video frames as the item marked '已装备' before the swap. This means the question is unanswerable from text/SQL/semantic_search alone; a correctly-windowed clip_qa call is mandatory to name the 'before' item and get the reference answer right. All 4 passing rollouts used clip_qa on (or very near) 68820-68850 for exactly this purpose; the failing rollout used clip_qa on a different, wrong window (50060-50160)."
+  },
+  "root_causes": [
+    "Duplicate/confusable entity name: the DB contains two distinct '寅虎'-labeled encounters -- a forge/blacksmith NPC scene at ~50160s (menu: 铸造/强化/挑战/离开) and the actual final boss battle at ~68850s (dialogue: 快速/智谋/挑战/离开). Semantic search over topic_facts/episodes surfaces the forge scene as the top-scoring hit in every rollout because its text explicitly starts with '寅虎:'.",
+    "Rollout-04 failed to issue a discriminating follow-up search (e.g. 'final challenge/boss battle' against event_steps, as rollout-0 did) to distinguish the forge NPC from the actual final challenge, so it anchored on the wrong window despite later retrieving the correct window's SQL rows.",
+    "Rollout-04 retrieved the decisive topic_facts row (time_s=68820, mentioning 定风珠/绣花针 in an equipment menu right before the 68850 boss-challenge dialogue) via its own run_sql call but did not recognize it as decisive and never launched clip_qa there; it instead trusted a clip_qa result from the wrong window as a negative answer.",
+    "The critical fact (avoided item was 辟火罩, not 定风珠) is not present in any stored text/SQL row in either window -- it exists only in video frames -- so success strictly required visually verifying the correct 68820-68850 window with clip_qa; verifying the wrong window (even correctly) produces a plausible-sounding but wrong conclusion."
+  ],
+  "what_worked": [
+    "4/5 rollouts issued a corrective/refined search step (searching event_steps or episodes specifically for 'final challenge'/boss-fight framing) that pulled them off the 50160 forge-NPC distractor and onto the correct ~68820-69090 boss-approach window.",
+    "All 4 passing rollouts narrowed with run_sql sweeps of decreasing window size around 68700-69120 before calling clip_qa, converging tightly on 68790-68860.",
+    "All 4 passing rollouts correctly used clip_qa (not just text) to determine the specific 'before' item (辟火罩), since it is absent from all stored text -- and correctly avoided misattributing the swap to 定风珠, which is only browsed/highlighted in the menu, not equipped."
+  ],
+  "transferable_lessons": [
+    "When a question names an entity/location (e.g. '寅虎') that could match multiple distinct occurrences in the DB, do not accept the single highest-scoring semantic_search hit as the target -- issue a second, differently-worded query anchored on the question's other qualifiers (here: 'final challenge', 'boss battle') to disambiguate before committing to a time window.",
+    "When run_sql over a broad time window returns a row that matches the question's key nouns (item names, menu labels) very literally, treat it as a strong candidate to visually verify with clip_qa even if it wasn't the top semantic-search hit -- don't let an earlier, superficially similar hit anchor the whole investigation.",
+    "For 'state change'/replacement questions where item names might only appear visually (e.g. an item marked '已装备' with no accompanying text description), clip_qa on the exact narrowed window is mandatory, not optional -- and it must be run on every plausible candidate window before concluding a negative ('no replacement occurred') answer.",
+    "A confident visual confirmation from clip_qa on the WRONG window (correctly reporting 'no change here') should not be treated as conclusive evidence that no change occurred anywhere else in the video; before submitting a negative answer, cross-check against any other still-unverified candidate window already surfaced by earlier SQL/search steps."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the memory-build pipeline could/should disambiguate the two '寅虎' entities (forge NPC vs. final boss) at ingestion time, e.g. via distinct entity IDs, to reduce this class of confusion at retrieval time.",
+    "Why rollout-04 chose to run_sql the wrong window (49800-50300) again in more detail immediately after already having queried the correct window (68000-69200) with no apparent trigger recognizing the 68820 row as significant -- not fully resolved from tool outputs alone since reasoning text is encrypted."
+  ]
+}

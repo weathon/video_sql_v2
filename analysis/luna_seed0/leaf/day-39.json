@@ -1,0 +1,100 @@
+{
+  "question_id": "day-39",
+  "timeline": "day",
+  "index": 39,
+  "question": "How many times did the player fight Red-Bottomed Horse Monkey (赤尻马猴) in total?",
+  "reference_answer": "3 times",
+  "question_type": "Counting",
+  "temporal_certificate": "Long",
+  "total_intervals": [[22170, 22230], [27787, 27890], [43150, 43276]],
+  "clue_interval": [[22170, 22230], [27787, 27890], [43150, 43276]],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "The player fought 赤尻马猴 once in total, at ~22,170-22,200s; the three matching event/fact rows are duplicate descriptions of that same fight.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps,'red-bottomed horse monkey fight') -> semantic_search(entities,'赤尻马猴') -> semantic_search(episodes,'player fights red-bottomed horse monkey enemy') -> semantic_search(topic_facts,'赤尻马猴 战斗') -> run_sql(event_chains name/summary LIKE '%赤尻马猴%') -> run_sql(event_steps 21000-23000) -> run_sql(COUNT distinct start_s for event_steps LIKE '%赤尻马猴%') -> run_sql(COUNT distinct time_s for topic_facts LIKE '%赤尻马猴%') -> run_sql(episodes 22140-22230) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 26, "what_happened": "run_sql COUNT(DISTINCT start_s) on event_steps LIKE '%赤尻马猴%' returns exactly 1 distinct start time (22170.0) across 3 rows -> agent correctly dedups the 3 duplicate chain-level rows down to 1 occurrence, but never queries beyond the exact literal string '赤尻马猴'"}
+      ],
+      "failure_point": "Every query (semantic_search and run_sql) was anchored on the literal name string 赤尻马猴 or its English gloss; no query used a generic descriptor ('ape boss fight', 'boss health bar red robes', 'monkey enemy encounter') or clip_qa to find fights where the boss is present but not named that way in text.",
+      "evidence_checked": "sql on entities/event_steps/topic_facts/semantic_triples/episodes/visual_clips confirms the exact string 赤尻马猴 (or 马猴) occurs in DB text at only two of the three clue windows (22170 and 43200); the 27787-27890 window has zero rows containing that string anywhere in the DB."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "The player fought 赤尻马猴 1 time. One encounter at 22,170-22,200s; three event-step records refer to that same interval and should be deduplicated.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps,entities,episodes) -> semantic_search(event_steps,'赤尻马猴 战斗 fight battle') -> run_sql(event_chains/event_steps joined, 21000-23000ish) -> run_sql(episodes 22100-22300) -> run_sql(event_step_evidence join) -> run_sql(entities LIKE '%赤尻%') -> run_sql(visual_clips 22100-22300) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 25, "what_happened": "run_sql on entities LIKE '%赤尻%' returns only entities:000629 with first_seen_s=last_seen_s=22170, frequency=1, reinforcing the (correct-for-that-row, incomplete-for-the-question) conclusion of a single occurrence"}
+      ],
+      "failure_point": "Same as rollout 0: all searches scoped to the exact boss name; the visual_clips query itself was restricted to the 22100-22300 window instead of scanning broadly for other boss-fight visual descriptions, so the 27787 and 43150 windows were never inspected.",
+      "evidence_checked": "Same DB queries as above."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "The player fought 赤尻马猴 once in total, at ~22,170-22,200s; duplicate event records refer to that same single interval.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps,episodes,entities,visual_clips all on '赤尻马猴'/English gloss) -> run_sql(episodes/event_steps/event_chains/entities all LIKE '%赤尻马猴%') -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 22, "what_happened": "run_sql on event_chains WHERE name/summary LIKE '%赤尻马猴%' returns only the chain covering 22140-22320 (the initial appearance chain), confirming to the agent no other chain mentions the name"}
+      ],
+      "failure_point": "Identical pattern: exclusively literal-name queries, no clip_qa, no broader semantic query.",
+      "evidence_checked": "Same DB queries."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "The player fought 赤尻马猴 once. Encounter at ~22,170-22,200s; later references are duplicate summaries/evidence for that same fight.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(entities,event_steps,episodes on name variants) -> run_sql(event_steps LEFT JOIN event_chains) -> run_sql(episodes 22140-22320) -> run_sql(event_steps for chain_row_id='event_chains:0000090') -> run_sql(event_chains/entities LIKE '%赤尻马猴%') -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": 24, "what_happened": "run_sql restricted to event_steps of chain_row_id='event_chains:0000090' (the chain anchored at 22170) only returns that chain's own steps, so it never surfaces the unrelated chains covering the 27787/43150 fights"}
+      ],
+      "failure_point": "Same narrow-name-only search pattern; additionally scoped one query to a single already-found chain_row_id, which structurally cannot discover other chains.",
+      "evidence_checked": "Same DB queries."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "The player fought 赤尻马猴 once in total, at ~22,170-22,200s; repeated entries at different summary levels refer to this same fight.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps,episodes,topic_facts,entities on name variants) -> run_sql(event_chains LIKE '%赤尻%') -> run_sql(event_steps JOIN event_chains) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": 20, "what_happened": "run_sql on event_chains LIKE '%赤尻%' returns only the one chain tied to 22140-22320, and the agent stops expanding search after this and the following join query"}
+      ],
+      "failure_point": "Shortest investigation of all 5 rollouts (only 2 run_sql calls after search), same literal-name-only pattern, no clip_qa.",
+      "evidence_checked": "Same DB queries."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "Interval 1 (22170-22230) is trivially retrievable: entities, event_steps, topic_facts, semantic_triples, visual_clips, and episodes(30sec/3min/1h/6h/video/scale) all contain the literal string '赤尻马猴' or its translation, and the entities table has exactly one row (entities:000629, frequency=1, first_seen=last_seen=22170) confirming only one *named* occurrence. Interval 3 (43150-43276, actually 43200-43380 in the 30sec captions) contains dialogue mentioning '马猴' ('马猴，为师所种杨柳心魔...') and a victory screen naming the defeated boss '赤髯龙马' (a different literal string from 赤尻马猴, red-bearded dragon-horse vs red-bottomed horse-monkey) -- this is retrievable via a '马猴' substring search but NOT via an exact '赤尻马猴' match, and its identity as 'the same monster' is a visual/narrative inference the agents never attempted (no clip_qa was called by any rollout). Interval 2 (27787-27890) is the hardest: the 30sec caption at 27780-27810 describes 'a large ape-like enemy with a spiky fur crown and red robes' in combat with no boss name given anywhere in text, and the entities table has no second row for this fight; recovering it would require either broad semantic search over visual_clips/episodes with a generic query ('ape boss fight temple courtyard') or a clip_qa call to visually confirm the enemy's identity across the whole ~22170-43380 chapter span."
+  },
+  "root_causes": [
+    "All 5 rollouts confined every semantic_search and run_sql query to the literal string 赤尻马猴 (or its direct English gloss); none broadened to generic descriptors ('ape boss fight', 'monkey boss health bar', 'boss encounter courtyard') that could have surfaced the un-named 27787 fight or the differently-named 43150 fight",
+    "None of the 5 rollouts ever called clip_qa, despite clip_qa being the tool best suited to visually confirm whether an un-named 'ape-like enemy' (27787) or a boss defeated under a different name '赤髯龙马' (43150) is the same monster as 赤尻马猴",
+    "The underlying memory DB itself only tags the monster by its literal name at the first appearance (entities table has a single row, frequency=1); the second and third fights are captured in the DB only as generic/differently-named descriptions, so exact-match and even close-paraphrase searches structurally cannot find them without visual verification",
+    "All rollouts stopped investigating as soon as SQL confirmed the exact-name rows dedup to a single time value (22170), treating that as proof of a single encounter rather than as proof that only one encounter was explicitly labeled"
+  ],
+  "what_worked": [
+    "Correct deduplication logic: all 5 rollouts correctly recognized that the 3 duplicate event_steps/topic_facts rows at 22170-22200 (from different chain hierarchy levels) represent one physical event, not three -- this is a legitimate and correct application of the counting-and-ordering skill",
+    "Consistent, methodical use of both semantic_search and run_sql to cross-check the same claim from multiple tables before submitting"
+  ],
+  "transferable_lessons": [
+    "For counting questions about a named entity, after the exact-name search returns fewer occurrences than the temporal_certificate/clue_intervals would imply, broaden to entity-agnostic visual/descriptive queries (enemy type, location, combat staging) rather than concluding the count is 'exact matches deduped'",
+    "Use clip_qa to visually verify enemy identity whenever a fight scene lacks an explicit boss-name string in the retrieved text, especially when a differently-named victory screen or generic 'ape-like/monkey-like enemy' description appears near other confirmed encounters with the same entity",
+    "A frequency=1 row in the entities table is evidence the entity was explicitly *named* once, not evidence the underlying event happened only once; treat entity table frequency as a lower bound, not the answer, for counting questions",
+    "When a question's clue_intervals span widely separated timestamps, deliberately issue at least one query per clue-interval-sized region (via episodes joined by time range) rather than only issuing entity-name-anchored queries, since the DB may describe recurring content differently at each occurrence"
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the 43150-43276 encounter is genuinely the same monster '赤尻马猴' later called '赤髯龙马' at defeat, or a narratively distinct boss that the reference-answer's 3 clue_intervals conflate -- this cannot be resolved from text alone and would need a clip_qa/frame check of that fight plus game-specific knowledge of Black Myth: Wukong's boss roster",
+    "Whether the reference answer '3 times' was itself derived from ground-truth video annotation that correctly identifies all three as the same boss, or is itself a counting artifact of the annotation pipeline"
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "question_id": "day-45",
+  "timeline": "day",
+  "index": 45,
+  "question": "How many times did the player challenge Yin Tiger in total before finally defeating it?",
+  "reference_answer": "6 times",
+  "question_type": "Counting",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[30869, 31026], [37166, 37225], [40414, 40497], [50176, 50280], [66189, 66269], [68869, 69071]],
+  "clue_interval": [[30869, 31026], [37166, 37225], [40414, 40497], [50176, 50280], [66189, 66269], [68869, 69071]],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "4 times total (30870, 50190, 66210 = failures; 68850-69050 = victory)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/episodes/entities) x3 -> run_sql(episodes/event_steps/topic_facts/visual_clips keyword '寅虎'/'yin tiger'/'challenge') x4 -> semantic_search(episodes/event_steps '寅虎') x2 -> run_sql(episodes/event_steps by time window ~30000-32000, ~49500-50550, ~65500-69350, ~68700-69200) x8 -> semantic_search(visual_clips) -> run_sql(event_chains) -> read_skill(visual-verification) -> clip_qa(68820-69060) -> clip_qa(30830-31030) -> clip_qa(50150-50300) -> clip_qa(66140-66300) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-04.json", "item_index": 31, "what_happened": "run_sql for episodes 30000-32000 finds the 30870 encounter (only window it discovered via generic keyword miss, recovered by manual time-window scan)"},
+        {"segment_file": "answer-segment-04.json", "item_index": 60, "what_happened": "clip_qa(68820-69060) confirms the final victory fight"},
+        {"segment_file": "answer-segment-04.json", "item_index": 63, "what_happened": "clip_qa(30830-31030), 64: clip_qa(50150-50300), 65: clip_qa(66140-66300) each confirm one failed challenge; agent never queried or clip_qa'd the 37166-37225 or 40414-40497 windows at all, so it only ever assembled 4 of the 6 encounters"}
+      ],
+      "failure_point": "Never discovered/visited the 37166-37225 and 40414-40497 clue windows; counted only the 4 encounters it found via keyword/entity search plus manual time-window scans around the other 4 known windows.",
+      "evidence_checked": "Confirmed via sql that literal '寅虎' text only appears in episode captions at 50160-50190 and 66150-66180; the 30870 and 68850 windows were found only by scanning nearby time ranges after topic/entity hints, not by name match; the 37166 and 40414 windows were never queried by any rollout."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "3 times total (50175 fail, 66156 fail, 68880 win)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/episodes/topic_facts/visual_clips) x4 -> semantic_search(episodes/event_steps/episodes/event_steps, incl '寅虎 挑战') x4 -> run_sql(episodes/event_chains/event_steps around 49800-51000, 68400-70500) x6 -> read_skill(visual-verification) -> clip_qa(50150-50320) -> clip_qa(68840-69080) -> clip_qa(69900-70080, wrong window) -> run_sql(episodes LIKE '%寅虎%') -> run_sql(episodes 66000-66800) -> clip_qa(66140-66300) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-04.json", "item_index": 61, "what_happened": "run_sql text LIKE '%寅虎%' over all episodes returns only the two literal-name windows (50160-50190, 66150-66180) plus rollups; agent used this as if it were a near-complete list of encounters and never expanded to entity-table synonyms"}
+      ],
+      "failure_point": "Relied on a literal '寅虎' text search that only surfaces 2 of 6 encounters, plus stumbled onto 68880 via time-window scan near the end; never checked 30869, 37166, 40414, so undercounted by half.",
+      "evidence_checked": "Same DB query as rollout 0 confirms the literal-text search ceiling of 2 exact hits."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "3 times total (50178 start, 66265 taunt, 68870 rematch)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/episodes/topic_facts/entities) x4 -> run_sql(episodes/event_steps/topic_facts around 49500-54000) x3 -> semantic_search(visual_clips/event_steps/episodes) x3 -> run_sql(episodes '寅虎'/'yin tiger', event_steps '寅虎') x2 -> run_sql(event_steps/episodes 66150-70500) x2 -> semantic_search(event_steps/topic_facts) x2 -> run_sql(event_steps/episodes 68800-70200) x2 -> run_sql(event_chains 65000-70500) -> run_sql(entities name LIKE '%虎%' OR tiger) -> read_skill(visual-verification) -> clip_qa(50150-50230) -> clip_qa(66150-66300) -> clip_qa(68850-69060) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-03.json", "item_index": 58, "what_happened": "run_sql over entities returns 'tiger-headed npc' at 37140-37170 and other tiger-headed variants, but the agent never followed up with a time-window query or clip_qa around 37140/40410; it also never checked the 30869 window at all"}
+      ],
+      "failure_point": "Entity search surfaced the full list of differently-named tiger-headed entities (including the 37140 one) but the agent did not act on the 37140/40410 rows and skipped 30869 entirely, converging on only the 3 windows it had already anchored on (50176, 66189, 68869).",
+      "evidence_checked": "Verified entities table row entities:000382 'tiger-headed npc' (37140-37170) was present in the tool output the agent received, i.e. evidence was retrieved but not acted upon."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "1 time total (single continuous fight at 68870-69050)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/topic_facts/episodes/entities) x4 -> semantic_search(event_steps/visual_clips/episodes/topic_facts, all n=50) x4 -> run_sql(episodes 68700-70500) -> run_sql(event_steps/event_chains join, 68xxx) -> read_skill(visual-verification) -> clip_qa(68840-69050) -> clip_qa(69050-69130) -> clip_qa(68850-69210) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-03.json", "item_index": 31, "what_happened": "run_sql only ever queries the 68700-70500 window; no time-window scan of 30000-68000 was ever performed despite semantic_search results presumably surfacing earlier hits (not drilled into)"}
+      ],
+      "failure_point": "Never explored any time window before 68700s at all -- narrowest exploration of the 5 rollouts, so it only ever saw the final victory fight and concluded there was a single challenge.",
+      "evidence_checked": "Confirmed via trace-list that this rollout's only run_sql time-window queries target 68700-70500; no queries touch 30000-68000."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "3 times total (first two attempts fail, third succeeds)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/episodes/topic_facts/visual_clips) x4 -> semantic_search(event_steps/episodes) x3 -> run_sql(episodes/event_chains/event_steps 68600-70400) x4 -> semantic_search(event_steps/episodes) x3 -> run_sql(episodes 30300-30660) -> read_skill(visual-verification) -> clip_qa(30850-31030) -> clip_qa(50150-50320) -> clip_qa(68840-68960) -> clip_qa(68900-69060) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-04.json", "item_index": 54, "what_happened": "clip_qa(30850-31030) and clip_qa(50150-50320) confirm two failed attempts, but the agent never located or checked 37166-37225, 40414-40497, or 66189-66269 windows"}
+      ],
+      "failure_point": "Found only 3 of the 6 windows (30869, 50176, 68869) and missed 37166, 40414, and 66189 entirely; final count therefore capped at 3.",
+      "evidence_checked": "trace-list confirms no run_sql or clip_qa call in this attempt ever targets the 37166, 40414, or 66189 ranges."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "Querying episodes for literal text '寅虎' returns matches only at the 50160-50190 and 66150-66180 windows (plus rolled-up 1h/3min/6h/video summaries that inherit those hits) -- i.e. only 2 of the 6 clue intervals are name-searchable. The entities table has a separate row per appearance with inconsistent naming across the 6 encounters: 30870 -> '虎-headed foe (tiger-headed armored enemy)', 37140 -> 'tiger-headed npc', 50160 -> '寅虎 (tiger-headed demon npc / smith)', 66150 -> 'monkey-like npc smith (寅虎)', 68850 -> 'tiger-headed boss (乌川 / 南虎)'. Raw 30sec episode captions at the 37166-37225 and 40414-40497 windows describe the boss generically as a 'bear-headed enemy' / 'large armored foe' / 'hulking bear-headed enemy' rather than tiger/寅虎, so keyword search on 'tiger'/'虎'/'寅虎' structurally cannot find those two windows; only a full linear time-range scan of the whole day timeline (which no rollout performed) or the entities table (which one rollout queried but did not act on for 37140s) could surface them."
+  },
+  "root_causes": [
+    "Fragmented/inconsistent entity naming across the 6 Yin Tiger encounters (different auto-generated labels each appearance: 宓虎, 虎-headed foe, tiger-headed npc, 寅虎, 乌川/南虎) breaks name-based semantic_search and run_sql keyword lookups, so at best only 2/6 windows are name-searchable directly.",
+    "Auto-generated 30sec episode captions at the 37166-37225 and 40414-40497 windows describe the recurring boss as a generic 'bear-headed'/'armored' enemy, never mentioning tiger or 寅虎, making those two encounters undiscoverable by any keyword or semantic query anchored on the boss's name.",
+    "None of the 5 rollouts performed an exhaustive linear scan of the whole day-timeline episodes table for the boss's occurrences; each anchored on whichever subset of windows its keyword/entity searches happened to surface, so counts varied 1/3/3/3/4 depending on how much of that subset was covered.",
+    "One rollout (rollout-2) did retrieve the entities row for the 37140s occurrence but never followed up with a targeted SQL/clip_qa check, so retrieved evidence went unused.",
+    "One rollout (rollout-3) restricted essentially all exploration to the final 68700-70500s window and never scanned earlier time ranges at all, producing the most severe undercount (1)."
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly used clip_qa to visually confirm each window they did find as a genuine Yin Tiger challenge attempt vs. a distractor menu/scene.",
+    "Rollout-0 achieved the best partial recall (4/6) by supplementing failed keyword searches with manual episode time-window scans around each hint it obtained.",
+    "Every rollout correctly identified the 68850-69071 window as the final, successful challenge."
+  ],
+  "transferable_lessons": [
+    "For counting questions about a recurring character/boss across a very long timeline, do not rely solely on name-based semantic_search/run_sql keyword matches -- auto-generated captions can label the same entity differently at each appearance (species/animal-head descriptors vary). Cross-check the entities table for all distinct row_ids that could plausibly be the same recurring character and follow up each one with a targeted time-window run_sql and clip_qa, even if the name string differs.",
+    "When only 2 of N expected occurrences are literally name-searchable, treat that as a strong signal to do a broader/coarser sweep (e.g. run_sql over 1h or 3min granularity episodes across the full day range, or semantic_search with generic terms like 'boss fight'/'challenge' rather than the specific name) instead of stopping once a plausible small set is found.",
+    "For 'how many times before finally X' counting questions, cross-validate the discovered count against the number of distinct semantic-search/entity hits before submitting -- if the agent found fewer than 4-5 distinct hint sources for a supposedly repeated event, that is itself evidence of incomplete retrieval.",
+    "Do not confine exploration to the time range near the final/decisive event; earlier occurrences of the same repeated pattern must be actively searched across the entire timeline, not assumed absent."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether a full linear scan of all 1h/3min granularity episode summaries across the whole day timeline (not attempted by any rollout) would have been sufficient to surface all 6 windows, or whether the underlying captions at 37166-37225 and 40414-40497 are ambiguous enough (bear-headed vs tiger-headed) that even a human skimming captions would struggle to attribute them to Yin Tiger without watching the actual clip.",
+    "Whether the reference answer's '6 times' itself double-counts any menu-browsing/re-entry into the challenge screen as a separate 'challenge' versus a single continuous fight, which could not be fully verified without frame-level inspection of all 6 windows."
+  ]
+}

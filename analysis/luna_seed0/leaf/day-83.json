@@ -1,0 +1,104 @@
+{
+  "question_id": "day-83",
+  "timeline": "day",
+  "index": 83,
+  "question": "Which of the following statements are correct? 1. The player obtains the food-and-drink item Pure Flask Willow Leaf in Chapter 1. 2. The player obtains the food-and-drink item Hundred-Flower Tassels upon completing Chapter 6. 3. The player obtains the food-and-drink item Tender Jade Lotus Root in Chapter 5. 4. The player obtains the food-and-drink item Trapped Dragon Whiskers in Chapter 3.",
+  "reference_answer": "2, 4",
+  "question_type": "Hallucination Detection",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[79616, 79631], [24060, 24070]],
+  "clue_interval": [[79616, 79631], [24060, 24070]],
+  "scores": [2, 3, 2, 2, 5],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 2,
+      "answer": "All four statements are correct: 1, 2, 3, and 4.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/topic_facts, mixed EN/CN queries) x~14 -> run_sql(entities/event_chains/topic_facts/episodes/event_steps LIKE queries) x~7 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 51, "what_happened": "semantic_search(topic_facts, '困龙须 trapped dragon whiskers') top hit is topic_facts:00000465 'the player acquires the talisman 固龙须 on a rocky shoreline' at 24060s -- a homophone-confused item (固龙须=talisman/equipment) that the agent nonetheless used to confirm statement 4 as chapter-3 (correct by luck, since the real food item 困龙须/囚龙须 also lands in chapter 3 at 29280-31440s)"},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 60, "what_happened": "submit_answer declares all 4 statements true despite no positive hit for '净瓶柳叶'(Pure Flask Willow Leaf) or a clean chapter-5 hit for Tender Jade Lotus Root -- weak/near-miss search results (e.g. 药王葫芦, 藕丝步云履 boots) were accepted as confirming evidence instead of being treated as non-matches"}
+      ],
+      "failure_point": "Hallucinated statements 1 and 3 as true from weak/irrelevant search hits instead of concluding absence of evidence = false; did not treat 'no clean match found' as a signal to mark the statement false.",
+      "evidence_checked": "sql on topic_facts/semantic_triples for 柳叶/净瓶/藕丝/龙须/百花 confirms no item named anything like '净瓶柳叶' or a chapter-5-specific 'Tender Jade Lotus Root' exists in the DB; 藕丝步云履 (an unrelated pair of boots) is the only 藕-adjacent hit."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 3,
+      "answer": "Only statement 4 is correct (Trapped Dragon Whiskers, Chapter 3).",
+      "tool_call_sequence": "read_skill -> semantic_search(entities/event_steps/topic_facts) x~9 -> run_sql(topic_facts LIKE CN terms, event_chains chapter names, topic_facts time-window 76000-84900) x~6 -> semantic_search(topic_facts CN item names incl '百花蕊','困龙须') x4 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 47, "what_happened": "run_sql time-window query on topic_facts 76000-84900 surfaces 'title card 第五回 日落红尘 appears; scene transitions to 第六章 未竟' at 76590s, correctly locating the Chapter 6 boundary"},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 50, "what_happened": "semantic_search(topic_facts, '百花蕊 food drink item obtained') returns topic_facts:00001783/00001782 'item/alchemy grid lists 百花糕, ...' and 'inventory items include ... 百花糕 ...' at 83700-83730s (inside Chapter 6, near the end of the run) directly in the top hits -- the agent had the correct evidence in hand but did not equate 百花糕 (Hundred-Flower Cake) with the English gloss 'Hundred-Flower Tassels' and rejected statement 2 as unsupported"}
+      ],
+      "failure_point": "Retrieved-but-misread: the exact DB row backing statement 2 (百花糕 at 83700-83730s, inside the correctly-identified Chapter 6 window) was surfaced but discounted because its Chinese item name did not literally match the English question text ('Tassels' vs 糕/'Cake').",
+      "evidence_checked": "Confirmed topic_facts:00001782/00001783 exist at 83700-83730s listing 百花糕 among chapter-6-era inventory items, and confirmed the 第六章 title-card fact at 76590s that this rollout itself found."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 2,
+      "answer": "Statements 1 and 4 are correct.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/topic_facts) x~17 -> run_sql(entities/event_chains) x~3 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "same pattern as rollout-0: accepted statement 1 (Pure Flask Willow Leaf, ch1) as true without a clean matching DB row, and rejected statement 2 despite chapter-6-era 百花糕 evidence being retrievable via the same searches other rollouts used"}
+      ],
+      "failure_point": "Same over-acceptance of statement 1 from weak evidence, plus same failure to connect 百花糕 to statement 2's 'Hundred-Flower Tassels'.",
+      "evidence_checked": "Same DB facts as rollout-0/1 apply (no clean '净瓶柳叶' hit; 百花糕 exists in chapter-6 window)."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 2,
+      "answer": "Statements 1 and 4 are correct.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(topic_facts/episodes) x~19 -> run_sql x~5 -> clip_qa(83640-83940, asks about '百花蕊 or similar') -> run_sql(episodes/topic_facts LIKE '%百花蕊%', 0 rows) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/clip-1bba737b5a45489385064c6b100cec5a-segment-00.json", "item_index": 57, "what_happened": "clip_qa is called on the correct time window (83640-83940s, which contains the true 83700-83730s evidence) but the question text asks about '百花蕊' (a name the agent invented/misremembered) instead of the DB's actual '百花糕'; the visual sub-agent correctly answers 'No' because 百花蕊 does not appear on screen, and the main agent follows up with a SQL LIKE '%百花蕊%' that (correctly) returns 0 rows, reinforcing the wrong conclusion that statement 2 is false"}
+      ],
+      "failure_point": "Right time window, wrong item-name string used both for the visual query and the follow-up SQL confirmation search -- a self-inflicted name-mismatch that turned a correct-window, correct-idea investigation into a false negative for statement 2. Statement 1 was also accepted without solid support (same as other low-scoring rollouts).",
+      "evidence_checked": "Verified clip_qa's target window (83640-83940) overlaps the real evidence window (83700-83730) and that the queried name '百花蕊' never appears in episodes/topic_facts, while '百花糕' does at 83700/83730s."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "Correct statements: 2 and 4.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(topic_facts/event_steps, EN queries per statement) x8 -> run_sql(entities/event_chains) x2 -> semantic_search(topic_facts, chapter+item combined queries) x4 -> run_sql(semantic_triples/episodes LIKE CN terms) x3 -> semantic_search(episodes, item acquisition) x4 -> semantic_search(visual_clips) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "the same 百花糕-at-83700-83730s and 困龙须/囚龙须-at-29280-31440s evidence rows were retrieved as in the other rollouts, but this rollout treated 百花糕 as the intended referent of 'Hundred-Flower Tassels' (a semantic/translation match rather than a literal-string match) and correctly withheld statement 1 for lack of any matching '净瓶柳叶' evidence and statement 3 for lack of a chapter-5-specific 'Tender Jade Lotus Root' row"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed the same underlying DB rows (百花糕 at 83700-83730s inside the 76590s+ Chapter-6 window; 困龙须/囚龙须 at 29280-31440s inside the ~21750-44580s Chapter-3 window) support exactly this answer."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "Ground truth was reconstructed by cross-referencing episodes/topic_facts/semantic_triples/event_chains: (1) chapter title cards found by text search give approximate boundaries Ch1 ~0-8200s, Ch2 ~8200-21750s, Ch3 ~21750-44580s, Ch4 ~44580-63150s, Ch5/Ch6 transition at 76590s ('第五回 日落红尘' / '第六章 未竟' title cards both fire in the same fact). (2) Statement 4's item is genuinely ambiguous in the source data: at 24060-24090s the game shows a *talisman* named 固龙须 (equipment, not food/drink) which is a near-homophone of the food item name in the question; the real food-and-drink 困龙须/囚龙须 (brewing/tea ingredient) appears separately at 29280s and 31440s. Both timestamps fall inside the Chapter-3 window, so statement 4 is true either way, but an agent that anchors on the 24060s 固龙须 hit is relying on the wrong entity for the right conclusion. (3) Statement 2's item is recorded in the DB as 百花糕 (Hundred-Flower Cake) at 83700-83730s, inside the Chapter-6 window (which starts at 76590s) and near the very end of the recording (~84912s), consistent with 'upon completing Chapter 6.' No DB row uses a string that literally means 'tassels'; the question's English gloss does not exactly match the transcribed Chinese item name, which is the single biggest cause of disagreement across rollouts. (4) No DB row anywhere supports statement 1 ('净瓶柳叶'/Pure Flask Willow Leaf in Chapter 1) or a chapter-5-specific 'Tender Jade Lotus Root' (statement 3); the closest matches (藕丝步云履 boots, 药王葫芦 gourd) are unrelated items that only share loose lexical/thematic overlap."
+  },
+  "root_causes": [
+    "Chinese-to-English item-name mismatch: the DB's transcribed item name 百花糕 (Hundred-Flower Cake) does not literally match the question's English gloss 'Hundred-Flower Tassels', causing 3 of 5 rollouts to either miss or actively reject the correct evidence for statement 2 even when it was retrieved in their own search results.",
+    "Homophone/near-duplicate item names in the source video (固龙须 talisman vs 困龙须/囚龙须 food item) create a trap for statement 4 that most rollouts sidestepped only because both items happen to fall in the same chapter window.",
+    "Systematic hallucination-detection failure on statements with no supporting evidence: 3 of 5 rollouts (scores 2,2,2) accepted statement 1 as true from weak, thematically-adjacent but non-matching search hits (e.g. 藕丝步云履 boots, 药王葫芦 gourd) instead of concluding 'no match found = statement false', which is the entire point of this Hallucination Detection question type.",
+    "In rollout-3, an invented/misremembered Chinese item name (百花蕊 instead of the DB's actual 百花糕) was used both for a targeted clip_qa call and a confirmatory SQL LIKE query; both correctly returned 'not found' for the wrong string, which the agent then used as false-negative evidence for statement 2 despite querying the exact right time window."
+  ],
+  "what_worked": [
+    "Rollout-4 ran the broadest set of both semantic_search (multiple tables, EN and CN queries) and run_sql LIKE-based lexical searches per statement, which surfaced the 百花糕 and 困龙须/囚龙须 rows that the other rollouts also found -- the differentiator was interpretation, not retrieval coverage.",
+    "Rollout-4 correctly applied a semantic (not literal-string) match between the DB's 百花糕 and the question's 'Hundred-Flower Tassels', and correctly withheld statements 1 and 3 given the total absence of any matching item in the DB.",
+    "Rollout-1's targeted run_sql time-window scan (topic_facts between 76000-84900s) correctly located the real Chapter-6 boundary via the '第六章 未竟' title-card fact, showing this is a discoverable, low-cost way to pin chapter windows precisely."
+  ],
+  "transferable_lessons": [
+    "For 'which statements are correct' Hallucination Detection questions, treat 'no clean matching item/fact found after a reasonably thorough search' as the default signal that a statement is FALSE, not as inconclusive; the low-scoring rollouts' shared failure was defaulting to 'true' on weak/adjacent hits.",
+    "When a DB item name and the question's English item name partially disagree (e.g. 百花糕 'cake' vs 'Tassels'), don't discard it outright -- corroborate with time/chapter alignment and category (food/drink vs equipment) before deciding it is or isn't the referent; a semantically-close single hit at the right time/chapter is stronger evidence than an exact-string-match search that returns nothing.",
+    "Before running clip_qa or a confirmatory SQL LIKE query on a specific item name, use the exact string already retrieved from prior searches rather than a re-guessed/transliterated variant; a query for the wrong string will legitimately return 'not found' and can flip a correct hypothesis into a wrong final answer.",
+    "Watch for homophone/near-duplicate item names in OCR'd game UI text (固龙须 talisman vs 困龙须/囚龙须 food item here); cross-check the item's category (food/drink vs equipment/talisman) against what the question asks, not just the surface string.",
+    "Chapter boundaries are best pinned via title-card facts ('第X回 ...' / '第X章 ...') in topic_facts/episodes rather than assumed event_chains bucket labels, which in this DB used inconsistent 'chapter' groupings (e.g. an event_chains row labeled '日落红尘' at 43200s actually referred to content well before the real Chapter 5 title card at 76590s)."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Whether the dataset's English item-name glosses (e.g. 'Hundred-Flower Tassels' for 百花糕) are a deliberate translation choice or a labeling inconsistency in the question-generation pipeline; if inconsistent, this single item is likely a recurring source of judge/agent disagreement across other questions referencing the same item.",
+    "Why the question's clue_intervals (79616-79631s and 24060-24070s) don't land exactly on the strongest supporting evidence rows (83700-83730s for statement 2, 29280s/31440s for statement 4) but instead land on the Chapter-6 approach and the 固龙须-talisman homophone respectively -- these clue windows may have been chosen for weaker/indirect reasons (temporal bracketing) rather than pointing straight at the decisive item facts."
+  ]
+}

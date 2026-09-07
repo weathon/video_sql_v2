@@ -1,0 +1,102 @@
+{
+  "question_id": "day-171",
+  "timeline": "day",
+  "index": 171,
+  "question": "Which of the following statements are correct? 1. When the player fights the final Boss in Chapter 5, the Destined One (天命人)'s Health attribute is 675 points 2. The button to summon the Somersault Cloud (筋斗云) is Down on the controller's directional pad 3. When challenging the Gold Armored Rhino (金甲犀), the player replaced the Magic Treasure (法宝) Banana Leaf Fan (芭蕉扇) with the Dingfeng Pearl (定风珠) 4. When challenging the Gold Armored Rhino (金甲犀), the key to use the Dingfeng Pearl (定风珠) is number key 4 5. When the player obtained the Gold Suozi Armor (锁子黄金甲), the character level was 92",
+  "reference_answer": "1, 2, 3",
+  "question_type": "Hallucination Detection",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[75087, 75121], [77537, 77544], [78010, 78016], [78467, 78481]],
+  "clue_interval": [[75087, 75121], [77537, 77544], [78010, 78016], [78467, 78481]],
+  "scores": [4, 4, 4, 5, 3],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 4,
+      "answer": "1,2,3,5 correct (5 wrong: judged level-92 armor claim as correct)",
+      "tool_call_sequence": "read_skill x6 -> semantic_search x4 -> run_sql x5 -> clip_qa(75080-75125,health) -> clip_qa(77515-77575,dpad) -> clip_qa(77990-78030,treasure) -> clip_qa(77575-77635,armor-level) -> semantic_search x3 -> clip_qa(78090-78390,key4) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-05.json", "item_index": 39, "what_happened": "clip_qa probed 77575-77635 (near the semantic_triples 'equipped 猴子黄金甲' snapshot at 77610) for the armor-level moment; visual agent read level 92 there and the answer accepted this as the 'obtained' moment for statement 5, which is actually a mid-menu browsing screen, not the true equip event."}
+      ],
+      "failure_point": "Statement 5 anchored on the wrong time window (77575-77635) instead of the true clue interval (78467-78481) where the armor is actually equipped and level is 93; statements 1-4 all correctly resolved.",
+      "evidence_checked": "Confirmed via frame at 77606-77611: item is being browsed (仝品 preview panel, '穿戴' unselected, level shown 92) not equipped. Confirmed via frame at 78474-78477: the armor shows '已穿戴' (equipped) with level 93."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 4,
+      "answer": "1,2,3,5 correct (5 wrong: same level-92 misattribution)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x5 -> run_sql x4 -> clip_qa(75080-75130,health) -> clip_qa(77580-77650,armor-level) -> clip_qa(77510-77560,dpad) -> clip_qa(77990-78420,treasure+key) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-04.json", "item_index": 34, "what_happened": "clip_qa probed 77580-77650 for 'the moment the player obtains or equips 锁子黄金甲', landing on the same mis-anchored browsing window as rollout 0 and returning level 92."}
+      ],
+      "failure_point": "Same as rollout 0: statement 5 resolved from the wrong time window (77580-77650) rather than the true clue interval (78467-78481).",
+      "evidence_checked": "Same DB/frame check as rollout 0 applies (same underlying window)."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 4,
+      "answer": "1,2,3,5 correct (5 wrong: level-92 misattribution)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x5 -> run_sql x5 -> clip_qa(77520-77580,dpad) -> clip_qa(77970-78030,treasure) -> clip_qa(78540-78570,level+items) -> semantic_search x3 -> clip_qa(75060-75120,health) -> clip_qa(77580-77640,armor-level) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-05.json", "item_index": 38, "what_happened": "clip_qa at 78540-78570 asked about level + treasure items (this window DOES overlap the true clue interval and could have surfaced level 93), but the question was phrased generically ('what level is shown') without tying it to the armor-obtain statement."},
+        {"segment_file": "answer-segment-05.json", "item_index": 46, "what_happened": "A later, explicitly leading clip_qa 'Is it level 92?' at 77580-77640 (the mis-anchored browsing window) returned level 92 and this became the answer used for statement 5, overriding/ignoring the earlier correct-window probe."}
+      ],
+      "failure_point": "Agent had already sampled the correct window (78540-78570) but re-anchored to the wrong window (77580-77640) with a leading yes/no question ('Is it level 92?') that biased the visual read toward confirming 92.",
+      "evidence_checked": "Same frame verification as rollout 0/1; also confirmed episode captions at 78480-78600 explicitly state 'a level-93 character status panel' overlapping the true clue interval."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "1,2,3 correct; 4 and 5 both correctly marked incorrect (level 93, not 92)",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x8 -> run_sql x3 -> clip_qa(77520-77580,dpad) -> clip_qa(78000-78030,treasure) -> clip_qa(78540-78570,level+items) -> clip_qa(83370-83430,health) -> clip_qa(83400-83520,health) -> clip_qa(78000-78030,key4) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-06.json", "item_index": 44, "what_happened": "clip_qa at 78540-78570 (inside/adjacent to the true clue interval 78467-78481) asked for character level and treasure list; visual agent correctly read level 93, leading the answer to mark statement 5 as false."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed via frame at 78474-78477 that the equip screen ('已穿戴') shows level 93, matching this rollout's reported evidence window and value."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 3,
+      "answer": "1,2,3,5 correct (5 wrong: level-92 misattribution, same failure as rollouts 0/1)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search many -> ... -> clip_qa(75060-75130,health) -> clip_qa(77570-77650,armor-level) -> clip_qa(77990-78040,treasure) -> clip_qa(78100-78180,key4) -> clip_qa(77510-77570,dpad) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-05.json", "item_index": 40, "what_happened": "clip_qa at 77570-77650 with leading question 'is it 92?' probed the same mis-anchored browsing window as rollouts 0/1, returning level 92 and confirming statement 5 as correct."}
+      ],
+      "failure_point": "Same time-window mis-anchoring as rollouts 0/1; additionally scored one point lower than rollouts 0-2 despite an equivalent answer (1,2,3,5), which appears to be judge scoring noise rather than a difference in retrieval quality -- the judge tool call is a bare numeric output with no visible rationale to distinguish it from the score-4 attempts.",
+      "evidence_checked": "Same frame verification as rollout 0/1; judge segment for this rollout inspected directly and shows only {\"score\":3} with no rationale text, confirming no additional error was penalized beyond statement 5."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "Statements 1-4 are cleanly retrievable: semantic_search/run_sql/clip_qa around 75087-75121 (health 675), 77537-77544 (D-pad down), and 78010-78016 (Dingfeng Pearl equip) all consistently and correctly resolve across all 5 rollouts. Statement 5's true evidence is retrievable but mislabeled in the DB: semantic_triples row semantic_triples:0001223 asserts 'player character equipped 猴子黄金甲' at snapshot_s=77610, but the frame at that time shows the item merely being previewed in the equipment grid (level 92, '穿戴' button, not '已穿戴'), i.e. this DB annotation is a misread of the video, not the actual equip event. The real equip event ('已穿戴') is at 78467-78481 (matching the question's clue_intervals), and the episode captions for 78450-78600 (episodes:30sec:002615/002616/002617/002618, episodes:3min:000436) explicitly describe 'a loot popup ... 猴子黄金甲 (monkey golden armor) ... 已穿戴' and 'a level-93 character status panel' -- the correct answer (level 93, not 92) is present in the episode-caption text but only surfaced when clip_qa was pointed at that window."
+  },
+  "root_causes": [
+    "Misleading semantic_triples annotation (snapshot_s=77610, 'equipped 猴子黄金甲') anchors 4 of 5 rollouts' clip_qa calls to a browsing/preview screen instead of the true equip moment at 78467-78481, causing them to read level 92 instead of the correct 93 and wrongly mark statement 5 as true.",
+    "Leading/closed clip_qa questions ('Is it level 92?') at the wrong time window bias the visual sub-agent toward confirming the queried value rather than reporting what is actually shown, compounding the wrong-window error (rollouts 0, 1, 4).",
+    "Rollout 2 sampled the correct window (78540-78570) but did not connect that read to the armor-level statement, and instead resolved statement 5 from a second, leading clip_qa at the wrong window -- a case of evidence retrieved but not used/misattributed.",
+    "Judge scoring shows some noise: rollout 4 scored 3 vs rollouts 0/1/2 scoring 4 despite functionally equivalent answers (all mark 1,2,3,5 correct, 4 incorrect); the judge tool call has no visible rationale to explain the one-point gap."
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly retrieved and confirmed statements 1 (health 675), 2 (D-pad down for 筋斗云), and 3 (定风珠 replacing 芭蕉扇) using clip_qa windows tightly matching the question's clue_intervals.",
+    "All 5 rollouts correctly identified statement 4 (number key 4) as false, correctly reading the controller-button prompts instead.",
+    "Rollout 3 is the only one that queried clip_qa at 78540-78570, inside/adjacent to the true clue interval for statement 5, and used an open-ended (non-leading) question, yielding the correct level-93 read and a perfect match with the reference answer."
+  ],
+  "transferable_lessons": [
+    "For Hallucination Detection questions with a specific per-statement clue_interval, verify each statement's clip_qa call actually targets that statement's own clue window rather than a nearby DB row that merely mentions the same entity -- entity-name matches (e.g. 'equipped X') can point to the wrong moment in time.",
+    "Treat single semantic_triples rows describing a state-change ('equipped', 'obtained') with suspicion when there is no explicit UI confirmation in the underlying caption; the episode captions ('已穿戴' vs a plain preview menu) are the more reliable ground truth and should be cross-checked before committing to a value.",
+    "Avoid leading yes/no clip_qa questions ('Is it level 92?') for numeric/verification statements; open-ended questions ('what level is shown?') resist confirmation bias and are more likely to surface a disconfirming reading.",
+    "When multiple clip_qa calls in the same rollout probe different windows for the same fact and disagree, prefer the window closest to the question's actual clue_interval over an earlier, more leading probe -- don't let a later leading re-check override an earlier correct read."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Why does rollout 4 score 3 instead of 4 despite an answer content pattern equivalent to rollouts 0/1/2? The judge tool call output is a bare score with no rationale, so this could not be resolved from the trace alone.",
+    "Is the semantic_triples row at snapshot_s=77610 ('equipped 猴子黄金甲') a systematic DB-build annotation error (visual model misreading a browsing screen as an equip action), or an isolated one-off? This was not checked against other similar 'equipped' triples in the DB."
+  ]
+}

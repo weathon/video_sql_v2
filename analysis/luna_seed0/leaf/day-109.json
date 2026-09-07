@@ -1,0 +1,104 @@
+{
+  "question_id": "day-109",
+  "timeline": "day",
+  "index": 109,
+  "question": "When collecting Luojia Fragrant Vine (落伽香藤) for the first and second time in the Flaming Mountains (火焰山), how many small monsters are there near the tree, respectively?",
+  "reference_answer": "4, 0",
+  "question_type": "Counting",
+  "temporal_certificate": "Long",
+  "total_intervals": [[64802, 64806], [75150, 75156]],
+  "clue_interval": [[64802, 64806], [75150, 75156]],
+  "scores": [3, 3, 2, 3, 3],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 3,
+      "answer": "0 small monsters each time (0, 0)",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(episodes/event_steps/visual_clips/entities) x4 -> run_sql(episodes LIKE 香藤) -> run_sql(episodes 30sec 58000-61000) -> run_sql(semantic_triples/visual_clips/event_steps around 58000-61000, wrong window) -> run_sql(event_steps 72000-77000) -> more semantic_search/run_sql widening search -> clip_qa(64770-64860) -> clip_qa(74790-74910) -> clip_qa(75090-75210) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-03.json", "item_index": 65, "what_happened": "clip_qa on 64770-64860 (correctly bracketing the real first-collection interval, item pickup at 64818s) asked to count monsters 'at the moment the player collects the item'; sub-agent zoomed only to the calm pickup-notification frame (~64816-64818s) and answered 0."},
+        {"segment_file": "clip-f1e954cccc4c4e23867b67435d92d573-segment-00.json", "item_index": 5, "what_happened": "clip-qa sub-agent sampled 64814-64819 at 4fps and cropped frames only around 64816/64818, entirely skipping 64802-64812 where the actual monster fight (4 small monsters, per ground-truth frames) takes place before the item is picked up."}
+      ],
+      "failure_point": "Question interpreted as 'monsters visible in the exact pickup-notification frame' instead of 'monsters near the tree during that collection encounter'; clip_qa never sampled the true clue window 64802-64806, which precedes the on-screen pickup text by ~12-16s.",
+      "evidence_checked": "Verified with memcli frame at 64802-64818s: frames at 64803-64809s show a large monster with an HP bar plus 3-4 distinct fiery small-monster silhouettes/spark bursts clustered at the base of the glowing-vine tree; frame at 64818s (pickup notification '落伽香藤' visible) is clean with 0 monsters, matching what the rollout's clip_qa saw."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 3,
+      "answer": "0 small monsters each time (0, 0)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search/run_sql (many, exploring 58000-85000s) -> clip_qa(64740-65040) -> clip_qa(70980-71250, wrong candidate) -> clip_qa(74600-74920) -> clip_qa(70950-71010) -> clip_qa(70080-70140) -> clip_qa(64800-66000, correct window) -> clip_qa x6 scanning 66000-75600 in 1200s chunks -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-14.json", "item_index": 96, "what_happened": "clip_qa on 64800-66000 explicitly asked to scan for every 落伽香藤 pickup notification; found exactly one at 64818.031s and counted monsters only 'at that moment' -> 0, again missing the 64802-64806 fight window that precedes the notification."},
+        {"segment_file": "answer-segment-14.json", "item_index": 106, "what_happened": "clip_qa on 74400-75600 (bracketing the real second collection at 75152s) similarly anchored on the notification instant and reported 0, which does match ground truth for the second occurrence."}
+      ],
+      "failure_point": "Same systematic error as rollout 0: agent and sub-agent treat 'the moment of collection' as the single pickup-notification frame, not the encounter window; this is consistent even though this rollout burned far more tool calls (16 clip_qa) chasing extraneous candidate windows (70980, 74600, 70080) before settling on the right ones.",
+      "evidence_checked": "Same frame evidence as rollout 0 confirms the 4 small monsters were present slightly before 64818s and were never sampled by this rollout's clip_qa either."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 2,
+      "answer": "0 small monsters each time; first collection reported at 67301.5s, second at 70780.0s",
+      "tool_call_sequence": "read_skill x6 -> semantic_search/run_sql (episodes/event_steps/visual_clips, windows 72000-76000 and 75000-76000) -> clip_qa(75140-75210) -> more semantic_search -> clip_qa(74580-75000) -> clip_qa(66000-72000) -> clip_qa x5 scanning 66000-72000 in 1200s chunks -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-07.json", "item_index": 50, "what_happened": "clip_qa(75140-75210) around the true second clue interval returned no monster/no clear collection description that satisfied the agent, so it abandoned this window."},
+        {"segment_file": "answer-segment-07.json", "item_index": 63, "what_happened": "clip_qa(66000-72000) 'find every time the player collects 落伽香藤' returned candidate hits inside that block, which the agent used to report first/second collection times of 67301.5s and 70780.0s -- neither corresponds to the true clue intervals (64802-64806, 75150-75156)."}
+      ],
+      "failure_point": "Never anchored the search on the correct first-occurrence window (~64800s) at all -- its run_sql/semantic_search calls jumped straight to 63000-76000+ and then 66000-72000, skipping the actual first collection near 64818s entirely; ended up answering about a different, likely non-canonical or mislabeled 'collection' event.",
+      "evidence_checked": "Ground-truth frames at 64802-64818s and 75150-75158s establish the real collection times; this rollout's reported times (67301.5s, 70780.0s) do not match either, so its whole temporal anchoring is wrong, independent of the monster-count question."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 3,
+      "answer": "4 small monsters first time, 1 small monster second time",
+      "tool_call_sequence": "read_skill x4 -> semantic_search/run_sql (episodes/topic_facts/visual_clips/entities/semantic_triples/event_steps) -> clip_qa(64800-64920, notification-instant framing, 0) -> clip_qa(64920-65100, 0) -> clip_qa(70300-70450, wrong candidate, chest not tree) -> clip_qa(64770-64830, broadened framing, 4) -> clip_qa(64920-65010, wrong window mislabeled 'second collection', 1) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-05.json", "item_index": 65, "what_happened": "clip_qa(64770-64830) re-asked with a broader instruction ('inspect the moments just before and during collection') and correctly found 4 small monsters near the tree, matching ground truth for the first occurrence."},
+        {"segment_file": "answer-segment-05.json", "item_index": 66, "what_happened": "clip_qa(64920-65010) was mislabeled by the agent as the 'second' collection despite being only ~100s after the first (64818s) and nowhere near the true second clue interval (75150-75156s); it found 1 fiery enemy there and the agent used that as its 'second time' answer, never actually visiting 75150s in this segment."}
+      ],
+      "failure_point": "Got the first count right by re-querying with a wider temporal framing (not just the pickup instant), but never located/verified the true second occurrence at 75150-75156s -- substituted a nearby, unrelated encounter as 'the second collection'.",
+      "evidence_checked": "Ground-truth frame at 75152s (second clue interval) shows a clean scene, 0 monsters, confirming the reference '0' for the second time and confirming this rollout's '1' is from an unrelated, mislocated interval."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 3,
+      "answer": "0 small monsters each time (0, 0)",
+      "tool_call_sequence": "read_skill x6 -> semantic_search/run_sql (episodes/event_steps/visual_clips/entities/semantic_triples, several windows) -> clip_qa(64770-64860) -> clip_qa(75120-75190) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 62, "what_happened": "clip_qa(64770-64860) correctly bracketed the first clue interval but was asked to count monsters 'at [the collection] moment' -> sub-agent again fixated on the pickup-notification instant (~64818s) and answered 0, missing the 64802-64806 fight."},
+        {"segment_file": "answer-segment-02.json", "item_index": 63, "what_happened": "clip_qa(75120-75190) correctly bracketed the second clue interval and answered 0, matching ground truth."}
+      ],
+      "failure_point": "Efficient retrieval (found both correct time windows quickly, only 2 clip_qa calls) but same systematic 'moment of pickup' framing caused it to miss the preceding fight for the first occurrence.",
+      "evidence_checked": "Same ground-truth frames as rollout 0/1: 4 monsters visible 64803-64809s, clean at 64818s pickup and at 75152s second pickup."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The memory DB (episodes/event_steps/visual_clips/semantic_triples) contains no text mentioning small monsters near the tree at either collection; text search for '落伽香藤'/'香藤' returns only unrelated rows or the pickup-adjacent episode text without monster detail, so this question is unanswerable from text alone and requires clip_qa. All 5 rollouts DID converge on run_sql/semantic_search producing the roughly correct 30-90s windows around at least one of the two true clue intervals (64800-64920s and/or 74400-75600s), so the DB is not the bottleneck for locating the general time region. The bottleneck is entirely in how clip_qa was instructed to define 'the moment of collection' and how far back it looked."
+  },
+  "root_causes": [
+    "Systematic mis-scoping of 'when collecting X' as the single frame where the on-screen item-pickup notification appears, rather than the whole collection encounter; the true clue interval (64802-64806) is ~12-16s before the notification frame (64818s) because the player first fights through 4 small monsters guarding the tree, then the pickup completes once the area is cleared. 4 of 5 rollouts (0,1,3-partial,4) hit this exact failure for the first occurrence.",
+    "When re-querying a broader window did surface the correct count (rollout 3, clip_qa on 64770-64830 -> 4), the agent then mislabeled a nearby but unrelated interval (64920-65010, ~100s after the first collection) as the 'second' occurrence instead of navigating to the true second clue interval at 75150-75156s, so it never checked the right place for the second count.",
+    "One rollout (2) never anchored on the correct first-occurrence time window at all, instead reporting collection events at 67301.5s and 70780.0s that don't match either clue interval, indicating its semantic_search/run_sql exploration drifted to unrelated tree/collect-flavored episodes without cross-checking the entity's actual (single, correct) first appearance near 64800s."
+  ],
+  "what_worked": [
+    "All rollouts correctly identified 火焰山/Flaming Mountains context and used semantic_search + run_sql to narrow toward plausible time windows containing '落伽香藤' or tree-collection events, despite the DB having no monster-count text for these events.",
+    "3 of 5 rollouts (0, 1, 4) correctly bracketed both true clue intervals (~64800-64920s and ~74400-75600s) with clip_qa calls, and correctly got the second count (0) right.",
+    "Rollout 3, by re-issuing clip_qa with an explicitly widened temporal framing ('inspect the moments just before and during collection' rather than 'at the collection moment'), successfully recovered the correct first count of 4, showing the sub-agent COULD see the monsters when the video window and prompt covered the pre-pickup fight."
+  ],
+  "transferable_lessons": [
+    "For 'how many X near Y when collecting Z' questions in this game-footage domain, treat the pickup-notification text overlay as the END of the encounter, not the query target: widen the clip_qa video window and prompt to explicitly search the ~10-20s leading up to the notification for combat/monster presence, not just the notification frame itself.",
+    "When a question says 'first and second time', after finding the first occurrence's true timestamp, don't accept the next nearby candidate as the second; explicitly search for the *next* text/entity mention of the exact item across the whole rest of the timeline (e.g. entities/semantic_triples/event_steps LIKE the item name ordered by start_s) before invoking clip_qa on a guessed second window, so as not to confuse a proximate unrelated encounter (e.g. 64920-65010s) with the true, temporally distant second occurrence (75150s).",
+    "If clip_qa returns 0 for a scene that intuitively should contain combat (e.g. a boss/monster HP bar or spark/attack VFX visible in nearby frames pulled during sampling), re-issue with a wider start_s margin and an instruction to scan the full lead-in period, not just the exact frame matching the query text overlay."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the reference '4' for the first occurrence should be interpreted strictly as 'monsters visible in the single frame right when the item is picked up' (in which case the reference itself would be inconsistent with what all 5 clip_qa calls observed at 64818s) or as 'monsters encountered during that collection episode' (which the ground-truth frames at 64802-64809s support); resolving this matters for whether the reference answer's intended framing matches what the judge is scoring against.",
+    "Whether the DB's episodes/event_steps text for 63000-66000s (never surfaced with an explicit monster-count description for 64802-64806s) could be enriched at ingestion time so this kind of fight-before-pickup detail is text-retrievable instead of requiring precise clip_qa windowing."
+  ]
+}

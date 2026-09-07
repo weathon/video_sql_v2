@@ -1,0 +1,109 @@
+{
+  "question_id": "day-145",
+  "timeline": "day",
+  "index": 145,
+  "question": "After defeating the Sui Vanguard, which attribute did the player choose to add points to in the Body cultivation stat allocation? 1. Max Health 2. Max Stamina 3. Critical Rate 4. Max Mana 5. Critical Damage 6. Defense 7. Four Calamities Resistance",
+  "reference_answer": "5",
+  "question_type": "Entity Recognition",
+  "temporal_certificate": "Short",
+  "total_intervals": [[75092, 75102]],
+  "clue_interval": [75092, 75102],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "6. Defense — the defense stat was the one increased (shown as +20).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps: 'defeating the Sui Vanguard boss') -> semantic_search(visual_clips) -> semantic_search(episodes: 'Sui Vanguard defeated') -> semantic_search(episodes: 'Sui Vanguard boss victory + body cultivation') -> semantic_search(visual_clips) -> semantic_search(visual_clips, chinese '虎先锋') -> read_skill(sql-schema) -> run_sql(episodes 20340-20760) -> clip_qa(20600-20670) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 13, "what_happened": "semantic_search(episodes, 'Sui Vanguard defeated') returned episodes:30sec:002482 at start_s=74460 (within ~600s of the true clue window 75092-75102), but this hit was not followed up."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 18, "what_happened": "A broader semantic_search 'Sui Vanguard boss victory followed by allocating body cultivation points' returned unrelated hits (65970s etc.), pulling the agent away from the 74460s lead."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 30, "what_happened": "clip_qa on 20600-20670 (near the Tiger Vanguard fight at ~20400s, the only DB entity literally named 'vanguard') reported the highlighted node as Defense; agent submitted that."}
+      ],
+      "failure_point": "Anchored on the only entity literally named 'vanguard' (Tiger Vanguard, ~18000-20670s) instead of the actual boss fight near 75060-75090s ('boss: molten rock-and-fire giant'), which is never called 'vanguard' anywhere in the DB text. A near-miss hit at 74460s was seen but not pursued.",
+      "evidence_checked": "Confirmed via sql that episodes/visual_clips/event_chains text near 73500-75300s never contains '先锋' or 'vanguard'; the boss is only described generically as 'boss (molten giant)' / 'boss: molten rock-and-fire giant'."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "2. Max stamina. After the Tiger Vanguard defeat, the player navigated to the 气力 (stamina) node in the body/foundation cultivation screen (around 18103s).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(visual_clips) -> semantic_search(episodes) -> read_skill(sql-schema) -> run_sql(episodes 20100-21000) -> run_sql(visual_clips 20100-21000) -> run_sql(event_steps+event_chains join) -> run_sql(entities LIKE vanguard/sui) -> run_sql(episodes 17600-18650) -> run_sql(visual_clips 17600-18650) -> run_sql(event_steps 17600-18650) -> semantic_search(episodes) -> clip_qa(18060-18120) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 26, "what_happened": "run_sql against entities WHERE name LIKE '%vanguard%' OR '%sui%' returned only 'tiger vanguard (虎先锋)'; no 'Sui Vanguard' entity exists in the DB, so the agent treated Tiger Vanguard as the intended boss."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 41, "what_happened": "clip_qa on 18060-18120 (post Tiger-Vanguard body cultivation menu) reported the highlighted node as max stamina (气力); agent submitted that."}
+      ],
+      "failure_point": "Entity-table lexical search for 'sui'/'vanguard' surfaced only the Tiger Vanguard entity because the true boss near 75060-75090s was never named 'vanguard' in the DB; agent committed to the wrong boss/scene entirely.",
+      "evidence_checked": "Verified entities table has only 4 rows matching 'vanguard'/'先锋', all for Tiger Vanguard (first_seen 11670-18030s); no entity or event_chain anywhere names a 'Sui Vanguard'."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. Max health. After defeating the Tiger Vanguard, the player selected the body-cultivation node that increases max health (最大生命上限), visible at about 18,081 seconds.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps) -> semantic_search(visual_clips) -> semantic_search(episodes: 'Sui Vanguard') -> semantic_search(topic_facts) -> semantic_search(visual_clips) -> semantic_search(episodes) -> semantic_search(visual_clips 'four calamities resistance') -> semantic_search(episodes) -> read_skill(sql-schema) -> run_sql(episodes LIKE sui/vanguard/body cultivation) -> run_sql(visual_clips LIKE) -> run_sql(event_steps LIKE) -> run_sql(entities LIKE) -> run_sql(episodes 20400-21000) -> run_sql(visual_clips 20400-21000) -> run_sql(event_steps 20400-21000) -> run_sql(episodes 18030-18240) -> run_sql(visual_clips 18030-18240) -> run_sql(event_steps 18030-18240) -> clip_qa(18060-18090) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-01.json", "item_index": 13, "what_happened": "semantic_search(episodes, 'Sui Vanguard') returned episodes:30sec:002482 at start_s=74460 as the top hit, i.e. the correct region was surfaced by the tool, but the agent's very next queries ('four calamities resistance', generic body-cultivation terms) diverted it and it never drilled into 74400-75300s."},
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-01.json", "item_index": 55, "what_happened": "clip_qa(18060-18090) on the Tiger Vanguard scene reported max health as the selected node; agent submitted that instead of investigating the earlier lead."}
+      ],
+      "failure_point": "The correct clue window was actually retrieved by semantic_search early on (episodes:30sec:002482, ~74460s) but was not pursued to completion; the agent instead exhaustively re-verified the wrong (Tiger Vanguard) scene via run_sql and clip_qa and submitted from there.",
+      "evidence_checked": "Same as rollout 0/1: confirmed no 'vanguard'/'先锋' text near 73500-75300s in episodes/visual_clips/event_steps; the near-miss hit at 74460s (episodes:30sec:002482) does fall inside the wider run of clips that ends at the true clue window (75090-75120s)."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "2. Max stamina (气力上限). After the Tiger/Sui Vanguard defeat, the body-cultivation menu at about 18,103 seconds shows the lightning-bolt stamina node with allocated points.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes) -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(visual_clips) -> read_skill(sql-schema) -> run_sql(episodes LIKE sui/vanguard/先锋/体质修行) -> run_sql(episodes 17900-19000) -> run_sql(event_steps+event_chains join 17900-18600) -> clip_qa(18055-18125) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 13, "what_happened": "semantic_search(event_steps, 'Sui Vanguard defeated and player chooses a stat upgrade') returned event_steps:00015985 at 63120s ('player opens 根基 panel and upgrades 攻击增幅 node in 体质修行 branch') — a third, different wrong candidate, never pursued."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 23, "what_happened": "run_sql full-text search over episodes for '%sui%' OR '%vanguard%' OR '先锋' OR '体质修行' matched only the whole-video/whole-day summary row and none of the fine-grained rows near 75090s, because that region's captions contain neither term; the agent fell back to the Tiger Vanguard window it already knew about."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 32, "what_happened": "clip_qa(18055-18125) on Tiger Vanguard's post-fight menu reported max stamina as chosen; agent submitted that."}
+      ],
+      "failure_point": "Same lexical/semantic gap as other rollouts: 'Sui Vanguard' has no textual anchor in the DB, LIKE-search over 'sui/vanguard/先锋/体质修行' failed to surface fine-grained rows near 75090s, and the agent defaulted to the well-documented Tiger Vanguard scene.",
+      "evidence_checked": "Confirmed the fine-grained episodes rows around 75000-75300s (checked separately) do not contain '先锋'/'vanguard' substrings, so this rollout's own LIKE query would not have matched them even had it scanned that range."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. Max health. In the body cultivation screen, the player selected and upgraded the heart node \"五脏坚固,\" whose description increases health/life limit (source around 50293-50305s).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes) -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(visual_clips) -> semantic_search(topic_facts) -> read_skill(sql-schema) -> run_sql(episodes LIKE vanguard/sui) -> run_sql(episodes LIKE 体质/加点/critical/health) -> run_sql(entities LIKE vanguard/sui) -> run_sql(visual_clips LIKE) -> run_sql(episodes 18000-19000) -> semantic_search(episodes: 'player chooses max health...') -> semantic_search(episodes: 'critical damage/defense/four calamities...') -> semantic_search(episodes, chinese terms '体质修行 加点 生命上限 暴击率 暴击伤害 防御 四灾抗性') -> semantic_search(visual_clips) -> run_sql(episodes 49700-50500) -> clip_qa(50280-50340) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 38, "what_happened": "A Chinese-keyword semantic_search over the exact stat names (体质修行 加点 生命上限 暴击率 暴击伤害 防御 四灾抗性) surfaced a THIRD, distinct body-cultivation scene at episodes:30sec:001676 (start_s=50280), different from both the Tiger Vanguard scene and the true 75090s scene."},
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 48, "what_happened": "clip_qa(50280-50340) reported max health ('五脏坚固') as the selected node there; agent submitted that."}
+      ],
+      "failure_point": "The DB apparently contains several near-identical 'defeat boss -> open body-cultivation menu' scenes scattered through the ~24h video (18100s, 20400s, 50290s, 75090s...); since 'Sui Vanguard' is never named anywhere, this rollout's keyword search landed on yet another wrong instance and never reached 75090s.",
+      "evidence_checked": "Confirmed via entities/run_sql that only Tiger Vanguard is named as a 'vanguard' entity; the 50280-50310s scene found here is unrelated to the clue interval and represents a different boss-defeat/allocation episode entirely."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The true clue window (75092-75102s, inside event_chains:0001962 'molten giant boss fight -> item collection -> volcanic combat -> red boy cutscene') is present and generically described in episodes/visual_clips/entities as 'boss (molten giant)' / 'boss: molten rock-and-fire giant', and the immediately-following body-cultivation menu browsing is captured in episodes text at 75060-75240s. However, the DB never contains the string 'Sui Vanguard', '先锋', or any proper name for this boss anywhere (checked episodes, visual_clips, event_steps, event_chains, entities within 73500-75300s and via global LIKE search). Two rollouts' semantic_search over episodes/event_steps for 'Sui Vanguard' actually surfaced a near-hit (episodes:30sec:002482 at 74460s, within ~600-1000s of the true window) but neither rollout followed up on it. Meanwhile the DB does contain an unrelated entity explicitly named 'tiger vanguard (虎先锋)' at ~11670-18030s with its own near-identical post-boss body-cultivation-allocation scene at ~18060-18120s, which strongly lexically/semantically matches the question's 'Vanguard' term and drew 3 of 5 rollouts. A third unrelated body-cultivation scene exists at ~50280-50310s that drew a 4th rollout. Manually inspecting frames at 75092-75102s (t75093-t75110) shows the player hovering/previewing several body-cultivation nodes (defense '皮肉粗糙', attack-damage '威能凶猛'/'攻势澎湃', four-calamities-resistance '四灾忍耐') without a clearly committed selection in that exact 10s window before moving to a different skill tree (武艺) at 75110s; no frame in the sampled range shows a critical-damage node being confirmed, so even a rollout that had located the correct scene would likely have needed a wider clip_qa window or finer-grained frame stepping to confirm 'critical damage' as the answer."
+  },
+  "root_causes": [
+    "The question's proper noun 'Sui Vanguard' has no lexical or entity anchor anywhere in the memory DB; the perception/captioning pipeline described this boss only generically ('boss (molten giant)'), never reading or transcribing its in-game name banner.",
+    "The DB contains an unrelated but strongly matching entity, 'Tiger Vanguard (虎先锋)', with its own visually similar post-boss body-cultivation-allocation scene; 3 of 5 rollouts converged on it purely because it is the only entity literally containing 'vanguard'.",
+    "The game apparently has multiple near-identical 'defeat boss -> open body-cultivation menu, hover several stat nodes' scenes scattered across the ~24h video (approx. 18100s, 20400s, 50290s, 75090s); with no way to disambiguate by boss name, agents effectively guessed among them based on whichever scene their search happened to surface first.",
+    "Two rollouts' semantic_search did surface a hit close to the true clue window (episodes:30sec:002482, 74460s) but neither rollout drilled into that lead before committing to a different, wrong scene.",
+    "No rollout ran a systematic sweep of ALL body-cultivation-allocation scenes in the video to cross-check which one immediately follows a distinctive boss/location context matching 'Sui'; each rollout stopped at the first plausible scene its search chain produced."
+  ],
+  "what_worked": [
+    "All rollouts correctly followed the general-retrieval / locating-time-intervals / semantic-search / visual-verification skill workflow and used clip_qa to visually read the stat name from the on-screen node description before submitting, rather than guessing blind.",
+    "Two rollouts (0, 2) did retrieve a semantic_search hit very close to the true clue window, showing the search machinery is capable of surfacing the right region when the query wording happens to align."
+  ],
+  "transferable_lessons": [
+    "When a question boss/entity name yields zero or only a loosely related entity-table match, treat that as a red flag that the DB's proper-noun coverage may be incomplete rather than assuming the best lexical match (e.g. 'Tiger Vanguard') is the intended entity.",
+    "When multiple visually similar candidate scenes exist for a templated in-game action (e.g. 'post-boss stat allocation'), enumerate ALL of them across the full timeline (via run_sql over event_chains/entities matching 'boss defeat' broadly) before committing, rather than stopping at the first clip_qa that returns a plausible-sounding answer.",
+    "Do not discard a semantic_search hit just because subsequent broader queries return more results elsewhere; when a specific-term query (e.g. containing the exact rare proper noun from the question) returns a hit, that hit deserves priority follow-up over generic-term hits.",
+    "For short temporal_certificate windows (~10s), a single clip_qa call spanning that exact window may catch the player still browsing/hovering multiple stat options rather than the moment of confirmation; widen the clip_qa window slightly around the clue interval and instruct clip_qa to identify the specific node with a confirmed/committed state (e.g. resource-point counter decreasing, 已参悟 status appearing) rather than just the currently-hovered tooltip."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Whether the correct answer (Critical Damage) is actually visible/confirmable within 75092-75102s or requires a slightly wider window; the sampled frames in that range show browsing of defense/attack-damage/four-calamities nodes but no clearly committed critical-damage selection.",
+    "Whether 'Sui Vanguard' is a translation/localization of a Chinese boss name that the perception pipeline captured under a different transliteration not searched here (e.g. '碎' or '隋'), which could mean the DB does have some latent text link that a more exhaustive keyword sweep might find.",
+    "Whether other, unexamined body-cultivation-allocation scenes exist elsewhere in the ~24h video beyond the 4 found here (18100s, 20400s, 50290s, 75090s), which would further support the 'ambiguous templated scene' explanation."
+  ]
+}

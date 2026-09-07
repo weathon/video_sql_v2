@@ -1,0 +1,106 @@
+{
+  "question_id": "day-117",
+  "timeline": "day",
+  "index": 117,
+  "question": "After the player is poisoned by Nine-Capped Lingzhi Guai (九叶灵芝精), what obvious change occurs to the body?",
+  "reference_answer": "Red lingzhi grow all over the body.",
+  "question_type": "State Change",
+  "temporal_certificate": "Short",
+  "total_intervals": [[71054, 71157]],
+  "clue_interval": [71054, 71157],
+  "scores": [0, 5, 0, 0, 5],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "Green haze/slime poison overlay, cited around 53987-54028s (frog-like boss fight)",
+      "tool_call_sequence": "read_skill x2 -> semantic_search(episodes/topic_facts) x4 -> semantic_search(episodes/semantic_triples) x4 [found correct 九叶灵芝精 hit at 71160 in semantic_triples] -> read_skill -> run_sql(episodes/triples/object_states/visual_clips BETWEEN 70800-71400) [confirmed correct window but judged it as 'just a loot notification'] -> semantic_search(episodes/visual_clips) x4 [generic 'poison body swells green' queries pulled in the toad-boss fight at 53900-54030] -> run_sql(object_states near 53900) x3 -> read_skill -> clip_qa(53960-54030) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 17, "what_happened": "semantic_search on semantic_triples for '九叶灵芝精' returned the correct row (semantic_triples:0001146, 71160s, 'loot notifications list 九叶灵芝草种子 and 九叶灵芝精 after defeating a quadruped enemy') as the top hit (score 0.638), i.e. the correct window was found."},
+        {"segment_file": "answer-segment-01.json", "item_index": 29, "what_happened": "run_sql confirmed the 70800-71400 window content, but the agent apparently did not treat the loot-drop text as the 'obvious body change' answer and kept searching."},
+        {"segment_file": "answer-segment-01.json", "item_index": 39, "what_happened": "semantic_search with generic query 'poisoned character body turns green or swells' returned episodes:30sec:001799 (53970-54000, a teal-green toad-like boss fight with 'green poison-effect marker' and 'spreading green gas cloud') as top hit -- an unrelated encounter that the agent then adopted as the answer window."},
+        {"segment_file": "answer-segment-01.json", "item_index": 56, "what_happened": "clip_qa was called on 53960-54030 (wrong window) and correctly described the green poison haze seen there, which the judge scored 0 against the red-lingzhi reference."}
+      ],
+      "failure_point": "Wrong time window: after finding the correct clue interval via a specific-keyword search, the agent abandoned it in favor of a generic 'poison body swells green' semantic search that surfaced a different, unrelated boss encounter (a toad-like enemy) with a superficially similar 'poison' visual, and never returned to verify the loot-drop window it had already located.",
+      "evidence_checked": "Queried episodes table directly: episodes:30sec:001799 (53970-54000) text confirms a teal-green toad-like boss fight with a 'green poison-effect marker' and 'spreading green gas cloud' -- a different monster from Nine-Capped Lingzhi Guai."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "Bright red mushroom/lingzhi growths sprout all over the player from head to legs, 71060-71118s",
+      "tool_call_sequence": "read_skill x2 -> semantic_search(episodes/topic_facts/semantic_triples/visual_clips) x4 -> semantic_search(episodes/object_states/visual_clips) x3 -> read_skill -> run_sql(UNION LIKE '%九叶灵芝%' OR '%灵芝精%' OR '%中毒%' OR '%poison%' across episodes/visual_clips/semantic_triples) -> read_skill -> clip_qa(71040-71280) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 25, "what_happened": "run_sql with a UNION LIKE search keeping the exact term '九叶灵芝' pulled every matching row across tables at once, including the correct episode/triple describing the loot-drop and quadruped-enemy defeat at ~71100-71160s, without diluting the query with generic 'poison' language that would surface distractor fights."},
+        {"segment_file": "answer-segment-01.json", "item_index": 30, "what_happened": "clip_qa on 71040-71280 correctly reported bright red mushroom/lingzhi growths sprouting over the player's body, matching the reference."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed episodes:30sec:002371 (71130-71160) explicitly names '九叶灵芝草种子' and '九叶灵芝精' as loot from defeating a quadruped enemy in this window, matching clue_interval [71054,71157]."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "Body swells/bloated, greenish sickly poison glow/haze with poison status icon",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/topic_facts/semantic_triples) x3 -> semantic_search(episodes/visual_clips/object_states) x3 [generic 'poison body swells/mushrooms' queries pulled toad-boss fight at 53900-54030 with low scores ~0.18] -> read_skill -> clip_qa(53900-54030) -> read_skill -> run_sql -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 17, "what_happened": "semantic_search on visual_clips for 'player poisoned, body visibly swells / turns green / develops mushrooms' returned the toad-boss clips (53970-54030) as top hits despite low absolute scores (~0.18), because no visual_clips/episodes text literally describes 'red mushroom growth on the body' for the correct window -- that fact only exists as a loot-notification line in episodes/semantic_triples."},
+        {"segment_file": "answer-segment-01.json", "item_index": 26, "what_happened": "clip_qa called on 53900-54030 (wrong window), correctly described green swelling/poison glow there, judged 0 against reference."}
+      ],
+      "failure_point": "Wrong time window: never issued a precise-keyword (九叶灵芝精) run_sql/LIKE search across all tables the way rollout-1/4 did; generic descriptive semantic queries were dominated by the visually salient toad-boss distractor.",
+      "evidence_checked": "Same distractor row episodes:30sec:001799 / visual_clips:001799-001800 confirmed unrelated toad-boss encounter."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "Body becomes blackened, covered in dark wet poison residue/slime",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/topic_facts/semantic_triples/visual_clips) x4 -> semantic_search(episodes/visual_clips/object_states) x4 [object_states search for 'player poisoned body obvious change' top-hit 'green poison-effect marker' at 53970-54000, score 0.65] -> clip_qa(53910-54030) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 12, "what_happened": "semantic_search on object_states for 'player poisoned body obvious change' returned object_states:0000513 'green poison-effect marker' (53970-54000) as the top hit (score 0.65), reinforcing the same toad-boss distractor window seen in rollouts 0 and 2."},
+        {"segment_file": "answer-segment-01.json", "item_index": 27, "what_happened": "clip_qa on 53910-54030 (wrong window) reported a blackened/slime-covered body -- a further misread of the same wrong scene, since even the correct 'green poison' reading of that scene from rollouts 0/2 differs from what rollout-3's clip_qa reported (black slime), suggesting some added misreading of the frame content on top of the wrong-window error."}
+      ],
+      "failure_point": "Wrong time window (same toad-boss distractor as rollouts 0 and 2), compounded by a visual misread of that wrong scene's poison color (black slime vs. green haze reported by other rollouts on the same clip).",
+      "evidence_checked": "Same distractor row confirmed as toad-boss teal/green poison scene, not black slime -- rollout-3's clip_qa answer diverges even from the other rollouts' description of the same wrong window, indicating an additional visual misread."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "Bright red mushroom/fungal growths sprout all over player and weapon, with green toxic burst/poison-status indicator, ~71056-71058s",
+      "tool_call_sequence": "read_skill x2 -> semantic_search(episodes) x4 -> read_skill -> run_sql x4 (various targeted queries) -> run_sql x3 -> semantic_search x4 -> run_sql x3 -> semantic_search x4 -> read_skill -> clip_qa -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": null, "what_happened": "Heavy use of run_sql across many tables (rather than relying solely on generic semantic_search) let the agent home in on the exact 九叶灵芝精 loot-drop/quadruped-enemy window near 71054-71157s before calling clip_qa there."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "clip_qa evidence_times_s (71056-71118) fall inside clue_interval [71054,71157]; answer matches reference (red lingzhi growths)."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "The fact is retrievable but only via an exact-keyword match: episodes:30sec:002371 / episodes:3min:000395 (71100-71160/71280) and semantic_triples:0001146 (71160s, score 0.638 for query '九叶灵芝精') explicitly name '九叶灵芝草种子' and '九叶灵芝精' as loot dropped after defeating a quadruped enemy in this window. No episodes/visual_clips row for this window literally describes 'red mushrooms growing on the body' in text -- that visual fact only surfaces via clip_qa inspecting the actual frames. Meanwhile a separate, unrelated toad-like boss encounter at 53900-54030s has episodes/visual_clips/object_states text explicitly describing a 'green poison-effect marker' and 'spreading green gas cloud', which scores highly (0.5-0.65) against generic 'poisoned body swells/turns green' semantic queries and acts as a strong distractor for any rollout that searches with generic poison-body language instead of the specific enemy name."
+  },
+  "root_causes": [
+    "Distractor collision: a separate toad-like boss fight at ~53900-54030s has DB text explicitly mentioning 'green poison-effect marker' and 'spreading poison gas', which out-competes the correct window in semantic_search when queries use generic phrasing like 'poisoned body swells/turns green' instead of the specific enemy name '九叶灵芝精'.",
+    "The correct window's textual evidence in the DB is indirect (a loot-notification line naming the item '九叶灵芝精', not a direct description of 'red mushrooms on body'), so only an exact keyword search (episodes/semantic_triples LIKE '%九叶灵芝%') reliably surfaces it; broader semantic embedding queries drift toward the more visually-explicit distractor.",
+    "Two of the three failing rollouts (0) actually located the correct window via a precise semantic_triples hit early on, but then abandoned it after a generic follow-up query returned the distractor with a higher-looking match, i.e. a failure to commit to/re-verify already-found correct evidence rather than a pure retrieval failure.",
+    "Rollout 3 additionally misread the wrong clip's visual content (reported black slime vs. the green haze reported by other rollouts on the same distractor window), compounding the wrong-window error with a visual misperception."
+  ],
+  "what_worked": [
+    "Rollouts 1 and 4 used precise, entity-name-anchored searches (run_sql LIKE '%九叶灵芝%' UNION across multiple tables, or repeated targeted run_sql) rather than relying on generic descriptive semantic_search queries, which let them converge on the correct 71054-71157s window without being pulled toward the distractor.",
+    "Once clip_qa was pointed at the correct window, it reliably and correctly identified the red lingzhi growths, showing the visual sub-agent itself is capable when given the right time range."
+  ],
+  "transferable_lessons": [
+    "When a question names a specific enemy/item (e.g. '九叶灵芝精'), keep that exact term in every follow-up search rather than switching to generic descriptive language ('poison', 'body swells', 'turns green') -- generic terms can match unrelated but visually similar encounters elsewhere in the video.",
+    "Prefer exact-keyword run_sql (LIKE) searches across all relevant tables in one shot when a named entity is available; this is more precise than iterative semantic_search with paraphrased queries once initial semantic hits are ambiguous.",
+    "If a specific-keyword search already returns a strong top hit (e.g. score 0.6+) for the exact entity, treat that as the authoritative window and verify it with clip_qa before exploring further, rather than continuing to search with looser language that can surface higher-scoring but unrelated distractors.",
+    "Cross-check clip_qa results against the entity named in the question (does the described scene actually involve that specific enemy/item?) before submitting, since a plausible-looking 'poison' visual in the wrong scene can still be self-consistent and convincing."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether rollout 0's abandonment of the correct 71054-71157 window (after finding it) was due to the agent explicitly judging the loot-notification text as insufficient evidence of a 'body change', or simply losing track of it amid many subsequent searches -- reasoning text is encrypted so this can't be confirmed from the trace directly.",
+    "Why rollout 3's clip_qa described black slime rather than the green haze/gas that rollouts 0 and 2 reported for the same 53900-54030 window -- possibly a different sub-window or frame sampling within clip_qa, not verified further here."
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "question_id": "day-40",
+  "timeline": "day",
+  "index": 40,
+  "question": "In the first fight against Red-Bottomed Horse Monkey (赤尻马猴), what is the sequence in which the player uses the skills: 1. Immobilize (定身术) 2. Rock Solid (铜头铁臂) 3. A Pluck of Many (分身术) 4. Spirit (精魄)",
+  "reference_answer": "1, 3, 4",
+  "question_type": "Temporal Reasoning",
+  "temporal_certificate": "Short",
+  "total_intervals": [[22174, 22238]],
+  "clue_interval": [22174, 22238],
+  "scores": [2, 3, 3, 1, 3],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 2,
+      "answer": "1 -> 3 -> 2 -> 4 (Immobilize ~22187s, Pluck of Many ~22191s, Rock Solid ~22218s, Spirit ~22222s)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/episodes/entities) x5 -> run_sql(episodes/visual_clips/event_steps/semantic_triples) x4 -> read_skill(visual-verification) -> clip_qa(22140-22230) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 13, "what_happened": "semantic_search over event_steps returns row event_steps:00000541 explicitly bounding the 赤尻马猴 fight to 22170.0-22200.0 ('boss 赤尻马猴 appears with health bar; player fights with staff and sword') -- the agent has the correct fight boundary in hand at this point."},
+        {"segment_file": "answer-segment-01.json", "item_index": 37, "what_happened": "clip_qa is called with start_s=22140, end_s=22230, i.e. a window that ignores the 22170-22200 boundary just retrieved and instead extends 30s past it into the next boss's territory."},
+        {"segment_file": "clip-d090e7f82bc2430996fec738a388a7df-segment-00.json", "item_index": null, "what_happened": "the visual sub-agent reports Rock Solid activation at ~22217.8s and Spirit at ~22222.4s inside the oversized window, with no cross-check of which boss name-card/health-bar is on screen at those timestamps, and folds them into the '赤尻马猴 fight' sequence."}
+      ],
+      "failure_point": "clip_qa window (22140-22230) not clipped to the agent's own retrieved 赤尻马猴 fight boundary (22170-22200), so a skill used against the next boss (大猿, appearing by ~22200-22205 per topic_facts/frames) was counted as part of the 赤尻马猴 fight, adding a spurious 4th step (Rock Solid) the judge does not credit.",
+      "evidence_checked": "topic_facts row at time_s=22200 ('boss 大猿 (great ape) appears with a damage value of -1600 on final blow'); event_chains row 'boss fights sequence (赤尻马猴 and 大猿)' 21600-25200 explicitly treats them as two distinct sequential bosses; frames at 22198s show 赤尻马猴's red name-card/health bar still on screen, frames at 22205s show a visually different, much larger boss mid-attack with the temple gate collapsing behind it."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 3,
+      "answer": "1 -> 3 -> 2 -> 4 (Immobilize ~22187s, Pluck of Many ~22191-22192s, Rock Solid ~22215.5-22216s, Spirit ~22222.3-22222.7s)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x3 -> run_sql x1 -> read_skill(visual-verification) -> clip_qa(~22150-22230) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": null, "what_happened": "same pattern as rollout 0: semantic_search/run_sql surface the 22170-22200 fight boundary, but clip_qa window still extends into the 大猿 encounter and the visual agent reports a 4th 'Rock Solid' activation there."}
+      ],
+      "failure_point": "same boundary-bleed as rollout 0: Rock Solid attributed to the 赤尻马猴 fight despite occurring after the boss transition around 22200-22205.",
+      "evidence_checked": "same DB/frame evidence as rollout 0 (shared ground truth)."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 3,
+      "answer": "1 -> 3 -> 2 -> 4 (Immobilize ~22187s, Pluck of Many ~22191s, Rock Solid ~22218-22219s, Spirit ~22222s)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x3 -> run_sql x1 -> read_skill(visual-verification) -> clip_qa(~22140-22230) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": null, "what_happened": "same clip_qa-window-too-wide pattern; visual agent again reports Rock Solid at ~22218-22219s (inside the 大猿 phase) and includes it in the answer."}
+      ],
+      "failure_point": "same boundary-bleed as rollouts 0/1.",
+      "evidence_checked": "same DB/frame evidence as rollout 0."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 1,
+      "answer": "1 -> 4 -> 3 -> 2 (Immobilize ~22189s, Spirit ~22190.4-22190.8s, Pluck of Many ~22191.2-22191.7s, Rock Solid ~22201.8-22202.4s)",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(event_steps/episodes/visual_clips/entities) x4 -> run_sql(episodes/visual_clips/event_steps/semantic_triples/object_states) x5 -> read_skill(visual-verification) -> clip_qa(22110-22230) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 13, "what_happened": "semantic_search(event_steps) again returns the 22170-22200 boundary row for 赤尻马猴."},
+        {"segment_file": "answer-segment-01.json", "item_index": 36, "what_happened": "clip_qa called with start_s=22110, end_s=22230 (even wider than the other rollouts); the visual sub-agent this time reports a completely different, internally-compressed order (Immobilize, then Spirit, then Pluck of Many, all within ~22189-22192s, then Rock Solid at ~22202s), inverting the relative order of Spirit and Pluck of Many that the other 4 rollouts agree on."}
+      ],
+      "failure_point": "two compounding failures: (a) same boundary-bleed (Rock Solid still folded in, now attributed to ~22202s, right at/after the boss transition), and (b) the visual sub-agent misread the fast, VFX-heavy fine-grained ordering of Immobilize/Spirit/Pluck-of-Many within a ~3s window, disagreeing with the other 4 independent clip_qa calls on the same footage -- evidence the visual QA is noisy at sub-5s granularity amid overlapping particle effects.",
+      "evidence_checked": "compared against the other 4 rollouts' independently-called clip_qa outputs on the same interval, which agree with each other (1,3,2,4) but disagree with rollout 3 (1,4,3,2); this rollout's read is the outlier."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 3,
+      "answer": "1 -> 3 -> 2 -> 4 (Immobilize ~22186.8s, Pluck of Many ~22190.0s, Rock Solid ~22220.0s, Spirit ~22222.5s)",
+      "tool_call_sequence": "read_skill x5+ -> semantic_search x3 -> run_sql -> read_skill(visual-verification) -> clip_qa(~22140-22230) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": null, "what_happened": "same pattern: clip_qa window extends past the 22170-22200 赤尻马猴 boundary and the visual agent reports Rock Solid at ~22220.0s, inside the 大猿 phase, folded into the answer."}
+      ],
+      "failure_point": "same boundary-bleed as rollouts 0/1/2.",
+      "evidence_checked": "same DB/frame evidence as rollout 0."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The DB and the agents' own tool calls give a clean fight boundary: event_steps row event_steps:00000541 (22170-22200) describes '赤尻马猴 appears with health bar; player fights with staff and sword', and topic_facts at time_s=22200 states 'boss 大猿 (great ape) appears with a damage value of -1600 on final blow'. event_chains explicitly names 'boss fights sequence (赤尻马猴 and 大猿)' as two distinct, sequential bosses, not one boss with a phase transition. Frames pulled directly from the source video confirm this visually: at t=22198s the on-screen boss name-card/health bar text still reads 赤尻马猴 with a partially depleted bar; by t=22205s the enemy on screen is visibly much larger, mid-attack, with a temple gate/scaffolding collapsing behind it -- a different combat beat consistent with the 大猿 encounter. The question's own clue_interval (22174-22238) spans across this boundary, which is misleading if taken as a literal search window: it covers part of the 大猿 fight too. So Immobilize, Pluck of Many, and Spirit (the 3 skills the reference credits) are retrievable within the true 赤尻马猴 window (roughly 22174-22200), but Rock Solid, which all clip_qa calls detect at ~22201.8-22220s, sits at or after the boss transition and is therefore correctly excluded by the reference answer."
+  },
+  "root_causes": [
+    "clip_qa window not clipped to the fight boundary the agent's own semantic_search/run_sql calls already surfaced (event_steps row bounding 赤尻马猴 to 22170-22200); every rollout requested a wider window (22110/22140-22230) that bleeds ~30s into the next boss encounter (大猿).",
+    "The visual sub-agent (clip_qa) identifies skill activations purely from visible VFX/animation cues and never checks the on-screen boss name-card/health-bar label to confirm which boss is being fought at each timestamp, so an activation used against 大猿 gets silently attributed to the 赤尻马猴 fight.",
+    "In rollout 3, the visual sub-agent additionally misordered the tightly-clustered early activations (Immobilize/Pluck of Many/Spirit all within ~3s of each other), showing that clip_qa's frame-level judgment is not reliably precise at sub-5-second granularity when multiple bright particle-effect skills overlap.",
+    "The question's clue_interval (22174-22238) itself straddles the true fight boundary (~22200), which may have primed agents to treat the full span as one continuous 'first fight' rather than checking where 赤尻马猴 is actually defeated."
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly used semantic_search/run_sql to locate the general time region (~22170-22230) and correctly identified the relative order of the 3 in-scope skills (Immobilize before Pluck of Many before Spirit) in 4 of 5 rollouts, matching the reference's 1,3,4 ordering exactly aside from the extra Rock Solid step.",
+    "The retrieval agents consistently escalated to clip_qa for this fine-grained visual-sequencing question rather than trying to answer from text captions alone, which is the right tool choice for this question type.",
+    "4 of 5 independent clip_qa calls (rollouts 0,1,2,4) agreed with each other on both the presence and rough order of a 4th 'Rock Solid' activation, showing the visual read of that specific event was reproducible even though it was ultimately out of scope for the question."
+  ],
+  "transferable_lessons": [
+    "When a semantic_search/run_sql call returns an explicit start/end boundary for the entity/event named in the question (e.g. 'boss 赤尻马猴 appears ... 22170-22200'), clip the clip_qa window to that boundary rather than padding it generously; padding risks pulling in the next event and silently changes the answer's scope.",
+    "For 'in the Nth fight against X' or 'first encounter with X' questions, verify where X's encounter actually ends (boss defeated / boss name-card disappears / next boss's name-card appears) before treating a later timestamp as still part of that encounter -- especially when consecutive boss fights are chained back-to-back in the source footage.",
+    "When asking clip_qa to identify skill/action activations near a scene transition, explicitly instruct it to also report which boss/enemy is on screen (via the name-card or health-bar label) at each activation timestamp, so activations against a different target can be filtered out downstream.",
+    "Treat single clip_qa calls as somewhat noisy for sub-5-second ordering among visually similar bursts (rollout 3 disagreed with the other 4 on the sub-order of 3 skills packed into ~3 seconds); for fine temporal-ordering questions, consider a tighter, more targeted clip_qa window per candidate activation, or a second confirmatory call, rather than one wide-window call covering the whole fight."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the exact game mechanic is that 赤尻马猴 and 大猿 are strictly two separate boss encounters (as the DB's event_chains table labels them) or whether 赤尻马猴 could transform into 大猿 as a phase change within the same continuous fight -- if the latter were true, the reference answer excluding Rock Solid would need a different explanation (e.g. Rock Solid simply never being activated at all, only equipped/shown in the HUD, as several rollouts themselves flagged as a distinction to watch for).",
+    "Exact source-video timestamp at which 赤尻马猴 is defeated (health bar hits zero) was not directly observed in a frame; the 22198-vs-22205 frame comparison establishes the transition happened somewhere in that ~7s window but not the precise second."
+  ]
+}

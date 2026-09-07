@@ -1,0 +1,105 @@
+{
+  "question_id": "month-173",
+  "timeline": "month",
+  "index": 173,
+  "question": "During the streamer's Mongolia trip, in the mountains, after entering a Mongolian yurt and interacting with an eagle, the streamer sat back on the chair and tasted many Mongolian foods. What is the sequence of the foods? 1. Mutton soup; 2. Beef pie; 3. Steamed lamb; 4. Mutton dumplings; 5. Sheep head; 6. Bone marrow; 7. Steamed mutton.",
+  "reference_answer": "3-6-5-1-4-2-7",
+  "question_type": "Temporal Reasoning",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[354417, 355277]],
+  "clue_interval": [{"video_id": "22", "intervals": [[14793, 15653]]}],
+  "scores": [1, 3, 1, 3, 2],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 1,
+      "answer": "6-5-1-4-2-7-3 (bone marrow, sheep head, mutton soup, mutton dumplings, beef pie, steamed mutton, steamed lamb)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes/visual_clips/event_steps) -> run_sql(episodes 354384-355344) -> semantic_search x3 -> run_sql(event_steps join event_chains) -> read_skill(visual-verification) -> submit_answer [no clip_qa]",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 20, "what_happened": "run_sql pulled all 30s episode captions 354384-355344; caption for 354474-354504 ('tearing into a large piece of meat on the bone... jokes if it's a bone or marrow') was read together with the next caption (354504-354534, 'bone marrow beef soup') and both were folded into one 'bone marrow' event placed first."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 36, "what_happened": "submit_answer without ever calling clip_qa to visually disambiguate the two adjacent meat-on-bone scenes."}
+      ],
+      "failure_point": "Anchored on the literal keyword 'bone marrow' in the first caption chunk and never separated the hand-torn meat-on-bone shot (candidate steamed lamb) from the spooned bone-marrow-soup shot; put 'steamed lamb' last where the explicit phrase 'steamed lamb' happens to appear in the transcript (355074-355104).",
+      "evidence_checked": "Read episodes/visual_clips captions 354354-355374 myself; the only literal occurrence of 'steamed lamb' in the captions is at 355074-355104, a retrospective comparison ('compares the steamed lamb to a version he tried in australia'), not a new dish being served."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 3,
+      "answer": "6-5-3-1-4-2-7 (bone marrow, sheep head, steamed lamb, mutton soup, mutton dumplings, beef pie, steamed mutton)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4(event_steps/visual_clips/topic_facts) -> run_sql(episodes) -> run_sql(event_steps join) -> run_sql(topic_facts LIKE lamb/mutton) -> semantic_search x3 -> read_skill(visual-verification) -> clip_qa(354474-355134) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/clip-9b474b84b78742f980a8d4babbb59061-segment-00.json", "item_index": 10, "what_happened": "clip_qa sampled frames at 0.05-0.2fps over 354474-355134 and itself labeled the very first meat-on-bone shot (354474-354554) as 'Bone marrow', then separately labeled the platter-meat scene at 354624-354714 as 'the earlier steamed lamb meat platter' -- i.e. it placed steamed lamb third rather than first, moving it closer to (but not matching) the reference position."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 44, "what_happened": "submit_answer used the clip_qa ordering verbatim, landing on 6-5-3-1-4-2-7, one transposition away from the reference's 3-6-5-1-4-2-7 (steamed lamb still placed after bone marrow+sheep head instead of first)."}
+      ],
+      "failure_point": "Visual sub-agent moved steamed lamb earlier than the other rollouts but still did not reconsider that the very first meat-on-bone shot (which it kept calling 'bone marrow') could itself be the steamed lamb dish; it kept the caption's 'bone or marrow' joke as ground truth for item identity.",
+      "evidence_checked": "Compared clip_qa's frame-level answer text against the raw captions; the clip_qa reasoning about the boundary between 'steamed lamb platter' and 'steamed mutton hot-pot' matches the captions closely but the very first segment (354474-354504) was never questioned as being the steamed-lamb dish rather than bone marrow."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 1,
+      "answer": "6-5-1-4-2-7-3 (bone marrow, sheep head, mutton soup, mutton dumplings, beef pie, steamed mutton, steamed lamb)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4(episodes/event_steps/visual_clips) -> run_sql(episodes wide window) -> semantic_search x3 -> run_sql(episodes by row_id) -> semantic_search x3(topic_facts/event_steps) -> read_skill(visual-verification) -> clip_qa(355014-355134) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/clip-6c6e1a62934941a580f356ed5ed346d2-segment-00.json", "item_index": null, "what_happened": "clip_qa was scoped only to 355014-355134 (the late 'hot-cook'/steamed-lamb-comparison window) to disambiguate steamed mutton vs steamed lamb ordering there, not to check the early 354474-354504 meat-on-bone scene, so it could not discover the earlier steamed-lamb dish."},
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-01.json", "item_index": 48, "what_happened": "submit_answer kept bone marrow first and steamed lamb last, same as rollout 0."}
+      ],
+      "failure_point": "Same as rollout 0: the narrow, late-window clip_qa call could only resolve the steamed-mutton/steamed-lamb ordering within 355014-355134 and never revisited the 354474-354504 ambiguity, so the answer inherited the same first-item misattribution.",
+      "evidence_checked": "Confirmed clip_qa's query text targeted only the late window; no tool call in this rollout touches 354474-354504 beyond the initial bulk run_sql that already folded it into 'bone marrow'."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 3,
+      "answer": "6-5-1-4-2-7-3 (identical sequence to rollout 0)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x3(episodes/event_steps/visual_clips) -> run_sql(event_steps join event_chains) -> run_sql(episodes 30sec) -> run_sql(topic_facts) -> semantic_search x2(episodes) -> run_sql(episodes 355044-355134) -> semantic_search(episodes) -> submit_answer [no clip_qa]",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": 37, "what_happened": "submit_answer with the exact same food-order string '6 → 5 → 1 → 4 → 2 → 7 → 3' as rollout 0's submission."}
+      ],
+      "failure_point": "Same retrieval failure as rollout 0 (bone marrow first, steamed lamb last) -- the answer text is byte-for-byte the same ordering as rollout 0's, yet the judge scored rollout 0 a 1 and this one a 3. This is judge-scoring inconsistency (LLM-judge non-determinism on an ordering task), not a difference in retrieval quality or answer content.",
+      "evidence_checked": "Directly diffed rollout-00 candidate_answer against rollout-03 candidate_answer in their judge segment inputs: both are '6 → 5 → 1 → 4 → 2 → 7 → 3' verbatim, but submit_judgment returned {\"score\":1} for rollout 0 and {\"score\":3} for rollout 3 on effectively the same input."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 2,
+      "answer": "6-5-7-1-4-2-3 (bone marrow, sheep head, steamed mutton, mutton soup, mutton dumplings, beef pie, steamed lamb)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x3(visual_clips/event_steps) -> run_sql(episodes) -> semantic_search x2(episodes) -> run_sql(topic_facts LIKE mutton/dumpling) -> read_skill(visual-verification) -> clip_qa(354474-355104) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 36, "what_happened": "clip_qa over 354474-355104 was asked to determine chronological tasting order; its answer additionally swapped steamed mutton (7) ahead of mutton soup/dumplings/beef pie, a further mis-ordering beyond the shared bone-marrow-first error."},
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 39, "what_happened": "submit_answer used clip_qa's order verbatim, producing the most different (and lowest-scoring among clip_qa-using rollouts) sequence."}
+      ],
+      "failure_point": "Same bone-marrow-first root cause as all rollouts, plus an additional clip_qa mis-ordering that moved steamed mutton (7) earlier than mutton soup/dumplings/beef pie, which the caption text places clearly after them (355044-355074 vs 354744-354924).",
+      "evidence_checked": "Compared clip_qa's stated timestamps for steamed mutton (~354690s per its answer) against the actual caption evidence for the 'hot-cook' dish, which is at 355044-355074 -- clip_qa's frame sampling misattributed an earlier scene as steamed mutton."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "All seven foods are present in the episodes/visual_clips 30-second captions inside 354417-355277 and are trivially found by semantic_search/run_sql over that window (every rollout retrieved the full text). What is NOT explicitly labeled anywhere in the captions is which dish the very first meat-on-bone scene (354474-354504, 'tearing into a large piece of meat on the bone... jokes if it's a bone or marrow') actually is. The only literal string match for 'steamed lamb' in the captions is at 355074-355104, a retrospective comparison line ('compares the steamed lamb to a version he tried in australia'), not a new-dish serving. The literal string 'bone marrow' only appears at 354504-354534 ('bone marrow beef soup'), a distinct bowl-and-spoon shot immediately after the meat-on-bone shot. The reference order (steamed lamb first, bone marrow second) implies the meat-on-bone-by-hand shot at 354474-354504 IS the steamed lamb dish and the bone-marrow soup is a separate, second dish -- a reading none of the 5 rollouts (nor their clip_qa calls) produced, because both the joke dialogue and the literal keyword co-occur in that first shot and none of the agents questioned that link."
+  },
+  "root_causes": [
+    "Systematic keyword/dialogue anchoring: the caption's 'is it a bone or marrow?' joke at the very first food shot (354474-354504) was taken at face value as identifying that dish as 'bone marrow', when the reference intends this shot to be 'steamed lamb' and treats the subsequent soup-bowl shot (354504-354534) as the actual bone marrow dish. All 5 rollouts made this same substitution independently, including all 3 rollouts that used clip_qa.",
+    "clip_qa sub-agent calls were scoped too narrowly or accepted the same caption-driven labeling as the text agent, so they reinforced rather than corrected the bone-marrow-first error; only rollout 1's clip_qa questioned the boundary between the 'steamed lamb platter' and 'steamed mutton hot-pot', moving steamed lamb from last to third (closer to reference position 1 but still wrong).",
+    "Judge (LLM-as-judge) scoring is inconsistent: rollout 0 and rollout 3 submitted the byte-identical wrong sequence '6-5-1-4-2-7-3' yet were scored 1 and 3 respectively by independent judge calls, showing the low scores are partly attributable to judge noise, not purely to answer quality.",
+    "The reference answer's premise (steamed lamb tasted before any other food, ahead of bone marrow) is not stated anywhere explicitly in the text captions and can only be inferred by assuming the un-narrated first meat-on-bone shot is 'steamed lamb'; this makes the question's ground truth itself dependent on an unstated visual/domain inference that the retrieval-first pipeline (captions plus limited clip_qa) was not set up to make reliably."
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly located the 354417-355277 evidence window via semantic_search/run_sql and retrieved the complete relevant caption text -- retrieval coverage was not the bottleneck.",
+    "All 5 rollouts correctly ordered the middle portion of the sequence (sheep head after bone-marrow-labeled item, then mutton soup, mutton dumplings, beef pie) which matches the reference's 6-5-1-4-2 sub-sequence in relative order.",
+    "clip_qa in rollout 1 did partially improve on the pure-text answer by moving 'steamed lamb' earlier (to position 3) instead of leaving it last, showing that visual verification helped somewhat even though it did not fully match the reference."
+  ],
+  "transferable_lessons": [
+    "For ordering/sequence questions where a named item's only literal caption occurrence is a late retrospective/comparison remark (e.g. 'compares the steamed lamb to a version tried elsewhere'), do not assume that is the moment the dish was first served -- check whether an earlier, unlabeled visual scene (e.g. a hand-torn meat-on-bone shot) is the same dish and the caption simply never named it explicitly at first appearance.",
+    "When a caption contains a joking/uncertain identification ('is it a bone or marrow?'), do not treat that dialogue as a confirmed dish label; instead scope a clip_qa call specifically at that shot to ask 'what dish is this, independent of what the streamer joked it might be' and compare it against the neighboring confirmed-dish shot.",
+    "When two rollouts converge on the exact same wrong answer text but the run only cares about aggregate score, be aware the LLM judge itself is noisy on ordering-similarity scoring -- identical wrong answers can receive different scores, so a single low score should not be read as a stronger retrieval failure than another rollout with the same output.",
+    "For 7-item ordering questions, scope clip_qa over the ENTIRE evidence window with an explicit instruction to re-derive dish identity from visual appearance for every distinct food-serving shot, rather than accepting captions' existing per-shot food labels, especially at boundaries where two adjacent shots could describe the same dish."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Is the reference answer's assumption that the first meat-on-bone shot (354474-354504) is 'steamed lamb' actually correct, or could the reference itself be wrong/ambiguous given that the caption text supports 'bone marrow' as the more literal reading at that timestamp? This could only be resolved by inspecting the actual source video frames at 354474-354534, which was not done in this diagnosis.",
+    "How much of the score variance (1,3,1,3,2) is attributable to genuine answer-quality differences vs. LLM-judge scoring noise, given the confirmed instance of identical wrong answers scored 1 and 3?"
+  ]
+}

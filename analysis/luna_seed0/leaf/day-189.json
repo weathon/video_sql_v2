@@ -1,0 +1,104 @@
+{
+  "question_id": "day-189",
+  "timeline": "day",
+  "index": 189,
+  "question": "Which of the following statements are correct? 1. After the player unlocked the Qingzhang Path at the Mount Huaguo (花果山) Keeper's Shrine (土地庙), they crafted the headpiece 'Great Strength King's Face' in the gear forging interface. 2. When fighting the Emerald-Armed Mantis (碧臂螂), the player first used the Immobilization Technique via the number key 1. 3. When battling the Boss Buyunlu, the weapon the player used was 'Beast Staff · Golden Eye'. 4. The armor 'Great Strength Mountain Pattern Armor' was crafted by the player in the Flaming Mountains (火焰山) chapter.",
+  "reference_answer": "3",
+  "question_type": "Hallucination Detection",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[77080, 77113], [80419, 80425]],
+  "clue_interval": [[77080, 77113], [80419, 80425]],
+  "scores": [5, 3, 3, 5, 5],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "Only statement 3 correct.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search/run_sql (multi) -> clip_qa(74480-74540 headpiece) -> clip_qa(77120-77220 shrine/path) -> clip_qa(74520-74620 armor) -> clip_qa(79380-79560 weapon) -> clip_qa(80400-80600 mantis) -> submit",
+      "decisive_steps": [
+        {"segment_file": "clip-1e0eb31924fc427083d27fd5252df9d3-segment-02.json", "item_index": 10, "what_happened": "clip_qa on 77120-77220 confirms player unlocks 青嶂道 at the shrine but this is NOT followed by forging 大力王面 (headpiece never forged) -> statement 1 correctly marked false"},
+        {"segment_file": "clip-8edf30303e624dbb853f0584970909d4-segment-03.json", "item_index": 10, "what_happened": "clip_qa on 80400-80600 explicitly reports 'no visible on-screen keystroke, 1 prompt or keyboard overlay' despite the immobilization effect being used -> statement 2 correctly marked false/unsupported"},
+        {"segment_file": "clip-71ddbc6836dd40a988dc63d01f2b2497-segment-04.json", "item_index": null, "what_happened": "clip_qa on 74520-74620 confirms armor 大力山文甲 only inspected, 'hold to forge' prompt with no success confirmation -> statement 4 correctly marked false"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Cross-checked topic_facts at 74400-74650 directly with sql; matches clip_qa conclusions."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 3,
+      "answer": "Correct statements: 3 and 4 only (wrongly includes 4).",
+      "tool_call_sequence": "read_skill x5 -> semantic_search/run_sql (many, incl entities, topic_facts) -> clip_qa(80400-80520 mantis) -> clip_qa(78990-79230 weapon) -> submit (no clip_qa for statements 1 or 4)",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 27, "what_happened": "run_sql on topic_facts returns row 'weapon forging: 降妖·金睛 (attack 105, luck 10%); 铸选成功; browses 大力山文甲 (defense 160)' - the agent conflated the weapon's forging-success (铸选成功) with the armor, concluding armor was forged with '160 defense' from the crafting record, without ever visually verifying via clip_qa"},
+        {"segment_file": "clip-12d7f351467b4e289221c79d37ccfb3b-segment-00.json", "item_index": null, "what_happened": "clip_qa on 80400-80520 correctly reports no keyboard-1 prompt (gamepad-style HUD) -> statement 2 correctly marked false, matching reference reasoning"}
+      ],
+      "failure_point": "Text-only misread of a bundled topic_facts row: '铸选成功' (forging success) belongs to the weapon 降妖·金睛 in the same sentence as 'browses 大力山文甲', but the agent attributed the success to the armor and never called clip_qa to visually verify statement 4 or statement 1's Huaguo-shrine sequence.",
+      "evidence_checked": "Verified via sql that topic_facts:00024245 at time_s 74490 reads '...铸选成功; browses 大力山文甲 (defense 160)' - success explicitly attached to the weapon phrase, browsing explicitly attached to armor; the two are distinguishable on a careful read."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 3,
+      "answer": "Correct statements: 2 and 3 (wrongly includes 2).",
+      "tool_call_sequence": "read_skill x6 -> semantic_search/run_sql (many) -> clip_qa(77100-77340 shrine/headpiece) -> clip_qa(80390-80520 mantis) -> clip_qa(79200-79440 weapon) -> clip_qa(78960-79210 weapon menu) -> clip_qa(74400-74580 armor) -> submit",
+      "decisive_steps": [
+        {"segment_file": "clip-183b019b470546c9bf4fab9e24da1f9f-segment-03.json", "item_index": 50, "what_happened": "clip_qa on 80390-80520 answers '是' (yes) that Immobilization was activated via keyboard number key 1, citing HUD skill layout, while itself noting the footage does not show a distinct 'press 1' keyboard prompt - an overconfident/self-contradictory clip_qa answer that the main agent trusted at face value"},
+        {"segment_file": "answer-segment-05.json", "item_index": 66, "what_happened": "clip_qa on 74400-74580 correctly reports armor only inspected/browsed, no forging success -> statement 4 correctly marked false (unlike rollout 1)"}
+      ],
+      "failure_point": "Visual sub-agent (clip_qa) gave an inconsistent/overconfident 'yes' on the keyboard-key-1 claim despite its own evidence showing no keyboard prompt was visible; the main agent did not push back on the hedge and accepted the affirmative framing, flipping statement 2 to 'correct'.",
+      "evidence_checked": "Compared this clip_qa transcript against rollout 0's and rollout 1's clip_qa on the same 80400-80520s window, which both explicitly conclude no keyboard-1 prompt is visible and the HUD shows gamepad-style prompts."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "Only statement 3 correct.",
+      "tool_call_sequence": "read_skill x? -> semantic_search/run_sql -> clip_qa(shrine/headpiece) -> clip_qa(armor) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": null, "what_happened": "Final answer explicitly notes no visible keyboard '1' prompt for statement 2 (around 80418-80422s), armor only inspected with 'hold to forge' prompt and no success notification for statement 4, matching the ground-truth pattern seen in rollout 0's clip_qa evidence"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Not independently re-traced item-by-item beyond the final answer text; conclusions are consistent with the sql/clip_qa ground truth already verified for rollouts 0 and 2."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "Only statement 3 correct.",
+      "tool_call_sequence": "read_skill x? -> semantic_search/run_sql -> clip_qa(shrine/headpiece) -> clip_qa(mantis) -> clip_qa(weapon) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-03.json", "item_index": null, "what_happened": "Final answer explicitly notes 大力王面/大力山文甲 only selected/inspected with no completed forging confirmation, and that the mantis-fight footage shows controller-style prompts not a keyboard key 1 -- both match the reference reasoning"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Not independently re-traced item-by-item beyond the final answer text; conclusions are consistent with the sql/clip_qa ground truth already verified for rollouts 0 and 2."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "topic_facts around 74490-74520s clearly separate 'weapon forging: 降妖·金睛 ...; 铸选成功' (success) from 'browses 大力山文甲' (armor only browsed, no success token) - the ground truth for statement 4 is retrievable from text alone if read carefully, and is unambiguous once visually verified (clip_qa consistently finds only a 'hold to forge' prompt with no success notification for the armor). Around 77080-77113s and 80419-80425s (the clue_intervals), the shrine/path-unlock sequence and the mantis-fight opening are both present in the DB/video and are correctly located by every rollout via semantic_search and clip_qa; the disagreement across rollouts is not about whether the evidence exists but about how it is read (text conflation in rollout 1) and how confidently the visual sub-agent reports an ambiguous visual (no keyboard overlay) in rollout 2."
+  },
+  "root_causes": [
+    "Rollout 1 (score 3): skipped visual verification (clip_qa) for statements 1 and 4 and relied on a compact topic_facts row that bundles the weapon's forging-success token with the armor's browsing mention in the same sentence, misattributing the success to the armor.",
+    "Rollout 2 (score 3): the clip_qa visual sub-agent gave an inconsistent answer for the mantis-fight keyboard-key question - asserting the key-1 activation as confirmed ('是') while its own reasoning states no keyboard prompt is visible - and the main agent accepted the affirmative conclusion without noticing the internal contradiction.",
+    "Rollouts 0, 3, 4 (score 5) systematically called clip_qa on all four ambiguous claims (shrine/path timing and forging sequence, mantis-fight keyboard-key evidence, weapon identity, armor forging-vs-browsing) and the clip_qa sub-agent in those runs correctly reported the absence of a visible keyboard-1 prompt and the absence of a forging-success confirmation for the armor."
+  ],
+  "what_worked": [
+    "Calling clip_qa on every individually-checkable sub-claim rather than trusting a single aggregated topic_facts text row, especially for claims that hinge on subtle distinctions (browsed vs. forged; effect used vs. specific input device).",
+    "Treating a text fact that bundles multiple items in one sentence ('...success; browses Y') as ambiguous and requiring visual confirmation rather than assuming the success token applies to the last-mentioned item.",
+    "Clip_qa sub-agents that explicitly state the absence of evidence (no keyboard-1 prompt visible) rather than inferring/guessing from indirect cues (HUD skill slot corresponding to key 1) produced correct main-agent conclusions."
+  ],
+  "transferable_lessons": [
+    "For hallucination-detection questions with multiple compound claims, verify EVERY sub-claim visually via clip_qa when the source text is compact/bundled across items - do not resolve close calls from an unverified SQL/semantic_search text snippet alone.",
+    "Be suspicious of a topic_facts/episodes text row that lists two items in one sentence with a shared status token (e.g. '...success; browses X') - the token may belong to only one of the items; disambiguate visually.",
+    "When a clip_qa answer contains a hedge in its own reasoning ('no keyboard prompt shown, but...') the main agent should treat the final status as 'unsupported/cannot confirm' rather than accepting the sub-agent's own possibly-overconfident yes/no label.",
+    "For 'was X actually crafted/forged' style claims, specifically look for the game's explicit success/confirmation UI signal (e.g. a success notification banner) versus a 'hold to forge' prompt that indicates only browsing, as this is the discriminating visual detail across all five rollouts."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether rollout 2's clip_qa sub-agent literally saw a HUD element it interpreted as 'key 1' or hallucinated the keyboard-key correspondence from general game knowledge was not traced beyond the raw returned answer text (reasoning tokens are encrypted/unavailable).",
+    "Rollouts 3 and 4 were only checked at the final-answer level (not traced item-by-item) since their answers and stated reasoning already matched the verified ground truth from rollouts 0 and 2 for the same time windows."
+  ]
+}

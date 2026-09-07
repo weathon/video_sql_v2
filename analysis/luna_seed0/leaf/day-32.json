@@ -1,0 +1,95 @@
+{
+  "question_id": "day-32",
+  "timeline": "day",
+  "index": 32,
+  "question": "After the player defeats Tiger Vanguard (虎先锋) and enters the cellar, what elixir did they obtain?",
+  "reference_answer": "Emerald Lotus Root Golden Elixir",
+  "question_type": "Entity Recognition",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[18228, 18232]],
+  "clue_interval": [18228, 18232],
+  "scores": [5, 5, 5, 5, 5],
+  "score_spread": "all_high",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "They obtained the 碧藕金丹 (Bì'ǒu Jīndān, \"Jade Lotus Golden Elixir\"). The reward popup appears around 18,210 seconds, after the Tiger Vanguard victory and as the player moves through the cellar/dungeon.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes) -> semantic_search(event_steps) -> semantic_search(topic_facts) -> run_sql(episodes ~20340-21240) -> run_sql(episodes 18000-18840) -> run_sql(event_steps 18000-18840) -> run_sql(topic_facts 18000-18840) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 21, "what_happened": "run_sql on episodes table for start_s BETWEEN 18000 AND 18840 (30sec granularity) directly covers the clue window 18228-18232 and returns the caption row mentioning 碧藕金丹 acquisition."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 28, "what_happened": "submit_answer with the item name translated as 'Jade Lotus Golden Elixir', accepted by the judge as matching 'Emerald Lotus Root Golden Elixir'."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed via sql: semantic_triples row 0000294 at snapshot_s=18240.0 (inside clue window) states 'player character receives reward item 碧藕金丹', matching the reference elixir."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "They obtained 碧藕金丹 (Bì'ǒu Jīndān) — the Jade Lotus Golden Elixir. The reward popup appears around 18,230 seconds after the Tiger Vanguard defeat.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql -> semantic_search x4 -> run_sql x2 -> read_skill -> clip_qa -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": null, "what_happened": "Multiple semantic_search/run_sql passes converged on the ~18000-18800s window; a clip_qa call visually confirmed the reward popup text before submitting."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Answer's stated time (18,230s) sits inside the clue window 18228-18232, consistent with DB row at snapshot_s=18240."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "They obtained the 碧藕金丹 (Green Lotus Golden Pill). Tiger Vanguard victory ~18,000s, reward popup ~18,210s shows 碧藕金丹.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql x3 -> semantic_search -> run_sql x3 -> semantic_search x2 -> run_sql x4 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Heavier SQL exploration (10 run_sql calls total) around the 18000-19000s region before locking onto the same 碧藕金丹 reward fact; no visual sub-agent needed since the textual episode/semantic_triples caption already names the item."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same underlying DB row (semantic_triples 0000294 / episodes 30sec caption) as other rollouts."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "They obtained the 碧藕金丹 (Bì'ǒu Jīndān, Jade Lotus Golden Elixir). The reward popup appears around 18,230 seconds after entering the cellar.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql x4 -> read_skill -> clip_qa -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": null, "what_happened": "run_sql narrowed to the 18000s window, then a clip_qa call visually verified the reward-popup text (碧藕金丹) before submitting."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Consistent with the same textual/DB evidence used by rollout 0 and 2."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "They obtained the 碧藕金丹 (Bì'ǒu Jīndān), or Green Lotus Golden Pill. The pickup screen in the cellar identifies it as a 太上仙丹 (Supreme Immortal Pill) at about 18,230 seconds, after the Tiger Vanguard defeat.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql x2 -> semantic_search x4 -> run_sql -> read_skill -> clip_qa x2 -> semantic_search -> clip_qa -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-03.json", "item_index": null, "what_happened": "Used three separate clip_qa calls (most visual verification of the 5 rollouts) to inspect the reward popup and surrounding frames near 18200-18300s; final answer still leads with 碧藕金丹 despite adding a possibly-confused secondary label ('太上仙丹') from a different nearby popup."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Primary named item (碧藕金丹) matches DB row and reference; the appended '太上仙丹' aside is likely a different item seen on an adjacent frame/menu (太上仙丹 also appears elsewhere in semantic_triples, e.g. row 0000024 near snapshot_s=3240) and is potentially a minor visual misattribution, but it did not affect the judge's score since the primary answer was correct."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "semantic_triples row 0000294 (snapshot_s=18240.0, inside the clue window 18228-18232) reads: 'player character receives reward item 碧藕金丹' (episodes:30sec:000607). This textual caption alone is sufficient to answer the question without any visual sub-agent call, and a simple run_sql time-window query on episodes/event_steps/topic_facts around 18000-18840s (as done in rollout 0) surfaces it directly."
+  },
+  "root_causes": [],
+  "what_worked": [
+    "The memory DB's 30-second episode captions and semantic_triples already contain an explicit, well-timed caption naming the reward item (碧藕金丹) at snapshot_s=18240, squarely inside the clue window, so any reasonably targeted SQL time-window query or semantic_search near the Tiger Vanguard defeat event surfaces it.",
+    "All 5 rollouts independently converged on the same Chinese item name (碧藕金丹) regardless of whether they used SQL-only retrieval (rollouts 0, 2) or added clip_qa visual confirmation (rollouts 1, 3, 4), showing the evidence is redundant and robust across retrieval strategies.",
+    "The judge treated the Chinese term plus a reasonable English gloss (e.g. 'Jade/Green Lotus Golden Elixir/Pill') as equivalent to the reference 'Emerald Lotus Root Golden Elixir' (碧=emerald/jade-green, 藕=lotus root, 金丹=golden elixir/pill), so translation-wording differences did not cost points."
+  ],
+  "transferable_lessons": [
+    "For 'what item/reward did the player obtain after event X' questions, a time-window run_sql query on episodes/event_steps/topic_facts anchored right after the causal event (here, the Tiger Vanguard defeat) is usually enough; visual clip_qa confirmation is a nice-to-have but not required when the episode caption already names the item.",
+    "When the reference answer is an English gloss of a Chinese in-game item name, exact-string matching is not needed — judges accept the transliterated/original name plus any semantically faithful translation of the character components.",
+    "Adding extra clip_qa calls (as in rollout 4) can introduce a secondary, possibly-mismatched item name into the final answer; this is a mild risk (didn't hurt scoring here) that keeping to a single confirmed named entity would avoid."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "In rollout 4, whether the appended '太上仙丹' detail is a genuine second item visible in the same or nearby scene, or a misread from a different popup, was not independently re-verified against frames; it did not affect scoring but is a candidate minor visual-confusion example if this timeline needs more scrutiny."
+  ]
+}

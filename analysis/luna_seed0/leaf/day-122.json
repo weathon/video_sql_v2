@@ -1,0 +1,102 @@
+{
+  "question_id": "day-122",
+  "timeline": "day",
+  "index": 122,
+  "question": "During the challenge against the Bishui Golden-Eyed Beast (碧水金睛兽), how many times did the player perform perfect dodges in Phase 2 (including parry skills)?",
+  "reference_answer": "8",
+  "question_type": "Counting",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[73991, 74267]],
+  "clue_interval": [73991, 74267],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "15 perfect dodges (8 from ~74032.5-74122.0s + 7 more from ~74170.5-74212.5s)",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes/event_steps/visual_clips/topic_facts) x6 -> run_sql(entities/event_chains/episodes/event_steps/topic_facts/episodes-30sec) x6 -> read_skill(visual-verification) -> clip_qa(73980-74130) -> clip_qa(74130-74250) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 49, "what_happened": "clip_qa on 73980-74130 answered 'I count 8 distinct player perfect dodges', treating this early window (which the boss-fight text describes as a different-looking boss form, not clearly phase 2) as phase 2"},
+        {"segment_file": "answer-segment-02.json", "item_index": 50, "what_happened": "clip_qa on 74130-74250 separately answered 7 more dodges/parries including one at ~74209s; the agent summed both windows' counts (8+7=15) into the final answer instead of first establishing a single phase-2 boundary and asking one clip_qa over just that window"}
+      ],
+      "failure_point": "No phase-2 boundary was ever established from text/DB evidence; the agent split the whole 73980-74267 clue window into two arbitrary clip_qa calls and simply summed both sub-agents' independent (and themselves shaky) counts, double-covering ground that other rollouts treat as phase 1.",
+      "evidence_checked": "confirmed via trace-item that the two clip_qa calls returned 8 and 7 respectively and the final answer is their literal sum (15)."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "7 perfect dodges/parry-skill counters, phase 2 said to begin ~74136s, events at 74142-74166s",
+      "tool_call_sequence": "semantic_search x4 -> run_sql x4 -> clip_qa(74040-74250, single call) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 36, "what_happened": "single clip_qa spanning the full 74040-74250 (210s) window; the sub-agent placed phase 2 start at 74136s from a UI/effect change, found 7 timed dodge/parry events clustered tightly in 74142-74166 (a 24s span), and explicitly stated the later 74179-74212s portion showed 'mostly ordinary evasive movement... no additional clearly timed effect'"}
+      ],
+      "failure_point": "Because one clip_qa call had to cover a 210s window, its effective frame-sampling density over the later part of phase 2 (74179-74212, where rollout-0's separate narrower clip_qa call did find a parry event around 74209s) was too sparse to detect further qualifying dodges, undercounting phase 2.",
+      "evidence_checked": "compared this rollout's clip_qa verdict on 74179-74212 ('no additional event') against rollout-0's clip_qa verdict on roughly the same span, which reported an additional parry around 74209s -- the two visual sub-agent calls disagree on the same footage."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "1 time -- phase 2 defined as only the final fire/lava transformation (~74253-74267s), with one qualifying parry at ~74262.7s",
+      "tool_call_sequence": "semantic_search x4 -> run_sql x2 -> clip_qa(73980-74280) -> clip_qa(74100-74265, phase-transition search) -> clip_qa(74248-74265, dense) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-03.json", "item_index": 33, "what_happened": "clip_qa tasked with locating the phase-2 transition itself answered that phase 2 only begins at 74257.0s ('transformation finishes... arena fully shifted to lava/fire state'), i.e. only ~10s before the 74250 defeat text already present in topic_facts/event_steps, leaving almost no footage to count dodges in"}
+      ],
+      "failure_point": "The visual sub-agent misidentified the transformation/final burst sequence right before boss defeat as the start of 'phase 2', collapsing the counting window to under 15 seconds instead of the ~130s+ span other rollouts used, so it structurally could not reach 8.",
+      "evidence_checked": "read frames at 74250/74256/74262/74268 myself: boss defeat text ('已击破') is already recorded in topic_facts/event_steps at time bucket 74250, consistent with the fight effectively ending around there -- this rollout's 'phase 2 starts at 74257' claim leaves at most ~10s of fight to search, which is implausible for an 8-dodge phase."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "18 times, summing 8 (74136-74151) + 8 (74161-74171) + 1 (74191.5) + 1 (74208.8 parry)",
+      "tool_call_sequence": "semantic_search x4 -> run_sql x3 -> clip_qa(74130-74160) -> clip_qa(74160-74190) -> clip_qa(74190-74220) -> clip_qa(74220-74250) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-04.json", "item_index": 33, "what_happened": "clip_qa on the first 30s sub-window (74130-74160) alone reported 8 dodge/parry events, i.e. as many as the entire reference answer for the whole phase"},
+        {"segment_file": "answer-segment-04.json", "item_index": 34, "what_happened": "next 30s sub-window (74160-74190) reported another 8, so two adjacent 30s windows already summed to 16 before the remaining two windows added 2 more"}
+      ],
+      "failure_point": "Chopping phase 2 into four independent 30s clip_qa calls with no shared frame anchors let each sub-agent over-detect ordinary dodge/roll/evade motion as 'perfect dodges' (each 30s slice alone matched or exceeded the true total of 8), and per-window counts were summed with no cross-window deduplication or a consistency check against the known total.",
+      "evidence_checked": "compared the per-window counts (8, 8, 1, 1) against the reference total of 8 -- any single one of the first two sub-windows already exceeds or matches the reference, showing the visual sub-agent's dodge-detection criterion is far more permissive than whatever the reference annotation used."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "7 perfect dodges at 74136.6-74158.0s",
+      "tool_call_sequence": "semantic_search x4 -> run_sql(episodes/visual_clips/event_steps/semantic_triples/object_states) x5 -> clip_qa(73920-74070, phase check) -> clip_qa(74070-74220, phase check) -> clip_qa(74220-74260, phase check) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-03.json", "item_index": 38, "what_happened": "clip_qa over 74070-74220 (150s) was also asked to first decide phase1 vs phase2, and returned only 7 dodge timestamps all clustered in a narrow 74136.6-74158.0s band, similar to rollout-1's cluster but stopping earlier (missing rollout-0's ~74170-74212 detections)"}
+      ],
+      "failure_point": "Same pattern as rollout-1: a single wide clip_qa call over a long candidate phase-2 span converges on a tight early cluster of dodges and misses/undercounts events later in the window that a differently-windowed call (rollout-0) did detect.",
+      "evidence_checked": "cross-checked the 74136-74158s cluster against rollout-1's very similar 74142-74166s cluster (both ~7 events in an overlapping ~25s band) -- the two independent rollouts largely agree on this early cluster, suggesting it is real, but neither found the remaining events needed to reach 8."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "topic_facts and event_steps for 73900-74300 give only coarse, visually-confused, and mutually inconsistent 30s-bucket captions of the boss fight (describing what reads like several different monsters: 'quadruped fiery enemy', 'quadruped boss with pale spiked plating', 'beast with ribcage skull head', 'bear/wolf-like monster', 'horned boss in tattered white robes', 'horned winged beast') -- almost certainly the same boss under different lighting/transformation VFX, but the auto-captioner never states a phase-2 boundary and never mentions dodge/parry counts at all. The only unambiguous DB fact is the boss-defeat text ('已击破' / 妖王翠云金睛兽 defeated) at the 74250s bucket. Nothing in episodes/event_steps/topic_facts/semantic_triples/object_states names a 'phase 2' start time or gives a dodge count, so the count is a pure frame-by-frame visual task with no text scaffold, and even the phase-2 boundary itself has to be inferred visually -- rollouts disagreed on it by up to ~120s (73920s vs 74257s)."
+  },
+  "root_causes": [
+    "The memory DB's auto-generated captions for this fight are internally inconsistent (the same continuous boss fight is described as several different-looking monsters across 30s buckets) and never state a phase-2 boundary, so every rollout had to guess where phase 2 starts purely from clip_qa, and the five guesses ranged from ~73920s to ~74257s -- a >100s disagreement on the counting window itself.",
+    "clip_qa's frame-sampling density appears to scale down as the requested window widens: calls over long windows (150-210s) systematically under-detect brief dodge/parry flash events in the later part of the window (rollout-1 explicitly reported 'no additional event' in a span where a separately-windowed call in rollout-0 did find one), while calls over short windows (30s) over-detect, with one 30s sub-window alone matching the entire reference count of 8 (rollout-3).",
+    "When phase 2 was split across multiple clip_qa calls (rollouts 0, 2, 3, 4), each sub-agent call was answered independently with no shared frame-level bookkeeping, so counts were summed with no de-duplication of events straddling a window boundary and no sanity check against the other windows' totals.",
+    "No rollout cross-checked the final total against any other source (e.g. requesting a second independent full-phase-2 clip_qa pass, or checking event_steps/object_states for corroborating counter-hit records) before submitting, so an implausible total (1 or 18) was submitted with the same confidence as a plausible one (7)."
+  ],
+  "what_worked": [
+    "All five rollouts correctly localized the general boss-fight window (73991-74267) via semantic_search/run_sql and correctly identified the boss as 碧水金睛兽 / 妖王·翠云金睛兽, so retrieval of the right episode was not the failure mode.",
+    "Multiple rollouts (0, 1, 4) independently converged on a real dodge cluster around ~74136-74166s, suggesting clip_qa can detect genuine perfect-dodge visual effects when the window is narrow enough, even though none of them found the complete set of 8."
+  ],
+  "transferable_lessons": [
+    "For fine-grained visual counting questions, first pin down the exact sub-interval (here, the phase-2 boundary) with a dedicated clip_qa call before counting, and re-verify that boundary with a second independent call if the fight window is long and boss forms visually vary -- do not let the counting call and the phase-boundary call be conflated in one arbitrary window split.",
+    "Keep clip_qa windows short and of consistent, deliberately overlapping length (e.g. 20-30s with a few seconds of overlap) when counting rapid discrete events across a longer interval, and explicitly reconcile events that fall near a window boundary to avoid double counting or dropped events between calls.",
+    "When independent clip_qa calls covering adjacent/overlapping windows disagree (e.g. one says an interval has no more events, another finds one there), that disagreement is itself signal that the counting task needs a re-check, not something to silently resolve by picking one call's number.",
+    "Before submitting a count, sanity-check it against the coarse DB evidence available (e.g. total fight duration, defeat timestamp) and flag implausible outputs like a single 30s sub-window already matching or exceeding the full reference-scale total, or a phase reduced to under 15 seconds."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "What visual criterion did the reference annotator use to distinguish a 'perfect dodge' from an ordinary roll/evade, and where exactly does the annotator place the phase-2 boundary? Without the reference's own timestamps this diagnosis cannot confirm which rollout's dodge cluster (if any) is closest to the true 8.",
+    "Is 'phase 2' in this question referring to a boss-health-based phase (e.g. after the boss drops below 50% and gains new moves around 74130-74160s, matching the '浮光/揠影' skill-popup observed at 74160s) or a distinct arena/transformation phase later in the fight? The DB gives no explicit phase label, so this remains unresolved from text alone."
+  ]
+}

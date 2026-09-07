@@ -1,0 +1,103 @@
+{
+  "question_id": "day-58",
+  "timeline": "day",
+  "index": 58,
+  "question": "As the NPC Zhu Bajie (猪八戒) who helps the player, why does he appear as a boss and fight the player in Chapter 4?",
+  "reference_answer": "After battling Second Sister (二姐), Zhu Bajie (猪八戒) was struck by Second Sister's (二姐) poison needle and lost his mind.",
+  "question_type": "Causal Reasoning",
+  "temporal_certificate": "Long",
+  "total_intervals": [[46299, 46370], [54853, 54942]],
+  "clue_interval": [[46299, 46370], [54853, 54942]],
+  "scores": [0, 0, 1, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "Frames it as a deliberate sparring/test confrontation; cites taunting dialogue at ~54360s ('你倒是厉害...') and defeat line ('你要拿我，快点！').",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/topic_facts/event_steps/semantic_triples, all keyed on literal 'Zhu Bajie'/'chapter 4') -> run_sql(episodes 53600-55100, semantic_triples 54300-54500, topic_facts 54250-54500, event_chains join) -> semantic_search x3 more -> read_skill(visual-verification) -> clip_qa(54330-54480) -> semantic_search x3 more (still around 54xxx / general) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 11, "what_happened": "semantic_search on event_steps for 'chapter 4 Zhu Bajie boss fight reason' surfaces the well-tagged 54330-54480 fight (preview explicitly says '猪八戒: glowing red eyes...') with a high score; this single strongly-matching hit anchors all subsequent investigation on the 54330-54480 window."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 40, "what_happened": "clip_qa(54330-54480) transcribes taunting dialogue but no cause is given in that window; agent never widens the time window backward toward 46299-46370."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 50, "what_happened": "submit_answer with a 'test/sparring, not a real rupture' guess; no run_sql or semantic_search ever touched the 45000-47000s range."}
+      ],
+      "failure_point": "Never retrieved or visited the first clue interval (46299-46370); all queries were keyed on the literal name 'Zhu Bajie', which is only attached to the later 54330-54480 scene in the DB, so the earlier causal scene (spider-demon woman with the needle) was never surfaced or searched for.",
+      "evidence_checked": "Confirmed via sql that entities/episodes/semantic_triples around 46200-46370 label the actor as 'player character' / 'spider-demon woman', never '猪八戒', so a name-keyed search would not surface it."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "Attributes the fight to Zhu Bajie's guilt/fear over a 'one-night affair' with the Spider women ('一夜风流而已，竟要老猪的命来偿'), read as him fearing punishment, not to being poisoned.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 (episodes/topic_facts/event_steps/semantic_triples, literal 'Zhu Bajie' queries) -> run_sql(episodes 53500-58000, semantic_triples 53500-58000, topic_facts 53500-58000, event_steps 53500-58000, all LIMIT 100) -> semantic_search x3 more (including the quoted dialogue text) -> read_skill(visual-verification) -> clip_qa(54300-54500) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 36, "what_happened": "clip_qa(54300-54500) transcribes the '一夜风流...' line, which the agent (mis)reads as Zhu Bajie fearing punishment for an affair rather than as a symptom of poisoning; this line is the true poisoned-Bajie's raving dialogue but the agent has no earlier context (Second Sister, the needle) to interpret it correctly."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 18, "what_happened": "run_sql widened only to 53500-58000s, still entirely after the causal scene at 46299-46370; the earlier interval was never queried."}
+      ],
+      "failure_point": "Same as rollout 0: never retrieved the 46299-46370 window; correctly captured Bajie's raving dialogue via clip_qa but had no textual/visual anchor to explain it as poison-induced madness, so misattributed it to guilt over an affair.",
+      "evidence_checked": "Same DB check as rollout 0 confirms the earlier scene is unreachable by name-based queries."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 1,
+      "answer": "Frames the fight as a 'defensive/resentful confrontation' tied to a grievance over the Spider women, and separately notes that later (~65820s) a small hog-like Zhu Bajie reappears offering to help, implying it was situational.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> run_sql(episodes/semantic_triples etc around 54xxx) -> semantic_search x4 more -> run_sql x3 more -> read_skill(visual-verification) -> clip_qa(54330-54480) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-01.json", "item_index": null, "what_happened": "clip_qa(54330-54480) again captures the same taunting dialogue at 54355-54370s; additionally the agent found and cited a later scene (~65820s) confirming Bajie resumes his ally role, which made the answer partially correct in tone (temporary confrontation, not permanent betrayal) even though the specific poison-needle cause was never found."}
+      ],
+      "failure_point": "Same retrieval gap as the others (46299-46370 never queried); scored 1 rather than 0 likely because the answer correctly rejects 'permanent enemy/possession' framings and situates the fight as tied to the Spider-women backstory, partially overlapping with the reference's Second-Sister connection, even without the poison-needle mechanism.",
+      "evidence_checked": "Same as above; also confirmed the 65820s aftermath scene exists in episodes table (hog-like Zhu Bajie NPC) independent of the causal scene."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "States the footage does not show mind control and reports only that Bajie taunts/challenges the player, declining to name a specific cause.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> run_sql(episodes 53600-55100-ish) -> semantic_search x4 more -> run_sql(semantic_triples 45000-47000 OR 54200-54500 LIMIT 100) -> read_skill(visual-verification) -> clip_qa(54330-54480) -> semantic_search x3 more -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 35, "what_happened": "run_sql explicitly queried semantic_triples for snapshot_s BETWEEN 45000 AND 47000 OR BETWEEN 54200 AND 54500 LIMIT 100; because the two ranges share one LIMIT 100, the result actually includes rows through 46920s, and among them is 'spider-demon woman pinches thin faintly glowing needle-like pin between her fingers' at snapshot_s=46140 (immediately followed by her transforming into the spider boss at 46230 and the player-character fight at 46260-46320) — this is the poison-needle clue, present verbatim in this rollout's tool output."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 40, "what_happened": "Despite having the needle clue in context, the agent instead ran clip_qa on 54330-54480 (the later, name-tagged Zhu Bajie fight) and never called clip_qa or run_sql specifically on 46100-46370 to confirm who is holding the needle or who gets struck; it then submitted an answer explicitly disclaiming any specific mechanism ('does not establish a more specific cause such as possession'), i.e. it noticed evidence was insufficient but did not go back to investigate the needle lead it already had."}
+      ],
+      "failure_point": "Evidence retrieved into context (the needle scene at 46140s) but not pursued/connected: the triple's subject is 'spider-demon woman', not 'Zhu Bajie', and the row sits inside a 100-row dump the agent skimmed rather than a targeted, high-salience hit, so it was not recognized as decisive and no follow-up clip_qa verified who the needle was for.",
+      "evidence_checked": "Directly re-ran the query and confirmed 'spider-demon woman pinches thin faintly glowing needle-like pin' at snapshot_s=46140 is present in this rollout's actual run_sql output (the DB row exists and was in-context for this rollout)."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "Attributes the fight to Bajie believing he is being pursued/confronted over a 'one-night affair' with the Spider family, framed as a hostile misunderstanding rather than poisoning.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x3 -> run_sql x5 (around 53xxx-54xxx ranges) -> semantic_search x2 more -> read_skill(visual-verification) -> clip_qa(54320-54480) -> run_sql(one more, near submit) -> submit_answer",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": null, "what_happened": "clip_qa(54320-54480) again transcribes the same raving/affair-themed dialogue; no query ever reached back to 46299-46370, so the needle/Second-Sister backstory was unavailable."}
+      ],
+      "failure_point": "Same retrieval gap: 46299-46370 never queried by this rollout; misreads Bajie's poison-induced raving dialogue as a literal romantic-affair grievance.",
+      "evidence_checked": "Same DB check as rollout 0."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The causal chain is split across two DB rows that are hard to connect without visual follow-up. episodes text at 46200-46230 explicitly captures Zhu Bajie (as a 'raccoon-pig creature') self-referring as '老猪' and speaking to a woman who then transforms into a spider boss; semantic_triples at snapshot_s=46140 records 'spider-demon woman pinches thin faintly glowing needle-like pin between her fingers' immediately before her transformation (46230) and the ensuing fight (46260-46320, captioned as 'player character battles ... spider boss', not attributed to Zhu Bajie). Nowhere in episodes/semantic_triples/topic_facts/entities is the woman named '二姐'/Second Sister or is the needle explicitly said to strike Zhu Bajie or cause him to 'lose his mind' -- that specific causal link requires visual/narrative inference via clip_qa on ~46100-46370 that no rollout performed. The later scene (54330-54480) that all 5 rollouts fixated on is a clean, high-scoring semantic-search hit literally labeled '猪八戒', which drew all retrieval effort away from the earlier, generically-labeled causal scene."
+  },
+  "root_causes": [
+    "Search-term/entity-mislabel mismatch: the DB captions the causal scene's actors as 'player character' and 'spider-demon woman', never '猪八戒'/Zhu Bajie, so every semantic_search keyed on 'Zhu Bajie' or 'chapter 4 boss fight' converged on the later, cleanly-labeled 54330-54480 fight and never surfaced the 46299-46370 window.",
+    "Anchoring on a single strong hit: a highly-scored, explicitly-labeled semantic_search/event_steps hit at 54330-54480 absorbed all subsequent SQL/clip_qa effort in every rollout; none of the 5 rollouts widened their temporal search backward toward the first clue interval.",
+    "One rollout (rollout 3) did retrieve the actual poison-needle row (semantic_triples snapshot_s=46140, subject 'spider-demon woman ... needle-like pin') via a broad run_sql, but it was buried in a 100-row generic dump and its subject didn't match 'Zhu Bajie', so it was not recognized as decisive and never verified with clip_qa.",
+    "The visible dialogue at 54330-54480 ('一夜风流而已，竟要老猪的命来偿', taunting lines) is itself the poisoned/deranged Bajie's raving speech, but without the earlier needle scene as context, 3 of 5 rollouts misread it as a literal grievance over a romantic affair rather than as symptomatic ravings caused by poison."
+  ],
+  "what_worked": [
+    "All rollouts correctly rejected the 'Bajie permanently betrays/turns evil' framing and correctly identified the scene as a temporary confrontation, which is directionally consistent with the reference (rollout 2 got partial credit for this plus noting he resumes helping later)."
+  ],
+  "transferable_lessons": [
+    "For causal-reasoning questions about a named character's later action, do not stop searching once a semantic_search hit that literally names the character is found for the target scene; explicitly search the time window(s) leading up to it for unnamed/generic entities ('woman', 'creature', 'boss') that could be the same character in disguise or an earlier plot beat, since captioning/entity-extraction is often name-blind for transformed or non-obviously-identified characters.",
+    "When run_sql returns a large multi-row dump (e.g. LIMIT 100 over a wide time range), do not skim past physically small but semantically loaded predicates (e.g. 'pinches ... needle-like pin') just because the row's 'subject' field doesn't match the target character's name -- flag any weapon/injury/status-change predicate near the character's location for follow-up clip_qa.",
+    "If clip_qa dialogue sounds irrational, accusatory, or out of character for a normally-friendly NPC, treat that as a signal to search backward in time for a preceding cause (poisoning, curse, mind control) rather than accepting the dialogue's surface content (e.g. 'affair', 'debt') as the literal explanation.",
+    "The two clue_intervals given for a question are often sequential cause-then-effect scenes; when a question is phrased causally ('why does X happen'), deliberately search/query both the effect window and a window well before it, not just whichever window a first semantic_search happens to surface most strongly."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Whether a clip_qa call directly on 46100-46370 would visually/textually confirm the woman is 'Second Sister' (二姐) and that the needle strikes Zhu Bajie specifically, since the DB text alone only implies this via adjacency and character self-reference ('老猪'), not an explicit statement.",
+    "Whether the reference answer's specific naming '二姐' (Second Sister) is stated anywhere in the source video's subtitles at all, or is external game-lore knowledge not captured by any captioning pass -- if the video itself never displays '二姐' by name, this question may be partly unanswerable from the stored memory alone."
+  ]
+}

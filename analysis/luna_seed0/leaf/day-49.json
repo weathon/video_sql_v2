@@ -1,0 +1,96 @@
+{
+  "question_id": "day-49",
+  "timeline": "day",
+  "index": 49,
+  "question": "On which map do players unlock '酒食龟泪'?",
+  "reference_answer": "North Shore of Bitter Lake (苦海北岸)",
+  "question_type": "Event Recognition",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[31704, 32099]],
+  "clue_interval": [31704, 32099],
+  "scores": [5, 5, 5, 3, 5],
+  "score_spread": "all_high",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "玩家是在小西天地图上解锁'酒食·龟泪'的，具体位置是小西天的苦海北岸（龟岛一带）。证据中先显示'小西天'地图上的龟形标记，随后在苦海北岸区域获得并在行囊中看到'龟泪'。",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/topic_facts/event_steps/semantic_triples, '龟泪 酒食') -> run_sql(episodes LIKE '%龟泪%'/'%酒食%') -> run_sql(episodes BETWEEN 31600-32350) -> run_sql(topic_facts join episodes) -> run_sql(episodes BETWEEN 28500-32200, LIKE '小西天'/'苦海') -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 22, "what_happened": "run_sql on episodes BETWEEN 31600-32350 surfaces the 30sec row at 32070-32100s showing on-screen location text '苦海北岸' and the following 32100-32130s row showing '龟泪' item in inventory."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed via sql that episodes row 001069 (32070-32100s) contains the '苦海北岸' on-screen location banner and row 001070 (32100-32130s) shows the '龟泪' inventory item, directly inside the clue_interval."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "玩家是在小西天地图的苦海（苦海北岸）区域解锁/获得'酒食·龟泪'的。证据显示该物品在苦海北岸的流程中出现，随后地图界面将该区域归在小西天之下。",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(semantic_triples/topic_facts/episodes/event_steps/visual_clips) -> run_sql(episodes LIKE) -> run_sql(episodes 31800-32400) -> run_sql(event_steps) -> run_sql(topic_facts) -> run_sql(semantic_triples 30000-33000) -> run_sql(entities LIKE '龟泪') -> semantic_search x2 (broader) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 23, "what_happened": "run_sql on episodes granularity=30sec BETWEEN 31800-32400 retrieves the same '苦海北岸' location text and '龟泪' inventory rows as rollout-00."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same episodes rows confirmed present in that time window; content matches ground truth."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "玩家是在苦海·北岸（苦海北岸，属于小西天地图）解锁/获得'酒食·龟泪'的。记忆记录显示角色传送到'苦海北岸'后，在约32100-32130秒的背包中出现'龟泪'。",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(topic_facts/episodes/semantic_triples/event_steps, '酒食龟泪') -> run_sql(episodes 31200-32300) -> run_sql(topic_facts join topic_chains) -> run_sql(entities LIKE) -> run_sql(event_chains 30000-32500) -> run_sql(semantic_triples 30000-32500) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 18, "what_happened": "run_sql on episodes BETWEEN 31200-32300 pulls the same '苦海北岸' + '龟泪' rows; answer even cites the exact 32100-32130s window."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same rows confirmed; time window cited by the agent (32100-32130) matches the actual episodes row_id episodes:30sec:001070."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "玩家是在【苦海北岸】地图解锁'酒食·龟泪'的。证据显示，击败鬼蛇二将后，剧情提示其眼泪是答谢礼物；随后物品栏中出现'龟泪'。",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(semantic_triples/topic_facts/episodes/visual_clips/event_steps) -> run_sql(episodes 31620-31860) -> semantic_search(semantic_triples '31740 雪地 龟泪 地图 苦海 北岸')  -> semantic_search(topic_facts) -> run_sql(topic_chains LIKE) -> run_sql(episodes 32070-32130 + event_steps) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": 30, "what_happened": "run_sql narrowed to episodes 32070-32130 directly targets the two decisive rows; also picked up the earlier 31740-31770s '鬼蛇二将' dialogue about the tears being a gift, giving a slightly more narrative (but still correct) answer."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed episodes row at 31740-31770 contains the '鬼蛇二将...泪滴...答谢' dialogue and rows at 32070-32130 contain the location/item evidence used by all rollouts."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 3,
+      "answer": "玩家是在小西天地图上解锁/取得'酒食·龟泪'的，具体地点是苦海北岸。证据显示角色先在苦海北岸附近取得龟泪，随后背包中出现'龟泪'；之后打开的地图界面标注为'小西天'。",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(topic_facts/entities/semantic_triples/topic_facts) -> run_sql(episodes 31500-32300) -> run_sql(semantic_triples 31500-32300) -> run_sql(topic_facts 31500-32300) -> run_sql(semantic_triples 33900-34500, unrelated later window) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": 18, "what_happened": "run_sql on episodes 31500-32300 retrieves the same decisive '苦海北岸' + '龟泪' rows as the other 4 rollouts; the final answer text is essentially identical in content to rollouts 0/1/2/4 (small variance: '解锁/取得' phrasing) but the judge scored it 3 instead of 5."}
+      ],
+      "failure_point": "No retrieval or content failure identified; the answer text names the same map (小西天 / 苦海北岸) with the same level of specificity as the 4 rollouts scored 5. The score gap looks attributable to judge scoring variance/noise rather than a difference in retrieval quality, since judge-attempt-1-segment-01.json for this rollout emits only {\"score\":3} with no rationale to inspect.",
+      "evidence_checked": "Compared this rollout's submitted answer text word-for-word against rollout-00's (score 5): both cite 小西天/苦海北岸 with similar evidentiary description; no substantive content difference found that would justify a 2-point score gap."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "episodes:30sec:001069 (32070-32100s) contains an on-screen location banner reading '苦海北岸' (North Shore of the Sea of Suffering/Bitter Lake) as the character approaches a portal; episodes:30sec:001070 (32100-32130s, a paused inventory menu) shows the '龟泪' item explicitly. Both rows sit inside the question's clue_interval [31704,32099]/total_intervals and are trivially found by any run_sql query windowing episodes on that timestamp range or LIKE '%龟泪%'/'%苦海%'. The dialogue at 31740-31770s ('鬼蛇二将...泪滴...答谢') gives narrative context for why the tears are a reward, also inside the window."
+  },
+  "root_causes": [
+    "Not a retrieval-difficulty question: the map name and item both appear as literal on-screen/dialogue text directly inside the clue window, and a simple text-LIKE or time-windowed SQL query over episodes reliably surfaces it.",
+    "The one sub-5 score (rollout 4, score 3) is not explained by any observable difference in tool calls, retrieved evidence, or the final answer's content/specificity versus the four rollouts scored 5 — the judge call for that attempt returned a bare {\"score\":3} with no rationale, consistent with judge scoring noise rather than an agent failure."
+  ],
+  "what_worked": [
+    "All 5 rollouts converged on run_sql time-windowed queries against the episodes table (30sec granularity) covering the clue interval, which directly returned both the location-banner text and the inventory item text.",
+    "Several rollouts also cross-checked via semantic_triples/topic_facts/entities queries, reinforcing the same answer without needing clip_qa (no visual sub-agent call was needed since the on-screen text captions already named the location and item)."
+  ],
+  "transferable_lessons": [
+    "For 'on which map/location does X happen' event-recognition questions, a time-windowed SQL scan of the episodes table around the clue interval is usually sufficient since on-screen location banners and item names are captured verbatim in episode captions.",
+    "Once the map name and item name both appear in the same or adjacent episode rows, further searching (extra semantic_search rounds, clip_qa) adds cost without changing the answer; rollouts that submitted after 1-2 confirmations answered just as well as those that searched more.",
+    "When comparing near-identical correct answers with an unexplained score gap, check the judge segment for a rationale before assuming a retrieval bug — a terse judge output with no explanation is a strong hint of scoring noise rather than a real quality difference."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Why did the judge score rollout 4's answer (content-equivalent to rollouts 0/1/2/3) as 3 instead of 5? The judge tool output contains no rationale field to inspect, so this remains unresolved judge-level variance."
+  ]
+}

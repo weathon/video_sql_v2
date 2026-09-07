@@ -1,0 +1,102 @@
+{
+  "question_id": "day-11",
+  "timeline": "day",
+  "index": 11,
+  "question": "During the battle between the player and Elder Jinchi (金池长老), how many times was Immobilize (定身术) used in total?",
+  "reference_answer": "4",
+  "question_type": "Counting",
+  "temporal_certificate": "Short",
+  "total_intervals": [[5887, 5890], [5940, 5945], [6010, 6014], [6082, 6086]],
+  "clue_interval": [[5887, 5890], [5940, 5945], [6010, 6014], [6082, 6086]],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "Immobilize used 1 time, at ~5888-5890s.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/episodes/visual_clips) x4 -> run_sql(episodes 5700-6150) -> semantic_search(semantic_triples/event_steps/visual_clips/object_states) x4 -> run_sql(visual_clips 5820-6120) -> read_skill(visual-verification) -> clip_qa(5820-5940)->1 -> clip_qa(5940-6120)->5 -> clip_qa(5820-6120 full re-review)->1 -> submit",
+      "decisive_steps": [
+        {"segment_file": "clip-c32d40d312604bd5b0893322c35f349b-segment-00.json", "item_index": null, "what_happened": "clip_qa over 5820-5940 finds only 1 cast (~5889.5-5890), correctly identifies gold-statue + '定' glyph cue but window excludes the other 3 clue intervals."},
+        {"segment_file": "clip-abee5600a3cc4d1ca21ca0126c9ae462-segment-01.json", "item_index": null, "what_happened": "clip_qa over 5940-6120 hallucinates a completely different cue (gold-green sparkling tendril/beam bursts at ~6051/6057/6070/6076/6090) and reports 5 casts -- none of these timestamps match any of the 3 remaining clue intervals (5940-5945, 6010-6014, 6082-6086), so this call's evidence is spurious/off-target."},
+        {"segment_file": "clip-2a8fbb7732304512a34ea99404338a46-segment-02.json", "item_index": null, "what_happened": "Agent re-runs clip_qa over the full 5820-6120 range to reconcile the 1-vs-5 conflict; this pass again reports only 1 activation (~5888.3) and explicitly excludes 'later orange fire/transformation effects' as not immobilize. Agent trusts this final call and discards both earlier answers, submitting 1."}
+      ],
+      "failure_point": "Visual sub-agent (clip_qa) is internally inconsistent across 3 calls on the same footage (1, then 5, then 1), with the '5' count keyed to fabricated cue frames that don't align with any clue interval; the agent's reconciliation strategy (trust the last full-range call) still only recovers cast #1 and misses casts #2, #3, #4 (5941, 6012, 6082).",
+      "evidence_checked": "Confirmed via frame extraction that the gold-statue/particle 'freeze' visual is present at 5888-5890 and 6082-6086 (arms-raised statue pose); did not separately verify the tendril/beam frames claimed at 6051-6090 in the second clip_qa call, but none of those timestamps land in a clue interval."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "Immobilize used 3 times, at ~5888s, 5941s, 6082s; explicitly excluded 6019-6022s as a 'fiery sequence/different attack'.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps/episodes/semantic_triples) x3 -> run_sql(event_chains) -> run_sql(episodes text-match 定身/immobil/freeze/spell/Jinchi) x2 -> run_sql(event_steps 5820-6120) -> semantic_search(visual_clips/episodes/topic_facts) x3 -> read_skill(visual-verification) -> clip_qa(5880-6120, single call) -> submit",
+      "decisive_steps": [
+        {"segment_file": "clip-76db381e0534481988b8b340cba9c074-segment-00.json", "item_index": null, "what_happened": "Single clip_qa over 5880-6120 correctly finds casts at 5888.3, 5941.3, 6082.3 (matching 3 of the 4 clue intervals) but explicitly notes and rejects the ~6019-6022s window as 'a fire/transformation attack, not an immobilize effect on the boss'."}
+      ],
+      "failure_point": "Correctly identified 3/4 casts but the visual sub-agent misclassified the 4th cast (near clue interval 6010-6014) as an unrelated fire/transformation effect rather than the immobilize freeze -- likely because it sampled frames slightly later (6019-6022) than the actual statue-transition moment (6010-6011).",
+      "evidence_checked": "Frame extraction at 6010.0s shows the boss's lower body/legs/hands already turned to the same cracked-gold statue color and gold particle effect seen at 5888/6082, i.e. visually consistent with an immobilize cast; by ~6012s the coloring shifts to a redder, more fire-like impact look that likely misled the sub-agent's later-sampled frames."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "Immobilize used 2 times, at ~5888.1s and ~5941.2s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps/episodes/semantic_triples) x3 -> run_sql(episodes text-match) -> run_sql(event_steps 5700-6600) -> run_sql(semantic_triples 5700-6600) -> run_sql(visual_clips 5700-6600) -> read_skill(visual-verification) -> clip_qa(5820-6120, single call) -> submit",
+      "decisive_steps": [
+        {"segment_file": "clip-10c0b3d4eb8b42c3899272cf16ab2d76-segment-00.json", "item_index": null, "what_happened": "Single clip_qa over the full 5820-6120 range reports only 2 casts (5888.1, 5941.2), and explicitly lists 'the later transformation/fire sequence around 6019-6022s' among things it did NOT count, missing both the 6010-6014 and 6082-6086 clue intervals entirely."}
+      ],
+      "failure_point": "Same fire-vs-immobilize misclassification as rollout 1 for the 3rd clue interval, plus this rollout's single clip_qa call additionally failed to surface the 4th cast at 6082-6086 at all (undercounting further than rollout 1/4, which at least found that one).",
+      "evidence_checked": "Frame at 6082.0s clearly shows the boss in an arms-raised, fully gold statue pose -- an unambiguous freeze cue that this rollout's clip_qa call missed."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "Immobilize used 2 times, at ~5890s and ~5942s; excluded a 'spell-selection/menu view at about 5889s' as not a cast.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/semantic_triples/episodes/topic_facts) x4 -> run_sql(episodes 5700-7500) -> semantic_search(event_steps/visual_clips/episodes) x3 -> run_sql(semantic_triples 5820-6120) -> read_skill(visual-verification) -> clip_qa(5820-6120, single call) -> submit",
+      "decisive_steps": [
+        {"segment_file": "clip-9df6e9c605ab4376a4f8367200ae6af4-segment-00.json", "item_index": null, "what_happened": "Single clip_qa over 5820-6120 finds only the 2 clearest 定 glyph moments (5890, 5942) and stops, giving no evidence at all about the 6010-6014 or 6082-6086 windows in its answer text."}
+      ],
+      "failure_point": "Most conservative/incomplete visual scan of all 5 rollouts: only reports the two most visually explicit '定' glyph instances and never surfaces or discusses the other two clue intervals, i.e. the sub-agent's single pass simply did not sample/notice those windows.",
+      "evidence_checked": "Same frame evidence as above (6010 and 6082 both show plausible freeze cues) confirms this rollout under-scanned rather than correctly ruling those windows out."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "Immobilize used 3 times, at ~5888s, 5941s, 6082s.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(event_steps/episodes/visual_clips) x3 -> run_sql(event_chains name-match) -> run_sql(episodes 5820-6600) -> run_sql(visual_clips 5820-6600) -> run_sql(topic_chains name-match) -> run_sql(event_steps text-match) -> run_sql(semantic_triples text-match) -> run_sql(topic_facts text-match) -> semantic_search(event_steps) -> read_skill(visual-verification) -> clip_qa(5880-6120, single call) -> submit",
+      "decisive_steps": [
+        {"segment_file": "clip-3e5c068d440847fbbb9340d6b595aa94-segment-00.json", "item_index": null, "what_happened": "Single clip_qa correctly finds casts at 5888.3, 5941.3, 6082.0 (the same 3 of 4 as rollout 1) but its answer text never mentions or discusses the 6010-6014 window at all -- it simply wasn't surfaced as a candidate, rather than being explicitly rejected."}
+      ],
+      "failure_point": "Same missed 4th cast (6010-6014) as rollout 1, but here the sub-agent didn't even flag it as a rejected candidate -- most extensive SQL text-search of all 5 rollouts (explicit LIKE '%定身%'/'%immobil%'/'%freeze%'/'%stun%' queries against event_steps, semantic_triples, topic_facts) still returned nothing in the battle window because the DB captions never mention 定身 there, forcing reliance entirely on clip_qa.",
+      "evidence_checked": "Confirmed via sql that LIKE '%定身%' and '%immobil%' against event_steps/semantic_triples/topic_facts restricted to 5820-6120 returns zero rows -- the only occurrences of 定身 anywhere in the DB are earlier skill-menu/tutorial mentions (row ids around 1200s, 32000s-50000s), none during the Jinchi battle."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The structured/text DB (episodes 30sec captions, event_steps, semantic_triples, topic_facts) contains zero mentions of 定身/immobilize anywhere in the 5700-6600s battle window -- all textual hits for 定身 in the whole DB are from earlier menu/tutorial scenes (learning/purchasing/browsing the spell around t=1200-50550s), not from the fight itself. The count is therefore only recoverable by frame-level visual inspection via clip_qa across the ~5820-6120s battle, which is exactly what all 5 rollouts fell back to. Frame extraction confirms all 4 clue intervals (5887-5890, 5940-5945, 6010-6014, 6082-6086) show the same visual signature: the boss's skin turns to a cracked gold/bronze 'statue' color with sparkling particles (clearest at 5890 and 6082, where the boss is fully gold with arms raised; more ambiguous/blended-with-combat-sparks at 6010-6014, which likely caused every rollout's visual sub-agent to either misclassify it as a 'fire/transformation attack' or simply not surface it)."
+  },
+  "root_causes": [
+    "The battle-window DB captions/triples never name the immobilize spell, so every rollout had to fall back entirely on clip_qa visual counting with no textual cross-check or ground-truth count to anchor against.",
+    "The clip_qa visual sub-agent systematically misread or overlooked the 3rd clue interval (6010-6014s): in rollouts 1 and 2 it explicitly mislabeled the visually similar ~6019-6022s moment as an unrelated 'fire/transformation attack'; in rollouts 3 and 4 it simply never surfaced that window at all.",
+    "clip_qa is not reproducible/reliable across repeated calls on the same footage: rollout 0's three separate clip_qa calls over overlapping windows returned wildly different counts (1, then 5 with fabricated 'tendril/beam' cues at unrelated timestamps, then 1 again), and the agent's reconciliation (trust the last full-range call) still landed on the worst answer of all 5 rollouts.",
+    "No rollout used more than one clip_qa call focused specifically on disambiguating the 6010-6014s window (e.g. a tight zoom-in clip_qa on just that interval with a direct compare-to-known-cue prompt), so the one genuinely ambiguous instance was never independently re-verified."
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly located the battle window (5820-6120s) via SQL/semantic_search over episodes and visual_clips even though the target term was absent from the text, by searching on the boss name (金池长老/Jinchi) instead.",
+    "3 of 5 rollouts (1, 2, 4) correctly identified the clearest and most visually unambiguous casts at 5888-5890 and 5941-5945 via the gold-statue/'定' glyph cue.",
+    "2 of 5 rollouts (1, 4) also correctly found the 4th clue interval's neighbor cast at 6082-6086, getting 3/4 total counted."
+  ],
+  "transferable_lessons": [
+    "For counting questions where the target term never appears in the structured DB text, budget for a dedicated visual disambiguation pass (a second, narrower clip_qa call) on any moment where the visual cue looks 'similar but different' rather than accepting the first sub-agent's fire-vs-spell judgment call.",
+    "When clip_qa calls on overlapping windows disagree by a wide margin (1 vs 5), that disagreement is itself a signal the visual cue definition is ambiguous -- the agent should re-anchor on the clearest known instance (compare frame-by-frame against a confirmed cast) rather than simply trusting the last call.",
+    "For 'how many times was X used' questions in gameplay footage, describe the exact visual signature (color, pose, on-screen glyph) once from a confirmed instance and pass that as a concrete comparison anchor into every subsequent clip_qa call, instead of re-describing the spell only by name each time."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Whether the 6010-6014s moment is unambiguously the same 'immobilize' visual effect as the other 3 (full gold statue transformation) or a distinct fire/execute-type attack that the reference answer's annotator may have over-counted -- the frame at 6010-6012 shows a golden/cracked coloring similar to the other casts but a different pose (crouched vs arms-raised), so it is plausible but not certain from single-frame inspection alone.",
+    "Whether a 5th or 6th genuine cast exists later in the fight that none of the rollouts' clip_qa calls (bounded at ~6120s) would have seen, since the fight extends to at least 6090s ('已击败'/defeated) and the reference total_intervals stop at 6086."
+  ]
+}

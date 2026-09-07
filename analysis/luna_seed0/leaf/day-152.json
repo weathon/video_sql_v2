@@ -1,0 +1,102 @@
+{
+  "question_id": "day-152",
+  "timeline": "day",
+  "index": 152,
+  "question": "When the player obtains the Jingubang (如意金箍棒), what level are they in the game?",
+  "reference_answer": "94",
+  "question_type": "Event Tracking",
+  "temporal_certificate": "Short",
+  "total_intervals": [[81590, 81594]],
+  "clue_interval": [[81590, 81594]],
+  "scores": [5, 5, 0, 0, 0],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "The player is level 94 when obtaining the 如意金箍棒 (Jingubang). Equipment screen at ~81584-81590s shows 94 in the upper-right.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/topic_facts/event_steps/visual_clips) -> run_sql(episodes) -> read_skill(visual-verification) -> clip_qa(81560-81600) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 10, "what_happened": "semantic_search on topic_facts returned topic_facts:00014105 at start_s=81570.0 previewing 'weapon ...' (Jingubang acquisition), pinning the correct clue window."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 24, "what_happened": "clip_qa called on start_s=81560,end_s=81600 asking to read the numeric player level distinct from weapon stats; visual agent read three frames at 81584-81590s and reported level 94 at the upper-right of the equipment screen, distinguishing it from weapon attack/crit stats."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed via memcli sql that episodes:30sec:002656 (79680-79710s) independently records 'equipment ... menu showing character stats at level 93' -- i.e. level 93 held before 79710s, so a level-up to 94 happened between ~79710s and the 81584-81590s acquisition window that this rollout queried. The rollout queried the correct (post-level-up) window."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "The player is level 94 when obtaining the 如意金箍棒 (Jingubang). Equipment screen at about 21:33:08 shows 如意金箍棒 selected/equipped and level 94 on the right.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/event_steps/semantic_triples/visual_clips) -> run_sql x3 -> semantic_search x2 -> run_sql -> read_skill(visual-verification) -> clip_qa(~81570-81600) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 14, "what_happened": "semantic_search on visual_clips hit visual_clips:002719 (start_s=81570, end_s=81600), matching the clue interval."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 36, "what_happened": "clip_qa on the ~81570-81600 window found the equipment screen showing 如意金箍棒 equipped with level indicator reading 94."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same DB check as rollout 0: pre-acquisition level (93, at 79680-79710s) differs from the level visible at the acquisition window (94), confirming this rollout also landed on the correct post-level-up window."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "Chapter 6 (第六章「未竟」); no numeric level reported ('footage does not show a separate numeric character level at that moment').",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/visual_clips/episodes) -> run_sql x3 -> semantic_search x3 -> run_sql x2 -> read_skill(visual-verification) -> clip_qa(84080-84120) -> semantic_search x2 -> run_sql -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-01.json", "item_index": 11, "what_happened": "semantic_search on visual_clips DID surface visual_clips:002719 (81570-81600), the correct clue window, same hit rollout 1 used successfully."},
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-01.json", "item_index": 43, "what_happened": "Instead of following that hit, the agent drifted to explore ~84080-84420s (a later, unrelated HUD/chapter-title region) and issued clip_qa there; the visual agent correctly reported no level number visible in that wrong window."}
+      ],
+      "failure_point": "Correct clue interval was retrieved (visual_clips:002719 at 81570-81600) but the agent abandoned it, chased a different time window (~84300-84420s) that it mistakenly associated with the acquisition, got a 'no level visible' answer there, and gave up on the numeric level entirely, substituting a chapter-name answer.",
+      "evidence_checked": "Compared this rollout's retrieved candidate list against rollout 0/1: the same visual_clips row (002719, 81570-81600) was present but not acted on."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "Level 93 at obtaining the Jingubang; cites a stats panel 'shortly before the acquisition' at ~79667s, with acquisition itself placed at 81570-81600s.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x3 -> run_sql (error: duplicate column) -> run_sql x2 -> read_skill(visual-verification) -> clip_qa(79620-79680) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 27, "what_happened": "run_sql on episodes around 79020-79050s surfaced the vendor/equipment-browsing episode text (level 93) region, which the agent treated as representative of the player's level at acquisition."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 32, "what_happened": "clip_qa deliberately queried start_s=79620,end_s=79680 ('shortly before the acquisition') instead of the actual 81570-81600 acquisition window; visual agent correctly read level 93 there, so the tool executed faithfully but on the wrong (stale) time window."}
+      ],
+      "failure_point": "Agent explicitly reasoned 'level shortly before acquisition' and queried a stale pre-level-up window (79620-79680s) rather than the acquisition moment itself (81570-81600s), even though it correctly identified the acquisition time in its own final answer. A level-up occurred between 79710s and 81584s that this rollout never checked for.",
+      "evidence_checked": "memcli sql confirms episodes:30sec:002656 (79680-79710s) reports level 93 explicitly in DB text -- this is genuine ground truth for that earlier time, not a misread; the error is purely wrong time window, not a visual misread."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "Chapter 6, Water Curtain Cave; 'a nearby equipment menu lists the character at level 93' -- no clip_qa was called at all.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> run_sql x4 -> submit (no clip_qa, no read_skill(visual-verification))",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": 8, "what_happened": "semantic_search/run_sql surfaced episodes:30sec:002656 (79680-79710s) text explicitly stating 'equipment (换装) menu showing character stats at level 93', and the agent used this stale text-only figure directly as the answer without ever invoking clip_qa to check the level at the actual 81570-81600s acquisition window."}
+      ],
+      "failure_point": "Never called clip_qa to visually verify the level at the acquisition moment; relied on a text-table description of level 93 from an earlier (79680-79710s) equipment-browsing episode and never noticed the mismatch with the later acquisition time, so it submitted a stale/wrong level and hedged into a location/chapter answer.",
+      "evidence_checked": "Same DB text (episodes:30sec:002656) traced directly; confirms the '93' the agent used is genuinely from a pre-acquisition episode summary, not a misread of a correct frame."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "The DB text tables (episodes, semantic_triples, topic_facts) around the 81570-81600s clue window describe the Jingubang acquisition narratively (protagonist 'holds and lifts long staff', location 水帘洞, dialogue) but never state the numeric player level at that exact moment -- the level number is only visible as an on-screen HUD/equipment digit, so it is retrievable only via clip_qa on the correct window. A separate DB row (episodes:30sec:002656, 79680-79710s) explicitly records 'level 93' from an earlier equipment-menu browse. Between 79710s and 81584s the player leveled up from 93 to 94 (confirmed visually by rollouts 0 and 1 at 81584-81590s). So the ground truth requires distinguishing two real, DB-supported level values at two different times; only the post-level-up figure (94) answers the question as asked."
+  },
+  "root_causes": [
+    "Wrong time window: the two 0-scored rollouts that did call clip_qa (03) or use retrieved text (04) anchored on level readings from BEFORE the acquisition moment (79680-79710s, level 93) rather than at the clue interval itself (81570-81600s, level 94), missing an intervening level-up.",
+    "Abandoning a correct retrieval hit: rollout 02 actually surfaced the correct visual_clips row (002719, 81570-81600) via semantic_search but did not act on it, instead chasing an unrelated later window (~84080-84420s) and ultimately giving up on a numeric answer.",
+    "Skipped visual verification: rollout 04 never invoked clip_qa at all and treated a DB text summary of an earlier (stale) equipment screen as if it applied at the acquisition moment, despite the visual-verification skill existing precisely for numeric on-screen values.",
+    "The numeric level is only reliably obtainable from the visual HUD at the exact clue interval; any window even ~2000s earlier gives a different, DB-supported but wrong answer, making this question sensitive to precise time-window selection."
+  ],
+  "what_worked": [
+    "Rollouts 0 and 1 followed semantic_search hits (topic_facts/visual_clips) that pinpointed the 81570-81600s window matching the clue interval, then used clip_qa scoped tightly to that window with a question explicitly asking to distinguish player level from weapon stats, which the visual sub-agent answered correctly and consistently (94) across both."
+  ],
+  "transferable_lessons": [
+    "For 'what level/stat when X happens' questions, always run clip_qa scoped to the exact clue/event interval, not to a nearby or 'shortly before' interval -- character level, stats, and other numeric state can change between text-table snapshots and the target moment.",
+    "When a semantic_search or run_sql hit already matches the narrative event described in the question (e.g. the exact acquisition dialogue/location), prioritize acting on that hit over exploring other, less on-topic candidate windows.",
+    "Do not substitute a DB text-table description of a numeric on-screen value for a live clip_qa check when the question depends on a precise number at a precise moment; text summaries can be stale relative to the exact time asked about.",
+    "If clip_qa reports 'no value visible' in one window, treat that as evidence the window is wrong and re-anchor to the retrieved clue interval, rather than falling back to a non-numeric answer (e.g. chapter name) as a substitute for the requested number."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Exact snapshot_s at which the level-up from 93 to 94 occurred between 79710s and 81584s was not pinpointed (not needed for this diagnosis, but would explain why some rollouts anchored on the earlier value)."
+  ]
+}

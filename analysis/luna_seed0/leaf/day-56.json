@@ -1,0 +1,96 @@
+{
+  "question_id": "day-56",
+  "timeline": "day",
+  "index": 56,
+  "question": "In which chapter is the Curio (珍玩) Beasts and Buddha obtained?",
+  "reference_answer": "Chapter 3",
+  "question_type": "Event Tracking",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[39867, 39894]],
+  "clue_interval": [39867, 39894],
+  "scores": [5, 5, 5, 5, 5],
+  "score_spread": "all_high",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "The curio 兽与佛 (\"Beasts and Buddha\") is obtained in Chapter 3, 夜生白露, appearing in the talisman/curio menu at about 39,900s during the 小雷音寺 section.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/event_steps/topic_facts/visual_clips) x4 -> run_sql(episodes window 39600-40200) -> run_sql(event_steps join event_chains) -> run_sql(visual_clips window) -> run_sql(episodes title-card ILIKE '%第%回%') -> run_sql(episodes title-card CAST-as-varchar retry) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": 20, "what_happened": "run_sql on visual_clips 39600-40200 returned visual_clips:001329/001330 (39870-39930) describing the talisman/inventory menu showing '兽与佛' (horned beast mask) among collected curios, directly at the clue interval."},
+        {"segment_file": "answer-segment-00.json", "item_index": 28, "what_happened": "run_sql retried with CAST(text AS VARCHAR) ILIKE '%第%回%' after the first jsonb ->> query on episodes failed/returned nothing useful, and found the '第三回' chapter title-card episode rows, confirming the clue interval falls inside the Chapter 3 span."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Verified independently via sql: visual_clips rows 39870-39930 name '兽与佛' in the talisman menu; episodes rows show a '第三回' title card first appearing at 21420s and the chapter still labeled '第三回' (with in-video subtitle text drifting from 风都黄昏 -> 风起黄昏 -> 夜生白露 -> 夜半白露/牧生白露) through at least 44280s, so 39867-39894 is inside Chapter 3."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "The curio Beast and Buddha (兽与佛) is obtained in Chapter 3 — The New West (小西天), at ~39,900s during the snowy Small Leiyin Monastery section; chapter title identified as 第三回.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> run_sql x4 -> semantic_search x3 -> run_sql -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": null, "what_happened": "Same retrieval pattern as rollout 0: semantic_search over episodes/topic_facts/visual_clips followed by run_sql windowed queries around 39600-40200 surfaced the talisman-menu clip naming 兽与佛, then a chapter-title-card SQL query confirmed 第三回."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same DB rows as rollout 0 (visual_clips:001329/001330 and the 第三回 title-card episodes) support this answer."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "The curio 兽与佛 (Beasts and Buddha) is associated with Chapter 3, '夜生白露' (New West / 小西天), appearing in the collected talisman/curio inventory at ~39900s during the 小雷音寺 section; chapter title identified elsewhere as 第三回 夜生白露.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> run_sql x6 -> semantic_search x3 -> run_sql -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": null, "what_happened": "Ran more run_sql iterations than rollouts 0/1 (6 vs 4-5) but converged on the same visual_clips talisman-menu evidence and the 第三回 title-card episode rows."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same underlying DB evidence as rollout 0."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "The Beast Buddha (兽与佛) curio is obtained in Chapter 3, placed in the snowy Small Thunderclap Temple (小雷音寺) section where the inventory screen shows 兽与佛 among the collected talismans/curios.",
+      "tool_call_sequence": "read_skill x2 -> semantic_search x4 -> read_skill x2 -> run_sql -> semantic_search x2 -> run_sql -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": null, "what_happened": "Fewest tool calls of the 5 (13 steps total) but still found the same visual_clips talisman-menu evidence and a chapter-boundary run_sql before submitting; did not restate the '第三回' subtitle text explicitly in the answer but got the chapter number right."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same underlying DB evidence as rollout 0."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "The curio Beasts and Buddha (兽与佛) is obtained in Chapter 3 — the New West / 小西天 chapter. Shown in the collected-curio/talisman inventory at ~39,900s, during the 小雷音寺 section.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x3 -> run_sql -> semantic_search x2 -> run_sql -> semantic_search x4 -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": null, "what_happened": "Used more semantic_search calls and fewer run_sql calls than others but still located the visual_clips talisman-menu clip and a chapter-boundary confirmation before submitting."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same underlying DB evidence as rollout 0."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "visual_clips rows 001329 (39870-39900) and 001330 (39900-39930) explicitly name '兽与佛' (rendered in captions as a horned beast mask / 'Beast and Buddha') in the in-game talisman/curio selection menu, directly overlapping the clue interval 39867-39894. episodes rows carry title-card text: '第三回 风都黄昏' first appears at 21420s, and the game continues under '第三回' (with drifting in-episode subtitle spellings 风起黄昏 / 夜生白露 / 夜半白露 / 牧生白露 / 风起黄泉, all inconsistent OCR/caption variants of the same chapter-3 arc) through at least 44280s. No '第四回' title card appears before that point in the queried range, so the clue interval sits unambiguously inside Chapter 3. The reference answer 'Chapter 3' is well supported."
+  },
+  "root_causes": [],
+  "what_worked": [
+    "All 5 rollouts used the same effective pattern: semantic_search across multiple tables (episodes/event_steps/topic_facts/visual_clips) to locate the curio-related clip, then targeted run_sql windowed queries (start_s BETWEEN clue-adjacent bounds) on visual_clips to find the exact talisman-menu caption naming 兽与佛.",
+    "All rollouts additionally ran a run_sql search for chapter title-card text ('第%回%'/'title card'/'chapter') to confirm the chapter number independently of the item-menu clip, rather than inferring the chapter from proximity alone.",
+    "The visual_clips captioning was detailed enough (naming the specific talisman '兽与佛' inside the menu clip text) that no clip_qa visual sub-agent call was needed in any of the 5 rollouts — the retrieval agent solved this purely from existing captions/SQL.",
+    "The judge scored all 5 as correct despite verbose, sometimes inconsistent subtitle-text framing (夜生白露 vs 风都黄昏 vs New West/小西天) in the free-text answers, because the reference answer is just 'Chapter 3' and all 5 answers correctly stated Chapter 3."
+  ],
+  "transferable_lessons": [
+    "For 'which chapter' questions, cross-check both (a) the item/event's own visual_clips or episode caption and (b) a title-card / chapter-marker search (ILIKE on '第%回%'/'chapter'/'title card') anchored to the nearest chapter boundary, rather than trusting a single source.",
+    "When a jsonb ->> query on a text column errors out (malformed JSON), falling back to CAST(text AS VARCHAR) ILIKE is a reliable retry pattern that several rollouts used successfully.",
+    "Detailed visual_clips captions that name specific in-game item/menu text (e.g. an item's Chinese name shown in an inventory screen) can make a clip_qa visual sub-agent call unnecessary — check caption text before spending a visual call."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "The exact chapter subtitle name differs across rollouts (夜生白露 / 风都黄昏 / 风起黄昏) because the in-game chapter subtitle text itself appears to drift/vary in different caption occurrences of '第三回' in the source video (OCR or streaming overlay variance); this did not affect scoring since only the chapter number was judged, but the true canonical subtitle for Chapter 3 was not independently resolved here."
+  ]
+}

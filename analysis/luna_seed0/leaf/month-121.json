@@ -1,0 +1,105 @@
+{
+  "question_id": "month-121",
+  "timeline": "month",
+  "index": 121,
+  "question": "During the streamer's Hong Kong tour, what items did the streamer receive from fans in sequence on the bus printed with Cristiano Ronaldo? 1. Jersey; 2. Tissue paper; 3. Banana?",
+  "reference_answer": "3, 1, 2",
+  "question_type": "Temporal Reasoning",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[283369, 283950]],
+  "clue_interval": [{"video_id": "19", "intervals": [[20818, 21399]]}],
+  "scores": [0, 0, 0, 0, 1],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "Tissue(~268169, different bus) -> jersey(~282763-282771) -> banana(~283982-283990, no visible handoff). Concludes proposed order 'not quite right'.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes/event_steps/topic_facts/visual_clips) x4 -> semantic_search(episodes) x3 -> read_skill(sql-schema,visual-verification) -> run_sql(episodes 270-285k) x3 -> clip_qa(268140-268210 tissue) -> clip_qa(282700-282800 jersey) -> clip_qa(283940-284020 banana) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-03.json", "item_index": 46, "what_happened": "clip_qa confirms a fan hands a white tissue at ~268169s, but that is at an unrelated earlier aquarium/bus scene, not the Ronaldo bus"},
+        {"segment_file": "answer-segment-03.json", "item_index": 47, "what_happened": "clip_qa confirms fan hands white Real Madrid 'Ronaldo 7' jersey at ~282763-282771, clearly before boarding the tram"},
+        {"segment_file": "answer-segment-03.json", "item_index": 48, "what_happened": "clip_qa confirms streamer peels/eats a banana at ~283982-283990 but footage does not show a fan handoff"}
+      ],
+      "failure_point": "Never located any tissue-paper exchange actually on the Ronaldo bus itself, and reasonably concluded the reference order does not match retrievable evidence; submitted a non-matching order and was scored 0 for not stating '3,1,2'.",
+      "evidence_checked": "Verified independently via sql/frames that jersey (282741-282801) and banana-eating (283971-284001) episode captions match; no tissue/napkin caption anywhere in [283369,283950]."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "Jersey(~282741-282801, before boarding) -> banana(~283971-284001). Tissue found only at ~172188-172218 on a different, red-seated bus earlier in the stream; explicitly rejects it as belonging to the Ronaldo bus.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x3 -> run_sql(episodes/event_steps/semantic_triples/visual_clips around 282600-283700) x4 -> semantic_search(tissue) x2 -> semantic_search(banana, visual_clips) x2 -> run_sql(171300-173300 region) x3 -> semantic_search(object_states tissue) -> semantic_search(semantic_triples tissue/banana) x2 -> run_sql(276900-277200, 281400-282300) x4 -> semantic_search(wide 'tissue banana jersey' n=50) -> submit (no clip_qa calls)",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": 59, "what_happened": "semantic_search over object_states surfaces 'examining a white napkin handed to him' at 172188-172218 on a red-seated bus, correctly identified as a different bus/time, not the Cristiano Ronaldo one"},
+        {"segment_file": "answer-segment-00.json", "item_index": 24, "what_happened": "run_sql over episodes/event_steps/visual_clips around 282600-283700 finds only the jersey handoff before boarding, no tissue or banana text evidence on the Ronaldo bus segment itself"}
+      ],
+      "failure_point": "Thorough text-only search (no clip_qa/visual verification) found no on-bus tissue evidence and concluded the proposed order is unsupported; submitted jersey->banana without a bus tissue, not matching '3,1,2'. Never used clip_qa so could not catch the finer visual tissue-hand event around 283905 that rollout 2's visual pass found.",
+      "evidence_checked": "Confirmed via sql that the 172188 napkin episode is on a red-seated bus (different vehicle/time), consistent with the agent's own conclusion."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "Jersey (~282744, before boarding) -> tissue/paper (~283905, passed through tram window) -> [toy sword ~283917] -> banana (~283953, handed from adjacent red tram). States order is jersey->tissue->banana (i.e. 1,2,3).",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(episodes/visual_clips/event_steps/topic_facts) x3 -> run_sql(episodes text-filter, 270-285k) x2 -> run_sql(282600-284000 30sec) -> semantic_search(episodes/visual_clips tissue) x2 -> semantic_search(event_steps tissue) -> clip_qa(282720-283000 jersey confirm) -> clip_qa(283700-284020 chronological fan exchanges) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 38, "what_happened": "clip_qa confirms jersey handed at ~282763-282774, before boarding"},
+        {"segment_file": "answer-segment-02.json", "item_index": 39, "what_happened": "clip_qa scanning 283700-284020 chronologically finds a tissue/paper handed at ~283905-283907 and a banana at ~283953, i.e. tissue before banana, both after the jersey"}
+      ],
+      "failure_point": "This rollout produced the most visually-grounded chronology (jersey -> tissue -> banana, order 1,2,3), which is internally consistent with episode captions (banana-eating caption at 283971-284001 postdates a tissue-shape item near 283905), but it is the exact opposite item-1-vs-item-3 relationship from the reference's '3,1,2' (banana first). Scored 0 because the reference wants banana before jersey, which no rollout's evidence supports.",
+      "evidence_checked": "Confirmed jersey caption text at 282741-282801 predates all in-window tissue/banana candidates by ~900-1200s; no DB caption places a banana before the jersey."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "'Yes, sequence is correct: jersey (~283734) -> tissue/napkin (~283742) -> banana (~284000)'. Explicitly affirms the proposed order 1,2,3 (jersey, tissue, banana).",
+      "tool_call_sequence": "read_skill x6 -> semantic_search x4 -> run_sql -> semantic_search x4 -> semantic_search -> clip_qa(283300-284050 chronological fan-item scan) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 39, "what_happened": "single wide clip_qa call over 283300-284050 claims a jersey handoff at ~283734-283736 and a tissue/paper at ~283742-283744, in addition to banana at ~284000; agent trusts this and never separately verifies the jersey against the earlier 282763 boarding-jersey moment"}
+      ],
+      "failure_point": "Visual sub-agent misread: the frame at 283734 (checked manually) shows the streamer leaning out tossing objects to a crowd near a Starbucks, not receiving a jersey; this contradicts the episode caption for that interval ('waving and tossing objects toward a crowd... don't throw it'). The clip_qa hallucinated a second, spurious jersey handoff during the ride and never cross-referenced the earlier, textually-confirmed jersey moment at 282763-282801 before boarding. This produced an answer affirming the proposed (wrong, per reference) order using fabricated evidence, and still scored 0 since '3,1,2' was expected, not '1,2,3'.",
+      "evidence_checked": "Pulled the actual frame at 283734s; shows crowd interaction/tossing, no clear jersey handoff, contradicting the clip_qa's claim."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 1,
+      "answer": "Jersey (~282762-282765) -> banana (~283952-283953). States no separate tissue-paper handoff was found on the Ronaldo bus.",
+      "tool_call_sequence": "read_skill x? -> semantic_search x? -> run_sql -> clip_qa(jersey confirm) -> clip_qa(banana confirm) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": null, "what_happened": "clip_qa confirms jersey handoff ~282762-282765 (before boarding) and banana handling ~283952-283953 during the ride; concludes no tissue was received on this specific bus"}
+      ],
+      "failure_point": "Same fundamental mismatch with reference (jersey before banana, no tissue found), but received partial credit (1/5) from the judge, likely because it correctly named two of the three items (jersey, banana) even though the order and the tissue claim diverge from reference; did not claim a third, contradictory item like rollout 3's hallucinated jersey.",
+      "evidence_checked": "Consistent with rollout 1's and DB's finding: jersey before boarding, banana ~283950-284001, no on-bus tissue caption in this window."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "episodes/object_states captions unambiguously place a 'someone hands him a white real madrid jersey marked ronaldo 7' event at 282741-282771s (before boarding the tram) and a 'peels a banana' event at 283971-284001s (while riding). No episode/topic_fact/object_state caption in the logical clue window [283369,283950] or its immediate surroundings mentions tissue, napkin, or paper being received; the only DB-indexed tissue/napkin event near this timeframe is at 172188-172218s on a visually distinct red-seated bus (an unrelated earlier scene). One rollout's clip_qa (rollout 2) visually located a plausible tissue/paper hand-through-window event at ~283905s, after the jersey and roughly contemporaneous with/just before the banana at ~283953s. Across all 5 independent rollouts and manual frame checks, no evidence anywhere places a banana handoff before the jersey (jersey is the earliest-appearing item by ~900-1200s in every account). This directly contradicts the reference answer '3,1,2' (banana first, then jersey, then tissue)."
+  },
+  "root_causes": [
+    "The reference answer's ordering (banana, jersey, tissue) is not supported by DB captions, semantic-triple/object-state text, or five independent visual (clip_qa) inspections, all of which place the jersey handoff clearly first (~282763, before boarding) and the banana handling last (~283950-284001); this looks like a reference-answer/ground-truth error rather than a retrieval failure by the agent.",
+    "The 'tissue paper' item is genuinely hard to locate: it is either absent from automatic captions in the relevant window or only visible transiently (~283905s) via close visual inspection, causing rollouts to either miss it, misattribute it to an unrelated earlier bus (172188s), or (rollout 3) have clip_qa hallucinate an incorrect jersey+tissue pair at 283734-283744 that contradicts the actual frame content.",
+    "Because every rollout's honestly-retrieved evidence contradicts the fixed reference ordering, no amount of correct retrieval could produce a score above partial credit; the low/zero scores reflect a judge scoring against a likely-incorrect reference rather than agent retrieval failure."
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly and consistently located the jersey handoff event (~282741-282801) and the banana-eating event (~283971-284001) via semantic_search + run_sql + clip_qa triangulation.",
+    "Several rollouts (0, 1) correctly identified and rejected an out-of-scene tissue/napkin candidate at 172188s as belonging to a different (red-seated) bus rather than blindly accepting a lexical match.",
+    "Rollout 4 achieved partial credit by reporting only the two items it could visually confirm (jersey, banana) rather than fabricating a third."
+  ],
+  "transferable_lessons": [
+    "When a proposed answer's item ordering contradicts every independently retrieved timestamp by a wide margin (here, ~900-1200s), flag the mismatch explicitly and consider that the reference/expected labeling may itself be wrong, rather than searching indefinitely for a hidden confirming event.",
+    "Cross-validate a single clip_qa call's claimed timestamp against the corresponding stored episode/object_state caption for that exact interval before trusting it; rollout 3's clip_qa asserted a jersey handoff at 283734 that the stored caption ('tossing objects toward a crowd... don't throw it') and a manually pulled frame both contradict.",
+    "For 'received from fans on vehicle X' style questions, first establish the entry/boarding timestamp precisely (it anchors what counts as 'on the bus' vs 'before boarding'), since agents disagreed on whether the jersey handoff (which occurred outside, before boarding) counts as happening 'on the bus'.",
+    "Small object hand-offs (tissue, small paper items) are frequently under-captioned by the automatic pipeline; when a caption-only search returns nothing, a dedicated clip_qa scan across the full candidate window (not just at anchor points) can surface a real but faint event."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Is the reference answer '3,1,2' actually correct for some interpretation not captured by any rollout (e.g. a banana handed to him even earlier, off-camera, right as he approaches the bus before 282741, that neither the DB captions nor any clip_qa call surfaced)? Manual frame inspection at and shortly before 282741 was not exhaustively performed.",
+    "Is the tissue/paper event rollout 2's clip_qa found at ~283905 the same item the question intends, or could it be a different, differently-shaped object (e.g. a receipt or wrapper) misidentified as tissue paper?",
+    "Was there possibly a second, distinct Cristiano-Ronaldo-branded bus/tram elsewhere in the tour timeline that the retrieval never located, which could host a banana-first sequence?"
+  ]
+}

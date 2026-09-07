@@ -1,0 +1,104 @@
+{
+  "question_id": "day-10",
+  "timeline": "day",
+  "index": 10,
+  "question": "After the player defeats the Black Wind King (黑风大王), what does the Black Wind King (黑风大王) say?",
+  "reference_answer": "You've got some skill; if you dare, come meet me at the mountaintop.",
+  "question_type": "Language Content Recall",
+  "temporal_certificate": "Short",
+  "total_intervals": [[6666, 6673]],
+  "clue_interval": [[6666, 6673]],
+  "scores": [0, 0, 5, 0, 3],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "小圣爷爷！我也是受那天命所迫，若非身不由己…… (a pleading/surrender speech, begging mercy and promising to return to the South Sea)",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(event_steps/episodes/topic_facts/entities) -> read_skill(sql-schema) -> run_sql(episodes 6400-7800) -> run_sql(topic_facts 7480-7650) -> run_sql(semantic_triples 7480-7650) -> run_sql(visual_clips 7480-7650) -> read_skill(visual-verification) -> clip_qa(7500-7650) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 20, "what_happened": "run_sql on episodes 6400-7800 returned row episodes:30sec:000222 (6660-6690) whose text already contains the verbatim reference quote '有种跟我来山顶会合！', but the agent did not use it."},
+        {"segment_file": "answer-segment-01.json", "item_index": 23, "what_happened": "run_sql on topic_facts BETWEEN 7480 AND 7650 surfaced an unrelated later 'boss defeated' scene (黑熊精 defeated by barry at ~7530), which the agent mistook for the Black Wind King's defeat."},
+        {"segment_file": "answer-segment-01.json", "item_index": 33, "what_happened": "clip_qa(7500,7650) transcribed dialogue from that wrong, later scene (a defeated boss begging forgiveness and promising to confess to Guanyin) and the agent submitted that as the answer."}
+      ],
+      "failure_point": "Agent found and abandoned the correct evidence (row 000222 in the 6400-7800 SQL scan), then chased a semantically-similar but temporally/narratively distinct 'boss defeated' scene ~840s later, and trusted a visual sub-agent transcription of the wrong scene.",
+      "evidence_checked": "Confirmed via `sql --timeline day` and by re-reading the rollout's own SQL step (index 20) that row episodes:30sec:000222 (6660-6690) contains the exact reference quote in plain text."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "广智！命你为师护持，你怎敢怠慢！ (a different line, about ordering Guangzhi to protect the master)",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/topic_facts/event_steps/visual_clips) x4 -> semantic_search(episodes/topic_facts/semantic_triples/event_steps, n=20) x4 -> run_sql(episodes 6600-6900) -> run_sql(semantic_triples 6450-6720) -> run_sql(episodes row_id IN (...), errored on json_extract) -> read_skill(visual-verification) -> clip_qa(6600-6660) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 29, "what_happened": "run_sql on episodes 6600-6900 returned row episodes:30sec:000222 (6660-6690) containing the verbatim reference quote '有种跟我来山顶会合！' in the agent's own context."},
+        {"segment_file": "answer-segment-01.json", "item_index": 41, "what_happened": "Instead of using that text, the agent called clip_qa with window (6600,6660) which STOPS exactly at 6660, excluding the 6660-6690 interval where the clue and row 000222 actually live; the visual sub-agent then transcribed an unrelated line from inside that earlier window and the agent submitted it, overriding the correct SQL evidence already in hand."}
+      ],
+      "failure_point": "Correct evidence was retrieved via SQL but discarded; the subsequent clip_qa window was mis-scoped to end exactly at the boundary before the clue interval, and its (wrong-window) output was trusted over the agent's own correct SQL text.",
+      "evidence_checked": "Verified full SQL output at item_index 29 contains row episodes:30sec:000222 with the exact reference quote, seen by the agent before it issued the clip_qa call."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "有种跟我来山顶会合！ — \"If you've got the nerve, meet me at the mountaintop!\"",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(event_steps/episodes/visual_clips/entities) -> read_skill(sql-schema) -> run_sql(episodes 6450-7680) -> read_skill(visual-verification) -> clip_qa(6630-6690) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 27, "what_happened": "clip_qa(6630,6690) fully covers the clue interval (6666-6673); sub-agent found evidence_times_s [6662.003, 6670.269] and transcribed the exact reference quote, correctly attributing it to 妖王·黑风大王 on the defeat screen."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "clip_qa evidence_times_s (6662-6670) sit inside the clue window (6666-6673); transcription matches reference answer near-verbatim."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "不如留在此处，大王我也赐你个名号！ — a line about offering the player a title, heard around 6646s while the boss is still collapsing",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes/event_steps/visual_clips/entities) -> run_sql(episodes 6400-8000) -> run_sql(event_steps 6400-8000) -> run_sql(visual_clips 6400-8000) -> semantic_search(episodes, n=20) -> read_skill(visual-verification) -> clip_qa(6580-6665) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 20, "what_happened": "run_sql on episodes 6400-8000 returned row episodes:30sec:000222 (6660-6690) with the verbatim reference quote in the agent's own context."},
+        {"segment_file": "answer-segment-01.json", "item_index": 31, "what_happened": "clip_qa window (6580,6665) ends at 6665, one second short of the clue interval start (6666); the sub-agent found and transcribed an earlier in-combat taunt line (~6646s) and the agent submitted that instead of the correct post-defeat line held one row later in its own SQL output."}
+      ],
+      "failure_point": "Clip window cut off exactly before the clue interval (off-by-a-few-seconds boundary error), and the resulting wrong-window visual transcription was submitted over the correct SQL text evidence already retrieved.",
+      "evidence_checked": "Verified full SQL output at item_index 20 contains row episodes:30sec:000222 with the exact reference quote; the submitted answer instead came from combat dialogue timestamped ~6646s, before the boss-defeated marker at 6660."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 3,
+      "answer": "有点本事 — \"You've got some skill\" (only the first half of the reference line; missing the mountaintop-challenge second half)",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps/episodes/topic_facts/visual_clips) -> run_sql(episodes 6450-6750) -> read_skill(visual-verification) -> semantic_search(episodes/semantic_triples/topic_facts/episodes, n=20) -> clip_qa(6600-6690) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 35, "what_happened": "clip_qa(6600,6690) covers the clue interval and correctly found the first half of the line ('有点本事') at evidence_times_s [6661.003, 6668.003], but did not sample far enough forward to catch the second clause ('有种跟我来山顶会合') that other rollouts (e.g. rollout-2) found at ~6670s; the agent submitted only the partial line."}
+      ],
+      "failure_point": "Correct window, but the visual sub-agent under-sampled frames after ~6668s and returned only the first clause of a two-part spoken line, so the submitted answer was factually correct but incomplete versus the full reference.",
+      "evidence_checked": "Compared evidence_times_s across rollouts: rollout-2's clip_qa sampled through 6670.269s and captured the full two-clause line; rollout-4's clip_qa stopped sampling at 6668.003s and only got the first clause."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "The exact reference quote '有种跟我来山顶会合！' is present verbatim as plain text in episodes:30sec:000222 (start_s=6660, end_s=6690) and episodes:3min:000037, retrievable by a simple SQL scan of the episodes table around the clue window -- no clip_qa was strictly necessary. However, that row's caption labels the defeated boss '妖王·黄眉大王' (a different boss name) rather than '黑风大王', while the entities table's black-wind-king row (entities:000046) is bounded start_s=6450..end_s=6660, i.e. its window ends exactly where the correct answer row begins. This name mismatch plus the entity boundary sitting right at 6660 appears to have caused 3/5 rollouts to distrust or route around the correct text evidence and either re-scope clip_qa to a window that (barely) excluded the clue interval, or chase an entirely different, later 'boss defeated' scene (~7500s, a different character) that is lore-adjacent (also a Journey-to-the-West black-bear-type villain) and superficially similar in the DB."
+  },
+  "root_causes": [
+    "Caption/entity inconsistency: the correct scene's episodes-table caption names the boss '黄眉大王' instead of '黑风大王', and the entities-table boundary for '黑风大王' ends at exactly 6660s (the start of the correct row) -- both push the agent away from evidence that is otherwise textually correct and sufficient by itself.",
+    "Over-reliance on clip_qa despite already holding correct SQL text evidence: 3/5 rollouts saw the exact reference quote in a run_sql result and still deferred to a subsequent clip_qa call, then let a mis-scoped clip_qa transcription overwrite the correct text.",
+    "Clip window mis-scoping right at the clue boundary: rollout-1's window (6600-6660) and rollout-3's window (6580-6665) both stop just before/at the clue interval start (6666), landing on adjacent but wrong dialogue (combat taunts / unrelated lines) instead of the post-defeat line.",
+    "Reused-boss-template confusion: a later, unrelated 'boss defeated' scene around 7500s in the DB (different character, thematically similar Journey-to-the-West black-bear villain) was semantically close enough to mislead rollout-0's semantic/SQL search entirely off the correct time window.",
+    "Visual sub-agent under-sampling: rollout-4's clip_qa found the right window and the right first clause of the line but stopped sampling frames before the second clause appeared, producing a partial (5->3 scored) answer."
+  ],
+  "what_worked": [
+    "Rollout-2 issued a clip_qa window (6630-6690) that fully bracketed the clue interval and explicitly asked the sub-agent to distinguish the boss name from any other boss name shown, and its evidence_times_s (6662-6670) landed inside the clue interval, yielding the essentially verbatim reference answer."
+  ],
+  "transferable_lessons": [
+    "When a run_sql/semantic_search result already contains an apparent verbatim quote matching the question, prefer that text evidence over a subsequent clip_qa call scoped to a different or narrower window; don't let a later visual-agent transcription silently override already-correct textual evidence without reconciling the discrepancy.",
+    "When scoping a clip_qa window around a 'what does X say right after Y' question, pad generously past the located anchor time (e.g. a defeat marker) rather than stopping exactly at or just before it -- off-by-a-few-seconds windows reliably miss the target line here.",
+    "Treat boss/character name mismatches between adjacent DB rows (e.g. a caption naming a different boss right after the entity's stated end boundary) as a caption/labeling artifact to double-check via a wider SQL time scan, not as proof of a different, unrelated scene.",
+    "When a scene has multiple similarly-themed encounters (e.g. reused boss templates or lore-similar characters) elsewhere in the timeline, anchor tightly to the question's specific named entity's own bounded interval rather than semantic-searching broadly and picking up a distant, similarly-worded scene.",
+    "For multi-clause spoken lines, instruct clip_qa to keep sampling forward past the first detected subtitle until a scene cut or clear line-end, since a single clip_qa call can truncate mid-quote and yield a partially-correct answer."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the '黄眉大王' vs '黑风大王' name discrepancy in the episodes caption for row 000222 is a captioning/OCR error in the memory-database build pipeline, or reflects an actual in-game boss-name change/alias at that moment -- this determines whether the fix belongs in the retrieval agent's skepticism or in the database captioning."
+  ]
+}

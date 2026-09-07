@@ -1,0 +1,125 @@
+{
+  "question_id": "day-174",
+  "timeline": "day",
+  "index": 174,
+  "question": "In front of which Keeper's Shrine (土地庙) did the player forge the weapon \"Beast Staff · Golden Eye\"?",
+  "reference_answer": "Qingliang Slope",
+  "question_type": "Entity Recognition",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[74420, 74505]],
+  "clue_interval": [[74420, 74505]],
+  "scores": [5, 5, 5, 5, 5],
+  "score_spread": "all_high",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "The player forged Beast Staff · Golden Eye (降妖·金睛) in front of the Keeper’s Shrine at Qingliang Slope (清凉坡).",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> run_sql(episodes) -> run_sql(visual_clips) -> run_sql x2 -> submit_answer",
+      "decisive_steps": [
+        {
+          "segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json",
+          "item_index": 18,
+          "what_happened": "run_sql on episodes for start_s BETWEEN 74400 AND 74640 returns a 30sec episode text (74400-74430) that explicitly says the character approaches a shrine 'on the location 清凉坡' right before the weapon-refining (武器铸造) screen opens; this directly answers the question."
+        }
+      ],
+      "failure_point": null,
+      "evidence_checked": "Verified via run_sql on episodes table that the 74400-74430s episode text names 清凉坡 (Qingliang Slope) immediately before the forge screen appears."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "The player forged “Beast Staff · Golden Eye” (降妖·金睛) in front of the 清凉坡 (Qingliang Slope) Keeper’s Shrine, in the 火焰山 (Flaming Mountains) region. The shrine menu at about 74426s shows “火焰山 · 清凉坡,” immediately before the weapon-forging screen.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x3 -> run_sql(episodes) -> semantic_search x3 -> read_skill -> clip_qa -> submit_answer",
+      "decisive_steps": [
+        {
+          "segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json",
+          "item_index": 16,
+          "what_happened": "run_sql on episodes around 74400-74640 surfaced the same 'approaches shrine at 清凉坡' text as rollout 0."
+        },
+        {
+          "segment_file": "rollout-01/attempt-1/traces/clip-e3d479713ab6420bb8ccdf7e0bd83a4d-segment-00.json",
+          "item_index": 28,
+          "what_happened": "clip_qa dispatched to sample frames around ~74426s, confirming the on-screen location label '火焰山·清凉坡' visually before submitting."
+        }
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same episodes table row as rollout 0; additionally cross-checked visually via clip_qa which read the on-screen region label."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "The player forged Beast Staff · Golden Eye (降妖·金睛) in front of the Keeper’s Shrine at Qingliang Slope (清凉坡). The footage shows the player approaching that shrine at about 74,400 seconds, followed by the forging success for 降妖·金睛 around 74,490–74,520 seconds.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> run_sql x4 -> semantic_search x3 -> run_sql -> submit_answer",
+      "decisive_steps": [
+        {
+          "segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json",
+          "item_index": 18,
+          "what_happened": "Same episodes-table run_sql query surfaced the 清凉坡 shrine text; additional run_sql/semantic_search calls were used to confirm the forging success timing (~74490-74520s) before submitting."
+        }
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed episodes text for both the shrine approach and the later forging-success episode."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "The player forged Beast Staff · Golden Eye (降妖·金睛) at the Keeper’s Shrine in Cool Slope (清凉坡), Firefield (火焰地·清凉坡). The location label is visible as 火焰地 / 清凉坡 when the shrine’s forge menu is opened (around 74426 s).",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> run_sql x5 -> run_sql x2 -> semantic_search x2 -> run_sql -> read_skill -> clip_qa -> submit_answer",
+      "decisive_steps": [
+        {
+          "segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json",
+          "item_index": 21,
+          "what_happened": "Same episodes-table evidence found; agent ran additional run_sql/semantic_search passes then used clip_qa to visually verify the region label around 74426s before submitting."
+        },
+        {
+          "segment_file": "rollout-03/attempt-1/traces/clip-4ce7d5678fa04df5a333108b335e592b-segment-00.json",
+          "item_index": 44,
+          "what_happened": "clip_qa sampled frames near 74426s and read the on-screen label, translated slightly differently ('Firefield/Cool Slope') but still identifying 清凉坡 as the shrine location, matching the reference."
+        }
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same underlying episodes text plus a visual clip_qa confirmation; translation variant of 火焰地/火焰山 did not affect the core location entity match."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "The player forged it at the keeper’s shrine in Qingliang Slope (清凉坡). The footage shows the player approaching that shrine and then opening the weapon-forging screen, where 降妖·金睛 (\"beast staff · golden eye\") is successfully forged.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x5 -> run_sql x4 -> run_sql x4 -> semantic_search x2 -> run_sql x2 -> submit_answer",
+      "decisive_steps": [
+        {
+          "segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json",
+          "item_index": 23,
+          "what_happened": "More extensive run_sql/semantic_search exploration (largest tool-call count of the 5 rollouts, ~10 SQL/search calls) but ultimately converged on the same episodes-table text naming 清凉坡 as the shrine location."
+        }
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed same episodes row; extra queries appear to be additional corroboration/exploration rather than needed to find the answer."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "episodes:30sec:002480 (start_s=74400, end_s=74430) directly states the character 'approaches a small shrine flanked by two burning pillars on the location 清凉坡 (Qingliang Slope), which emits a bright upward burst of light and opens a menu. The interface shifts to a weapon-refining screen (武器铸造)...' This single episode row, retrievable by a straightforward run_sql on the episodes table filtered to the clue window (74400-74640), unambiguously answers the question. All 5 rollouts located this row (directly or via a semantically equivalent search), and two rollouts additionally used clip_qa to visually confirm the on-screen region label before submitting."
+  },
+  "root_causes": [],
+  "what_worked": [
+    "The clue fact (shrine location name immediately preceding the forge event) is stored verbatim in a 30-second episode caption, so a single run_sql over the episodes table windowed around the clue interval reliably surfaces it.",
+    "All 5 rollouts independently converged on the same episodes row via semantic_search and/or run_sql, indicating the retrieval path is short and robust (low variance question despite 'Medium' temporal_certificate).",
+    "Two rollouts (1 and 3) added a clip_qa visual check of the on-screen location label as extra corroboration; this did not change the answer but demonstrates the visual sub-agent correctly reads on-screen Chinese UI text when dispatched to the right timestamp.",
+    "Minor transliteration variance across rollouts (e.g. rollout 3 saying 'Firefield/Cool Slope' for 火焰地/清凉坡) did not affect judge scoring since the core entity 'Qingliang Slope' was still present and correctly identified as the shrine."
+  ],
+  "transferable_lessons": [
+    "For entity-recognition questions about a specific named location tied to a scripted game event (e.g. an NPC/shrine name shown in an on-screen menu), a direct run_sql over the episodes table windowed on the clue interval is usually sufficient; the 30-second episode captions in this DB tend to name on-screen location labels explicitly.",
+    "clip_qa is useful as a cheap corroboration step for on-screen text/UI labels but is not strictly necessary when the episode caption already states the location by name.",
+    "Extra semantic_search/run_sql passes beyond the first successful hit (as in rollout 4) add cost without changing the outcome for questions where the clue is this unambiguous; but they did not hurt the score either."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the judge would have penalized a rollout that reported only the alternate transliteration (e.g. 'Cool Slope' alone, without 'Qingliang Slope') without the pinyin form appearing anywhere in the answer; rollout 3 hedged by including both."
+  ]
+}

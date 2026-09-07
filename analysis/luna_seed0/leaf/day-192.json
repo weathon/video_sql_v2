@@ -1,0 +1,103 @@
+{
+  "question_id": "day-192",
+  "timeline": "day",
+  "index": 192,
+  "question": "At the end of Chapter 5, while viewing the character data interface, which item was replaced, and what was it replaced with?",
+  "reference_answer": "The Magic Treasure (法宝) Fire Shield (避火罩) was replaced with the Banana Leaf Fan (芭蕉扇).",
+  "question_type": "State Change",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[76680, 76730]],
+  "clue_interval": [76680, 76730],
+  "scores": [5, 5, 5, 5, 5],
+  "score_spread": "all_high",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "At about 76719-76721 seconds, the character interface shows 辟火罩 being replaced by 芭蕉扇.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4 -> run_sql(episodes chapter5) -> semantic_search x7 -> run_sql(episodes 76500-77050) -> run_sql(episodes row_id lookup) -> clip_qa(76680-76740) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 42, "what_happened": "run_sql on episodes WHERE start_s BETWEEN 76500 AND 77050 surfaced the row episodes:30sec:002556 (76680-76710) and neighbors, whose captions mention the equipment/根挂 menu and item 芭蕉扇 near end of chapter 5"},
+        {"segment_file": "clip-900e407f06fb44658cc1393f80b275c3-segment-00.json", "item_index": null, "what_happened": "clip_qa over 76680-76740 visually confirmed 辟火罩 (fire shield) being swapped out for 芭蕉扇 in the character/equipment interface"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed via sql that episodes rows 76650-76740 describe the 根挂 equipment panel and mention 芭蕉扇 explicitly, but not the swap itself or 辟火罩 by name - the swap fact required the visual clip_qa call"
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "The 辟火罩 was replaced with the 芭蕉扇 (Plantain Fan) in the 法宝/magic-treasure slot, around 76719-76720s.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search x4 -> run_sql x5 -> clip_qa(76700-76740) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": null, "what_happened": "run_sql narrowed candidate episodes rows near chapter 5 end to the 76650-76740 window"},
+        {"segment_file": "clip-36689e327c5e4277bf1fd4c64ede25d0-segment-00.json", "item_index": null, "what_happened": "clip_qa over 76700-76740 confirmed the item swap visually"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same episodes rows as rollout-0; clip_qa window tightly bracketed the true clue interval (76680-76730)"
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "The item 辟火罩 was replaced with 芭蕉扇 (the plantain fan).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x8 -> run_sql -> read_skill -> clip_qa(76650-76740) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": null, "what_happened": "semantic_search/run_sql located the chapter-5-end equipment interface window"},
+        {"segment_file": "clip-e6995105c3a7477b9272f2d990937f88-segment-00.json", "item_index": null, "what_happened": "clip_qa over 76650-76740 confirmed 辟火罩 to 芭蕉扇 swap"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same DB rows; clip_qa window covers the clue interval"
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "The 辟火罩 (Fireproof Mantle) was replaced with the 芭蕉扇 (Plantain Fan), equipped at about 76720s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x8 -> read_skill -> run_sql -> clip_qa(76650-76800) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": null, "what_happened": "run_sql located the equipment-interface episode rows around chapter 5 end"},
+        {"segment_file": "clip-9a713c6ce5164adf8843b1a1496add9f-segment-00.json", "item_index": null, "what_happened": "clip_qa over a wider window (76650-76800) still landed on and confirmed the correct swap"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same DB rows; wider clip_qa window did not hurt because the visual sub-agent still located the swap moment inside it"
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "辟火罩 was replaced by 芭蕉扇; equipment screen shows the swap at about 76719-76720 seconds.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x8 -> run_sql -> read_skill -> clip_qa(76710-76740) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": null, "what_happened": "run_sql located episodes rows around chapter 5 end"},
+        {"segment_file": "clip-8e92934ff4f44a33b02ec1ebbcbe32ca-segment-00.json", "item_index": null, "what_happened": "clip_qa over the tightest window (76710-76740) still correctly confirmed the swap"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same DB rows; tightest clip_qa window of the 5 rollouts, still succeeded"
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "episodes rows 002554-002557 (76620-76740) textually describe the 根挂/equipment interface and explicitly name 芭蕉扇 as an item shown, but never name 辟火罩/避火罩 or state that a replacement happened - the caption text only shows one side of the swap. The actual before/after replacement fact was only recoverable by visually inspecting the video via clip_qa, not from text captions alone. All 5 rollouts independently used run_sql on episodes with a start_s time-window filter to find this cluster of rows, then called clip_qa over windows tightly overlapping the true clue interval [76680,76730]."
+  },
+  "root_causes": [
+    "Not applicable in the failure sense - this question had 0 failures. Success cause: episode captions around 76650-76740 reliably surface via a simple start_s time-window SQL scan once the agent has narrowed to 'end of chapter 5', giving every rollout a correct candidate window",
+    "The equipment-panel captions mention 芭蕉扇 by name, giving strong lexical/semantic signal that pulled all rollouts toward the correct 30-90s window even with varying clip_qa window widths (76650-76800 down to 76710-76740)",
+    "clip_qa robustly resolved the specific before/after item identity (辟火罩 vs 芭蕉扇) that is not stated in text captions, and did so consistently across 5 independent visual sub-agent calls"
+  ],
+  "what_worked": [
+    "Time-window run_sql over episodes.start_s after identifying an approximate chapter-5-end interval via semantic_search consistently found the small cluster of relevant episode rows",
+    "Delegating the actual before/after item-swap identification to clip_qa rather than trying to infer it from text captions, since the captions only mention the new item and never state a replacement",
+    "clip_qa windows of varying width (30-150s) all still resolved to the correct answer, showing the visual sub-agent is robust to imprecise window bounds around this clue"
+  ],
+  "transferable_lessons": [
+    "For 'item was replaced with X' state-change questions, do not expect the DB captions to state the replacement explicitly - captions here only named the new item (芭蕉扇), not the old one (辟火罩) or the swap event itself; always confirm such swaps with clip_qa over the located time window",
+    "A simple SQL time-window scan on episodes.start_s around a semantically-located anchor point (e.g. 'end of chapter 5') is an effective and cheap way to narrow to the relevant clue interval before invoking the more expensive visual sub-agent",
+    "clip_qa window width is not very sensitive here - windows from 30s to 150s around the clue interval all worked, so slight imprecision in localizing the exact clue interval is tolerable as long as the correct interval is contained within the queried window"
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether 辟火罩 (as answered) vs 避火罩 (as in reference) is a transcription/OCR variant of the same in-game item name; judge treated them as equivalent (all scores 5) but it was not independently confirmed against the game's official item name"
+  ]
+}

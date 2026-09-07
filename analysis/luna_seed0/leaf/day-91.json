@@ -1,0 +1,107 @@
+{
+  "question_id": "day-91",
+  "timeline": "day",
+  "index": 91,
+  "question": "During the battle with which of the following bosses did the player use elixirs? 1. Stone Vanguard 2. Hundred-Eyed Demon Lord 3. Golden-Eyed Water-Cleaving Beast 4. Gold Armored Rhino (金甲犀)",
+  "reference_answer": "2,3",
+  "question_type": "Hallucination Detection",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[14200, 14317], [62216, 62475], [73766, 74266], [78091, 78392]],
+  "clue_interval": [[14200, 14317], [62216, 62475], [73766, 74266], [78091, 78392]],
+  "scores": [0, 3, 3, 3, 2],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. Stone Vanguard (elixir at ~14,379s); other elixir-menu interaction dismissed as outside the relevant boss battle.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x8 (episodes/visual_clips/event_steps/entities/object_states) -> run_sql (name/keyword search) x5 -> read_skill(visual-verification) -> run_sql x3 -> semantic_search -> clip_qa(14370-14550) -> clip_qa(15180-15360) -> clip_qa(74100-74280) -> clip_qa(78060-78420) -> run_sql -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-04.json", "item_index": 74, "what_happened": "clip_qa on 14370-14550 (Stone Vanguard fight) returned 'Yes' a consumable is used at 14379.1-14379.8s -- this is a false positive relative to the reference, since Stone Vanguard is not in the '2,3' answer set."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-04.json", "item_index": 76, "what_happened": "clip_qa on 74100-74280 (boss3 window, matches clue interval 73766-74266) returned 'Yes, healing consumable used at ~74123.5-74124.3s' -- correct positive evidence for boss 3, gathered but never used in the final answer."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-04.json", "item_index": 77, "what_happened": "clip_qa on 78060-78420 (boss3 window 2, matches clue interval 78091-78392) returned 'Yes, ~78280s white sparkling glow (healing/consumable effect)' -- second correct positive for boss 3, also gathered and discarded."},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-04.json", "item_index": 86, "what_happened": "submit_answer picked only 'Stone Vanguard', ignoring the two confirmed boss-3 elixir hits it had just retrieved; never even attempted the boss-2 window (62216-62475)."}
+      ],
+      "failure_point": "Synthesis/selection error: correct visual evidence for boss 3 was retrieved but discarded in favor of a Stone Vanguard hit that was itself a visual-agent false positive; boss 2 interval was never queried at all.",
+      "evidence_checked": "Confirmed via trace-item that clip_qa outputs at index 76/77 explicitly say 'Yes' elixir use inside the exact reference clue windows, contradicting the submitted answer."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 3,
+      "answer": "3. Golden-eyed water-cleaving beast; elixir use around 74,124s and 74,227s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql x2 -> semantic_search x4 -> run_sql x3 -> semantic_search x3 -> run_sql -> clip_qa(14250-14460) -> clip_qa(73980-74340) -> clip_qa(78090-78420) -> clip_qa(73080-73380) -> run_sql x2 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-04.json", "item_index": null, "what_happened": "clip_qa on 73980-74340 (matches clue interval 73766-74266) confirmed two elixir-use moments (74124s, 74227s); this became the submitted answer."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-04.json", "item_index": null, "what_happened": "clip_qa windows covered boss 1 (14250-14460) and both boss-3 sub-intervals (73980-74340, 78090-78420) plus one extra (73080-73380), but never covered boss 2's clue interval (62216-62475) -- boss 2 was never investigated."}
+      ],
+      "failure_point": "Never searched or clip_qa'd the Hundred-Eyed Demon Lord / boss-2 window, so 'multi-select' truth (2,3) could not be reached; answered single-boss.",
+      "evidence_checked": "trace-list of all clip_qa calls in this rollout shows 4 calls, none targeting 62216-62475."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 3,
+      "answer": "3. Golden-eyed water-cleaving beast; elixir/gourd use at ~74191.6-74192.0s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql -> semantic_search x6 -> run_sql x2 -> semantic_search x2 -> clip_qa(74160-74340) -> clip_qa(78090-78480) -> clip_qa(14400-14580) -> clip_qa(80460-80640) -> clip_qa(25200-25380) -> semantic_search -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-05.json", "item_index": null, "what_happened": "clip_qa on 74160-74340 (matches clue interval 73766-74266) confirmed elixir/gourd drink at ~74191.6-74192.0s; used as the sole submitted answer."},
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-05.json", "item_index": null, "what_happened": "clip_qa on 80460-80640, apparently chasing a semantic_search false-match for 'Hundred-Eyed Demon Lord', is far outside boss 2's true clue interval (62216-62475); boss 2's actual window was never visited."}
+      ],
+      "failure_point": "Same as rollout 1: boss-2 clue interval never queried; chased a mislabeled 'insectoid boss' hit at 80460-80640 instead of the true 62216-62475 window.",
+      "evidence_checked": "trace-list clip_qa argument list confirms no call overlaps 62216-62475."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 3,
+      "answer": "3. Golden-Eyed Water-Cleaving Beast; elixir/pill selection around 83,730-83,790s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x9 (episodes/visual_clips/event_steps/topic_facts, incl. per-boss name queries) -> run_sql x2 (malformed then fixed keyword search) -> run_sql (30sec window scan) -> run_sql (event_chains join) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": 30, "what_happened": "semantic_search on visual_clips for 'player consumes elixir during combat' surfaced episodes:30sec:002790 at 83700-83730 describing a golden-armored demon and elixir menu use; this time (83730-83790s) is outside all four reference clue_intervals."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": 64, "what_happened": "submit_answer named boss 3 (correct per reference) but cited a time window that is not one of the annotated clue intervals -- no clip_qa was ever run to verify this attribution visually."}
+      ],
+      "failure_point": "No clip_qa used at all; the SQL/semantic-search-only evidence trail landed on the correct boss name by chance/text association but with an unverified, off-interval timestamp. Boss 2 window never investigated.",
+      "evidence_checked": "trace-list shows zero clip_qa calls in this rollout's only segment; final SQL query (event_chains join) around 77000-84500 never touches 62216-62475."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 2,
+      "answer": "2. Hundred-Eyed Demon Lord; elixir selection at ~80,434s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql -> semantic_search x4 -> run_sql -> semantic_search x4 -> clip_qa(14310-14460) -> clip_qa(74100-74280) -> clip_qa(78060-78390) -> clip_qa(80190-80460) -> run_sql -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-04.json", "item_index": 47, "what_happened": "clip_qa question explicitly labeled the 80190-80460 window as 'the Hundred-Eyed Demon Lord boss fight' (a mislabel inherited from an earlier semantic_search false match), and got a 'Yes elixir used ~80434s' answer used as final evidence."},
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-04.json", "item_index": 45, "what_happened": "clip_qa on 74100-74280 (the true boss-3 clue interval) also likely returned a positive elixir-use hit, but this rollout's final answer named only boss 2, not boss 3 -- the correct boss-3 evidence in hand was not incorporated into a multi-select answer."}
+      ],
+      "failure_point": "Boss identity (2) happened to match the reference, but the cited interval (80190-80460) is not the true clue interval (62216-62475) for that boss -- it is a different scene the agent mislabeled via a bad semantic_search hit; the true boss-2 window was never visited. Also failed to combine with the boss-3 evidence it already had.",
+      "evidence_checked": "Confirmed 80190-80460 is ~18,000s away from 62216-62475 and thus not the annotated evidence window for boss 2; entities table shows no boss named 'Hundred-Eyed Demon Lord' or '百眼魔君' near 62216-62475, only a generic 'scorpion/centipede hybrid boss' entity."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "Boss-3 elixir use (clue intervals 73766-74266 and 78091-78392) is reliably retrievable: episode/entity captions around these windows describe a recognizable boss fight, and clip_qa consistently confirms elixir/potion use when pointed at the right seconds (all 5 rollouts that ran clip_qa on this window got a 'Yes'). Boss-2 elixir use (clue interval 62216-62475) is NOT name-retrievable from the DB: the entities table has no row naming 'Hundred-Eyed Demon Lord' or a matching Chinese name (百眼魔君/百鬼魔君) anywhere near 62216-62475 -- the only entity/episode text there is a generic 'scorpion/centipede hybrid boss' / 'large multi-segmented, locust-like boss creature'. Every semantic_search for the literal boss name returned wrong-time false matches (e.g. an unrelated 'insectoid boss' at 80460-80640 in two separate rollouts). As a result, none of the 5 rollouts ever ran clip_qa on 62216-62475, so the true visual evidence for boss 2 was never checked by any rollout."
+  },
+  "root_causes": [
+    "Systematic retrieval gap: the memory DB never links the boss's proper name (Hundred-Eyed Demon Lord / 百眼魔君) to its actual on-screen interval (62216-62475); captions there are generic ('scorpion/centipede hybrid boss'), so every semantic_search by name misses it and instead surfaces an unrelated, superficially similar 'insectoid boss' scene ~18,000s later, which two rollouts mistook for the real boss-2 fight.",
+    "Single-answer framing bias: even when a rollout (rollout-00) gathered correct positive elixir evidence for boss 3 via clip_qa, it discarded that evidence in the final synthesis and submitted a single unrelated boss (Stone Vanguard) based on a visual-agent false positive -- no rollout attempted a genuine multi-select ('2,3') answer even though the reference is multi-valued.",
+    "Visual sub-agent (clip_qa) false positives on non-clue windows: clip_qa affirmed 'elixir use' both inside and outside the true clue intervals (e.g. Stone Vanguard window 14370-14550/15180-15360 in rollout-00), inflating confidence in wrong bosses.",
+    "Unverified time citations: rollout-03 named the correct boss (3) but cited a timestamp (83730-83790s) outside any annotated clue interval and never ran clip_qa to confirm it -- correct by coincidence/text association, not verified evidence."
+  ],
+  "what_worked": [
+    "clip_qa reliably confirms elixir/consumable use when pointed at the correct seconds inside the boss-3 clue intervals (73766-74266, 78091-78392) -- 4 of 5 rollouts that checked these windows got a true-positive 'Yes' and used it correctly.",
+    "run_sql keyword scans for Chinese consumable terms (丹/药/葫芦) combined with time-window filtering successfully surfaced relevant elixir-menu episodes in several rollouts, complementing semantic_search."
+  ],
+  "transferable_lessons": [
+    "When a question lists named entities (bosses) that may not appear verbatim in the memory DB, do not rely solely on name-based semantic_search/SQL -- systematically clip_qa every candidate boss-fight time window (found via generic visual descriptions, not names) rather than only the windows a name search happens to surface.",
+    "For 'which of the following X' / hallucination-detection questions, explicitly consider and test a multi-select answer; do not default to a single choice just because earlier evidence pointed to one candidate -- collect elixir/consumable evidence across ALL four listed bosses before submitting.",
+    "When the visual sub-agent (clip_qa) returns a 'Yes' for a candidate window, cross-check that the window's boss identity is actually correct (e.g. via nearby entity records or a title-card caption) before trusting a semantic_search-derived boss-name-to-time mapping, since name searches can land on visually-similar but temporally distant scenes.",
+    "Before finalizing, re-read all the clip_qa outputs gathered in-session and make sure the submitted answer is consistent with the strongest (most clue-interval-aligned) positive evidence, not just the first or most recently framed one."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the underlying video's on-screen title card at ~62190-62220s truly reads '百眼魔君' (Hundred-Eyed Demon Lord) or a visually similar but different name ('百鬼魔君' appears in the episode caption there) -- if the caption OCR is wrong, that is a separate captioning-pipeline issue upstream of retrieval, not fixable at answer-time.",
+    "Why the DB entity/episode captions never attach the boss's proper name to 62216-62475 while they do capture proper names for the other three bosses (Stone Vanguard, Golden-Eyed Water-Cleaving Beast, Gold Armored Rhino) -- worth checking the captioning pipeline for this specific segment."
+  ]
+}

@@ -24,12 +24,13 @@ Before launching any big/expensive run (rollouts, training, large API sweeps).
 ## Checklist
 For the changed code only, answer each item. Allowed answers: **no** / **doesn't apply** / **user override** / **original code already like that** / **this is an exception** (use the last sparingly). Only a plain **yes** with none of those mitigations requires fixing before the run (unless the user says otherwise).
 
-1. Does it report success/failure from a proxy (metric / gate / exit-0) without checking the real artifact? (e.g. calls a run "success" on a cosine threshold while the generated image is blurred/broken; claims a restart while W&B `resume="allow"` silently continued the old run; computes a metric under wrong preprocessing — unaligned/wrong-resolution — so the number isn't comparable.)
+0. Is there basic correctness errors in the code? Do NOT consider extream edge cases. 
+1. Does it report success/failure from a proxy (metric / gate / exit-0) without checking the real artifact? (e.g. calls a run "success" on a cosine threshold while the gen
+erated image is blurred/broken; claims a restart while W&B `resume="allow"` silently continued the old run; computes a metric under wrong preprocessing — unaligned/wrong-resolution — so the number isn't comparable.)
 2. Does it rely on assumed semantics instead of the actual source? (implements a spec from a grepped phrase rather than the full text; runs a third-party method on default objective without confirming dodging-vs-impersonation; sweeps/selects on a proxy metric that isn't the true training objective.)
 3. Does it silently change the experimental protocol or data? (drops/demotes/reorders samples; adds early stopping, a different batch size, a context-batching scheme, or a self-created goal the user didn't ask for; absolutizes a conclusion — "all failed" — from a single checkpoint/partial sample.)
 4. Does the script not including wandb for a training or eval? (wandb is not needed for quick processing but is required for any long running jobs)
 5. Is the code over engineered and added functions that are not in the requirement doc?
-
 6. Did it use a default value when something is wrong? (`return results or ""`, `data.get("key", 0)`) — or add any fallback that substitutes a stand-in for a missing dependency (disabling a required service, a mock/placeholder in a data path)?
 7. Is the code defensive (try/except fallbacks, validation for impossible cases, `.get` with defaults, swallowing errors)?
 8. Is the code production-ready/polished rather than research/toy-style? Any unrequested machinery (resume, manifest hash, atomic writes, completion markers, per-sample JSONL, CLI generalization, whole-`args` passing, extra asserts)?
@@ -38,7 +39,7 @@ For the changed code only, answer each item. Allowed answers: **no** / **doesn't
 10. Do the LLM sampling params follow the model's OFFICIAL recommendation (model card / generation_config) rather than a forced/ad-hoc value? Flag setting only temperature and leaving top_p/top_k at API defaults, or any value not traceable to the model's docs.
 11. Is the edit minimal?
 12. Does it seem to make a repo for a SAAS company instead of a research project?
-
+13. Review it against the requirement spec sheet, is there anything NOT the same as the requirement doc? Even if the current apporch might seem better/makes more sense, all the requirement should stick to original design doc strictly. If there is fuzzy/ambitious, ask user. 
 
 ## Principles the review enforces
 Anti-perfect research code: offensive programming, direct and purpose-built implementation, crash on the unexpected, no token/output caps, no speed-for-quality or speed-for-correctness downgrades. Correctness above "it runs"; polish, generality, defensive completeness, and production readiness are review failures when the experiment did not require them.
@@ -47,7 +48,6 @@ Anti-perfect research code: offensive programming, direct and purpose-built impl
 - **Raise or skip, never silently fall back.** Missing/malformed dependency → **raise** (abort when it invalidates the run) or **skip** the **whole sample** (let resume rerun it). Never substitute a different signal for a missing one.
 - **No silent input/output mangling.** No truncating to fit context, no dropping unknown fields, no silent type coercion, no caps beyond a user-sanctioned one.
 - **Do exactly what was asked.** No unrequested features/protocol changes.
-- **No single-use or <10-line helper functions** unless the helper has a functional purpose (callable for `to_thread`/executor, `key=`/callback, retry/timeout/context wrapper). Inline cosmetic wrappers.
 - **No `.get` with defaults, no `(x or 0)`.** Use `[key]` and `x`; crash if absent.
 - **Resumable, disk-backed.** Never hold a dataset's results only in memory; write each sample to disk.
 - **Don't catch broad `Exception` to keep a loop alive.** If you don't know the failure, you're hiding it.

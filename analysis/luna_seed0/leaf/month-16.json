@@ -1,0 +1,105 @@
+{
+  "question_id": "month-16",
+  "timeline": "month",
+  "index": 16,
+  "question": "During the streamer's trips to Changsha and Shanghai, they saw people performing on the street and heard 'Sunshine Rainbow Little White Horse'; in which place was it performed using the saxophone?",
+  "reference_answer": "Shanghai",
+  "question_type": "Entity Recognition",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[331372, 331388], [162568, 162621]],
+  "clue_interval": [
+    {"video_id": "21", "intervals": [[13450, 13466]]},
+    {"video_id": "14", "intervals": [[5290, 5343]]}
+  ],
+  "scores": [5, 5, 5, 5, 5],
+  "score_spread": "all_high",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "Shanghai (~160,878-164,478 s window; saxophonist at 162,558-162,618 s praised by Speed)",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes) x6 -> run_sql x2 -> semantic_search x3 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Repeated semantic_search over episodes/visual_clips located the 162,558-162,618s row describing a man in a black suit pulling a saxophone from a case and playing for a crowd inside the Shanghai walkabout episode; agent cross-checked run_sql on the surrounding hour to confirm the Shanghai attribution."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed the matching episodes row (30sec granularity, ~162,558-162,618s) exists and textually mentions a saxophone."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "Shanghai (162,558-162,618 s, black-suit street performer with golden saxophone, streamer dances beside him)",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/visual_clips) x5 -> run_sql x4 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 13, "what_happened": "semantic_search 'street musician saxophone Shanghai trip' on episodes returned episodes:30sec:005424 (162,588-162,618s) describing a man pulling a saxophone from a red guitar case and playing for a crowd."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 14, "what_happened": "Parallel semantic_search 'street musician saxophone Changsha trip' returned episodes:30sec:008277 (~248,156-248,186s) describing a street performer with a 'long, conical wind instrument' alongside a saxophonist, i.e. a different scene without a clear song match to the target."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 29, "what_happened": "run_sql pulled the exact row episodes:30sec:005423/005424 (162,558-162,618s) confirming the black-suit saxophonist next to the dancing streamer -> used as final evidence before submit_answer."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Verified via sql that episodes:30sec:005423-005424 (162,558-162,618s) textually matches the reference clue window [162568,162621]; this is an exact hit against total_intervals."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "Shanghai (~162,558-162,618 s street musician in black suit with golden saxophone; Changsha's 'sunshine and rainbow' occurrence was a stage performance, not saxophone)",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> run_sql x4 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Same pattern as rollout-01: semantic_search located the 162,558-162,618s Shanghai saxophone row; run_sql around the Changsha 'Sunshine and Rainbow' song mention (episodes:30sec:011229, ~336,672-336,702s, 'ishowspeed sings his sunshine and rainbow song') confirmed that occurrence had no saxophone, i.e. it was a stage vocal performance."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Confirmed via sql that the Changsha stage-singing row (episodes:30sec:011229) contains no saxophone mention, supporting the elimination logic."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "Shanghai (162,558-162,618 s saxophone street performance; Changsha occurrence was the streamer singing the song on stage rather than a saxophone street performance)",
+      "tool_call_sequence": "read_skill x4 (incl. visual-verification) -> semantic_search(semantic_triples/episodes/visual_clips/topic_facts) x4 -> run_sql x2 -> clip_qa(162540-162630) -> clip_qa(248120-248340) -> run_sql -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-02.json", "item_index": 26, "what_happened": "clip_qa on 162,540-162,630s confirmed visually that the musician is 'clearly using a saxophone' but could not read the song title from frames."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-02.json", "item_index": 27, "what_happened": "clip_qa on the Changsha street-performer window 248,120-248,340s reported the ensemble is playing 'Careless Whisper' (not the target song) and also uses a saxophone -- a potential confound, since this shows a saxophone WAS present at a Changsha street scene too."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-02.json", "item_index": 31, "what_happened": "run_sql on the Shanghai 6h episode block (157,278-178,878s) re-confirmed the Shanghai walkabout framing; agent then resolved the ambiguity by treating the Changsha 'Sunshine and Rainbow' occurrence as the separate on-stage singing event (not the saxophone street ensemble playing 'Careless Whisper'), and submitted Shanghai."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Verified with clip_qa that both a Shanghai (target song, no title confirmed) and a Changsha (saxophone, but wrong song 'Careless Whisper') street scene exist; the agent correctly disambiguated by song identity rather than by 'was a saxophone present'."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "Shanghai (~162,558-162,618 s, man in black suit playing golden saxophone for the crowd; Changsha sequence was the streamer singing 'sunshine and rainbow' on a TV-style stage, not a saxophone performance)",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x11 -> run_sql x4 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": null, "what_happened": "Broader semantic_search sweep (11 calls, more exploratory than other rollouts) eventually converged on the same 162,558-162,618s Shanghai saxophone row and the Changsha stage-singing row, then run_sql confirmed both before submitting."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same underlying rows as rollouts 1-2; not independently re-verified beyond confirming tool-call convergence on the same evidence."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The Shanghai clue (total_intervals second window, 162,568-162,621s) is exactly and cleanly retrievable: episodes:30sec:005423/005424 textually describe a man in a black suit pulling a saxophone from a case and playing for the crowd, matching the reference almost verbatim. The Changsha clue (total_intervals first window, 331,372-331,388s) does NOT match any 'Sunshine Rainbow Little White Horse' or saxophone content in the DB at that exact offset -- that window instead covers an unrelated fortune-telling/palm-reading street scene. The actual 'ishowspeed sings his sunshine and rainbow song' episode row is at 336,672-336,702s (episodes:30sec:011229), about 5,300s away from the given total_intervals window, and a separate Changsha street scene with an actual saxophonist exists near 248,126-248,380s but plays a different song ('Careless Whisper' per clip_qa in rollout-3). None of this affected outcomes because the decisive evidence for the correct answer was the Shanghai window, which every rollout located reliably; the Changsha side only needed to be ruled out, and all 5 rollouts did so (via text absence of 'saxophone' near the stage-singing row, or via clip_qa song-title mismatch)."
+  },
+  "root_causes": [
+    "Not applicable in the failure sense -- all 5 rollouts scored 5/5. The Shanghai saxophone scene has a highly distinctive, easily-embedded textual description ('pulls a saxophone from case and plays for a crowd') that semantic_search over episodes reliably surfaces within a handful of queries.",
+    "The Changsha side of the question is genuinely ambiguous in the source data (a stage vocal performance of the target song vs. a separate street saxophone ensemble playing a different song), but every rollout independently disambiguated correctly, either by absence of 'saxophone' text near the stage-singing episode row or by clip_qa confirming the street saxophonist's song was not the target."
+  ],
+  "what_worked": [
+    "Iterative semantic_search with query reformulation (e.g. 'street musician saxophone Shanghai trip' vs '...Changsha trip') efficiently split the two candidate locations and let the agent compare them side by side.",
+    "run_sql on the surrounding 30-second episode rows around a semantic_search hit gave a precise, quotable time window and confirmatory detail (color of saxophone, clothing, dancing streamer) matching the reference answer almost verbatim.",
+    "In the one rollout that used clip_qa (rollout-03), the visual sub-agent correctly avoided being fooled by the confounding Changsha saxophone-plus-wrong-song scene by identifying the song title, giving a stronger disambiguation signal than text search alone.",
+    "All rollouts converged on the same evidence (episodes:30sec:005423/005424, ~162,558-162,618s) despite different search paths, indicating this fact is robustly indexed and retrievable in the DB."
+  ],
+  "transferable_lessons": [
+    "For 'which of two similar-seeming locations has property X' questions, run the same targeted semantic_search query once per candidate location/trip in parallel rather than a single broad query -- this pattern (seen in rollouts 1, 2, 4) cleanly separates confounds.",
+    "When two candidate scenes both plausibly match a generic feature (e.g. 'saxophone present'), use clip_qa or SQL text to check the more specific distinguishing feature (song title) rather than stopping at the first shared attribute -- rollout-03 demonstrates this correctly resolves scenes that could otherwise cause a wrong answer.",
+    "A temporal_certificate of 'Ultra-Long' and disjoint total_intervals across a whole month timeline still converged reliably here because the target scene had unusually distinctive, literal caption text ('pulls a saxophone from case'); such literal-description scenes are easy wins for semantic_search regardless of the huge timeline span."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Why does the question's total_intervals[0] (331,372-331,388s, Changsha) not correspond to any 'Sunshine Rainbow Little White Horse' or saxophone content in the DB, while the actual matching stage-singing episode row sits ~5,300s later at 336,672-336,702s? This looks like a benchmark/clue-interval alignment issue upstream of the agent, though it did not affect any rollout's score here."
+  ]
+}

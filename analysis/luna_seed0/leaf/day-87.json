@@ -1,0 +1,106 @@
+{
+  "question_id": "day-87",
+  "timeline": "day",
+  "index": 87,
+  "question": "Which of the following statements are correct? 1. The seventh boss defeated by the player in Chapter 5 is Flint Commander 2. The seventh boss defeated by the player in Chapter 3 is Green-backed Dragon 3. The fifth boss defeated by the player in Chapter 2 is Mother of Stones (石母) 4. The seventh boss defeated by the player in Chapter 4 is Right-Hand Worm",
+  "reference_answer": "2, 3",
+  "question_type": "Hallucination Detection",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[67466, 67565], [28900, 29194], [12900, 13042], [51360, 51469]],
+  "clue_interval": [[67466, 67565], [28900, 29194], [12900, 13042], [51360, 51469]],
+  "scores": [2, 0, 5, 2, 1],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 2,
+      "answer": "Correct statements: 3 and 4.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes)x4 -> run_sql(event_chains/event_steps chapter windows)x4 -> semantic_search(entities)x4 -> run_sql x5 -> semantic_search x5 -> semantic_search -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 41, "what_happened": "run_sql over event_steps/event_chains 43200-64800s window looking for a chapter-4 boss named Right-Hand Worm; no literal name match found but rollout still accepted statement 4 as true, based on a fuzzy association with a stone/spider-like boss (石手蛛) near 51360-51480s"},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 69, "what_happened": "final semantic_search pass before submit; still no literal match for 'Flint Commander' near 67466-67565s (actual boss there is 赤焰麒麟), correctly rejected statement 1, but statement 4 wrongly accepted"}
+      ],
+      "failure_point": "Accepted statement 4 (Right-Hand Worm) as true despite the DB's actual boss at the cited interval being 石手蛛 (a different, non-matching name) -- treated a loose thematic resemblance (spider/worm-like creature) as confirmation instead of requiring a literal/near-literal name match.",
+      "evidence_checked": "sql on entities table confirms the boss active in 51360-51480s is literally named 'boss: 石手蛛 (scorpion/insect-like boss)', not Right-Hand Worm."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "Correct statements: 1 and 4.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes)x4 -> run_sql(event_steps per-chapter defeat windows)x4 -> semantic_search(episodes/topic_facts/visual_clips for 'Flint Commander')x3 -> semantic_search(event_steps for 'Mother of Stones')x1 -> run_sql(entities name search)x1 -> run_sql(entities time window)x1 -> run_sql(episodes text search near 65000-71000s)x2 -> run_sql(event_steps 67500-71000s)x1 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 32, "what_happened": "semantic_search(episodes) for 'Flint Commander boss chapter 5 defeated' returns only an unrelated 6-hour merged-index hit; no literal match found"},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 49, "what_happened": "run_sql over event_steps 67500-71000s (the actual clue window for statement 1) surfaces gear/level menu text and combat descriptions but never surfaces the true boss name 赤焰麒麟; rollout nonetheless concludes statement 1 is correct in its final answer"},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 55, "what_happened": "submit_answer chooses 1 and 4, explicitly rejecting statement 2 with reasoning that the identified 青背龍 fight (which it did find, matching the clue window exactly) happened 'earlier than' the seventh chapter-3 boss -- an unsupported ordinal claim not backed by any step that actually counted chapter-3 bosses in order"}
+      ],
+      "failure_point": "Inverted the correct evidence-absence heuristic: accepted the two unverifiable/mismatched boss names (statement 1 Flint Commander, statement 4 Right-Hand Worm) as true despite finding no literal name evidence for either, and rejected the one statement (2, Green-backed Dragon) for which it had found an exact, high-confidence name match at the exact clue interval.",
+      "evidence_checked": "Confirmed via sql that entities table has no 'Flint Commander'/'燧' match near 67466-67565s (real boss: 赤焰麒麟) and no 'Right-Hand Worm' match near 51360-51469s (real boss: 石手蛛)."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "Correct statements: 2 and 3.",
+      "tool_call_sequence": "(attempt-1 crashed/errored) -> attempt-2: read_skill x4 -> semantic_search(episodes)x4 -> run_sql(event_chains/event_steps per-chapter windows)x4 -> semantic_search(event_steps for each named boss claim)x4 -> run_sql(entities literal-name search for 石母/青背/右手/燧)x1 -> run_sql(event_steps 43200-64800 window)x1 -> semantic_search(topic_facts for each named boss claim)x4 -> run_sql(event_steps 64800-75600 window)x1 -> semantic_search(episodes for Flint Commander)x1 -> run_sql(topic_facts literal-name search)x1 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-2/traces/answer-segment-00.json", "item_index": 38, "what_happened": "run_sql directly against entities for literal name variants of all four claimed bosses (石母/青背/右手/燧先锋/flint/worm) in one query; only 青背龍 (green-backed dragon) matches, at 28860-29220s -- exactly the statement-2 clue window"},
+        {"segment_file": "rollout-02/attempt-2/traces/answer-segment-00.json", "item_index": 48, "what_happened": "semantic_search(topic_facts) for 'green-backed dragon 青背龍 seventh boss chapter 3' returns a 0.886-score hit: 'on-screen text identifies the boss as 青背龍 (green-backed dragon)' at 28890s, reinforcing statement 2 as true"},
+        {"segment_file": "rollout-02/attempt-2/traces/answer-segment-00.json", "item_index": 61, "what_happened": "final run_sql literal-text search across topic_facts for 燧/右手/石母/青背 confirms again that only 青背 has any real hits; no 燧 (flint) or 右手 (right-hand) hits anywhere, so statements 1 and 4 are rejected as hallucinated"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Independently re-ran the same literal-name entity/topic_facts search; confirms only 青背龍 matches among the four claimed boss names, and it matches exactly at the statement-2 clue interval, supporting rollout-02's reasoning."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 2,
+      "answer": "Correct statements: 1 and 3.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes)x4 -> run_sql(event_steps chapter windows)x1 -> semantic_search(episodes/entities)x4 -> run_sql(event_steps+event_chains join 64800-72000)x1 -> run_sql(event_steps 'flint/燧/火焰' search)x1 -> run_sql(event_steps boss/defeat keyword search)x1 -> run_sql(event_steps 66600-71000 dump)x1 -> semantic_search(entities for Flint Commander candidates)x1 -> semantic_search(entities for right-hand-worm candidates)x1 -> semantic_search(event_steps for Mother of Stones)x1 -> semantic_search(episodes for chapter-2 boss order)x1 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": 53, "what_happened": "semantic_search(entities) for 'Flint Commander 火灵元帅 火灵 official boss name' finds no literal match (top hit is an unrelated 'fire giant' entity at 80160s, outside the clue window) yet the rollout's final answer still credits statement 1 as correct"},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": 57, "what_happened": "semantic_search(entities) for right-hand-worm candidates returns only 'spider boss' at 55800-55920s (not the 51360s clue window, and not named Right-Hand Worm); rollout correctly rejects statement 4 this time"}
+      ],
+      "failure_point": "Same unresolved absence-of-evidence handling as rollout-01 for statement 1: no literal or near-literal match for 'Flint Commander' was ever found near the true clue window (67466-67565s, real boss 赤焰麒麟), yet the rollout defaulted to accepting the statement rather than rejecting it.",
+      "evidence_checked": "Same entities-table check as other rollouts: real boss at 67466-67565s is 赤焰麒麟, not Flint Commander."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 1,
+      "answer": "Correct statements: 1, 3, and 4.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes)x4 -> run_sql(event_steps chapter windows)x2 -> semantic_search(entities/episodes)x4 -> run_sql(event_steps windows)x2 -> semantic_search(topic_facts/event_steps)x4 -> run_sql(event_steps)x2 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": 58, "what_happened": "submit_answer accepts statements 1, 3, and 4 as correct and rejects only statement 2 (Green-backed Dragon), the one statement for which other rollouts found an exact literal DB match (青背龍 at 28860-29220s)"}
+      ],
+      "failure_point": "Accepted both mismatched/hallucinated boss names (1 and 4) with no supporting literal-name evidence, and rejected the one statement with the strongest literal evidence (2) -- the most extreme version of the same inverted evidence-handling failure seen in rollouts 0, 1 and 3.",
+      "evidence_checked": "Same as above: 青背龍 exact match at statement-2 clue window; no matches anywhere in DB for 'Flint Commander' or 'Right-Hand Worm'."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "For 3 of the 4 clue intervals the DB directly resolves the true boss identity and thereby the statement's truth value via literal-name lookups in `entities`/`topic_facts`: (a) 67466-67565s -> real boss is '赤焰麒麟' (Red Flame Qilin), not 'Flint Commander' -> statement 1 false; (b) 28900-29194s -> real boss is '青背龍 (green-backed dragon)', exact match to statement 2's wording, confirmed by a 0.886-score topic_facts hit reading 'on-screen text identifies the boss as 青背龍' -> statement 2 true; (c) 51360-51469s -> real boss is 'boss: 石手蛛 (scorpion/insect-like boss)', not 'Right-Hand Worm' -> statement 4 false. Statement 3 (Mother of Stones/石母 as the 5th chapter-2 boss) could NOT be directly confirmed by any literal name search: '石母' never appears anywhere in entities, episodes, or topic_facts in this DB, so no rollout produced hard textual evidence for it; all 5 rollouts nonetheless accepted statement 3 as true (consistent with the reference answer), apparently by elimination/default rather than positive verification. Chapter boundaries themselves are also noisy: auto-extracted '回' (chapter) title-card entities are inconsistently labeled (e.g. a card at 62820s is captioned 'calligraphic title card 第四回' while a nearby card at 63120s is separately captioned 'chapter 3: 日落红尘'), which undermines any ordinal 'Nth boss in chapter X' count built from these markers."
+  },
+  "root_causes": [
+    "The memory DB's auto-generated entity/episode captions give the same recurring boss many different English/Chinese aliases across nearby 30-second clips, so literal-name lookups are the only reliable verification method, but not all rollouts consistently used them.",
+    "The critical reasoning heuristic for this hallucination-detection question type -- 'no literal or near-literal name match anywhere in the DB near the claimed interval implies the claim is fabricated' -- was applied correctly and symmetrically only by rollout-02; the other four rollouts applied it inconsistently, sometimes crediting a claimed boss name as true purely because they could not find positive counter-evidence, and in one case (rollout-04) rejecting the one statement that had the strongest confirming evidence.",
+    "Chapter (回) boundary markers extracted into the DB are themselves inconsistently labeled/duplicated, making a robust ordinal 'Nth boss defeated in chapter X' count hard to construct from event_chains/event_steps windows alone; no rollout built a single deduplicated, chapter-scoped, time-ordered boss-defeat list before answering.",
+    "No rollout invoked clip_qa to visually confirm a boss's on-screen name text at the ambiguous intervals, even though the question is a name/ordinal check that a single visual sample could resolve cheaply; all reasoning stayed text-only over noisy auto-captions."
+  ],
+  "what_worked": [
+    "Rollout-02 ran a single run_sql query against `entities` with all four claimed boss names/aliases (石母, 青背, 右手, 燧) at once, and cross-checked with a second identical sweep over `topic_facts` late in the trace, converging on 'only 青背龍 has any literal match' -- correctly rejecting statements 1 and 4 and accepting statement 2 with hard evidence.",
+    "All rollouts correctly located the exact clue-window evidence for statement 2 (青背龍 at 28860-29220s, matching the question's wording almost verbatim); the failures were in how that finding was combined with the other three statements' verdicts, not in retrieval."
+  ],
+  "transferable_lessons": [
+    "For 'which statements are hallucinated' questions about a named entity/boss at a given time, run one direct literal-name (and known-alias) search against entities/topic_facts/episodes at the claimed interval; treat a total absence of any matching name there as strong evidence the statement is false, not as inconclusive -- apply this symmetrically across all statements in the question rather than only for some.",
+    "Do not let 'I could not find any evidence against this claim' become 'therefore this claim is true' -- for hallucination-detection questions the burden of proof should be on finding positive matching evidence, since these questions are constructed by swapping in plausible-sounding but wrong names.",
+    "Before answering an ordinal claim like 'the Nth boss in chapter X', build one deduplicated, time-ordered list of boss-defeat events scoped to that chapter's actual time boundaries (cross-checked against the chapter title-card entity, not an assumed fixed-hour window) rather than issuing several inconsistent ad-hoc windowed queries whose boss-order conclusions differ from rollout to rollout.",
+    "When auto-generated chapter/act boundary labels in the DB are inconsistent or duplicated, resolve the ambiguity with a targeted clip_qa call at the title-card timestamp rather than guessing an hour-based cutoff."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether 'Mother of Stones (石母)' is genuinely the correct name for the boss encountered at 12900-13042s could not be confirmed from this DB (no literal '石母' text anywhere); it is unclear whether the reference answer relies on external game knowledge (Black Myth: Wukong boss lore) not captured by this DB's auto-captions, or whether the true DB evidence for it exists under yet another alias not tried in these searches.",
+    "Whether any rollout (or a hypothetical clip_qa call) could have visually read on-screen boss-name text at 12900-13042s or 67466-67565s to confirm/deny the claims more directly was not tested, since no rollout invoked clip_qa for this question."
+  ]
+}

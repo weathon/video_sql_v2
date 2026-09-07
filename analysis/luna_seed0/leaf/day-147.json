@@ -1,0 +1,104 @@
+{
+  "question_id": "day-147",
+  "timeline": "day",
+  "index": 147,
+  "question": "What is the name of the Spirit (精魄) that the player carries when challenging Red Boy (红孩儿)?",
+  "reference_answer": "Earth Wolf (地狼)",
+  "question_type": "Entity Recognition",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[75122, 75140]],
+  "clue_interval": [[75122, 75140]],
+  "scores": [0, 0, 5, 0, 0],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "幽魂 (Youhun / Wandering Wight)",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x8 -> run_sql x2 -> read_skill -> clip_qa(75440-75520, crop[780,780,1000,1000]) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-01.json", "item_index": 35, "what_happened": "clip_qa asked to read the 精魄 icon/name in 75440-75520s; sub-agent cropped extremely tight [780,780,1000,1000] around the spirit icon and returned '幽魂', evidence at 75472-75478s."}
+      ],
+      "failure_point": "clip_qa visual misread: the crop was zoomed in so far that the wolf-silhouette icon (Earth Wolf) lost its recognizable shape and was misidentified as a ghost/wandering-spirit icon.",
+      "evidence_checked": "Opened the exact frame+crop clip_qa used (frame-177733051add47e1b85c116eefa001a4.jpg): the crop shows the same circular icon as rollout-02's correct read, but so tightly cropped/blurred that the wolf head is not clearly legible, consistent with a misread rather than a different icon."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "幽魂 (Youhun, \"Wandering Ghost\")",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> run_sql x4 -> semantic_search x3 -> run_sql x2 -> semantic_search -> read_skill -> run_sql -> clip_qa(68520-68610) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 10, "what_happened": "semantic_search on topic_facts correctly surfaced the real Red Boy transformation clue at ~75390s (entities:000310 'red boy (红孩儿)' at 75390-75420, score 0.776)."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 29, "what_happened": "a later semantic_search query on topic_facts instead surfaced an unrelated earlier 'horned demon breathing fire' boss fight around 65340-68600s, which the agent then treated as the Red Boy encounter."},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-01.json", "item_index": 47, "what_happened": "clip_qa was called on 68520-68610s (the wrong, unrelated boss fight), not the previously-found 75390-75420s Red Boy window; it read a spirit icon there as '幽魂'."}
+      ],
+      "failure_point": "wrong time window: the agent abandoned its own correct earlier find (75390-75420s, explicitly tagged 红孩儿) in favor of a different, textually-similar but unrelated boss fight ~7000s earlier, and never visually verified the actual clue interval.",
+      "evidence_checked": "Compared run_sql outputs across the two windows in the trace; only the 75390-75420 window contains an entity explicitly labeled 'red boy (红孩儿)', the 65340-68600 window only says 'a horned demon breathing fire' with no 红孩儿 label."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "地狼 (Di Lang, \"Earth Wolf\")",
+      "tool_call_sequence": "read_skill x2 -> semantic_search x6 -> read_skill -> run_sql -> read_skill -> clip_qa(75420-75510, crop[600,650,1000,1000]) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-01.json", "item_index": 31, "what_happened": "clip_qa on 75420-75510s (containing the true clue interval) used a wider crop [600,650,1000,1000] that kept the spirit icon's ring/gem context visible, correctly read the wolf-head icon as '地狼', citing evidence at 75471-75479s."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Copied and opened the exact frame+crop clip_qa used (frame-50e77435d70c437ca5406221bc285037.jpg): a clearly wolf-shaped silhouette icon is visible in the bottom-right circular slot, confirming the visual basis for 'Earth Wolf' matches the reference answer. Confirmed via sql that '地狼' text does not appear anywhere in entities/topic_facts/semantic_triples -- this fact is only recoverable visually."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "老人参精 (Old Ginseng Guai/Old Ginseng Spirit)",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x8 -> run_sql x3 -> read_skill -> clip_qa(75440-75520, 'not visible') -> semantic_search -> run_sql x4 -> semantic_search -> clip_qa(71430-71520, equipment screen, wrong item) -> run_sql -> clip_qa(75460-75490, crop[0,700,300,950]) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-03.json", "item_index": 39, "what_happened": "first clip_qa on 75440-75520s (right window) reported the spirit name was not legibly shown, only an icon/meter."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-03.json", "item_index": 60, "what_happened": "second clip_qa on an unrelated 71430-71520s equipment screen found headgear items ('青铜猴面', '鳖宝头骨'), not a spirit name, and did not resolve the question."},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-03.json", "item_index": 66, "what_happened": "third clip_qa on 75460-75490s cropped a tiny corner [0,700,300,950], described the icon as 'a white ginseng-shaped creature with curly whiskers' and guessed the name '老人参精' purely from icon-shape convention, not from any legible text."}
+      ],
+      "failure_point": "visual misread/hallucination compounded by narrow, low-context crop across multiple sub-agent calls; final answer was a guess based on misreading the wolf icon as a ginseng-root shape, with no legible name text found.",
+      "evidence_checked": "Read the clip_qa outputs directly; none of the three clip_qa calls in this rollout ever produced legible on-screen Chinese text for the spirit name -- two returned 'not visible' explicitly, the third guessed from shape."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "铜头铁臂 (Bronze Head Iron Arm)",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x8 -> run_sql x3 -> read_skill -> clip_qa(75420-75480, crop[0,0,1000,1000]) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 38, "what_happened": "clip_qa on 75420-75480s (right window) claimed the ability-HUD expanded and showed a label '铜头铁臂' at its top, evidence at 75478-75479s."}
+      ],
+      "failure_point": "clip_qa visual misread/hallucination: '铜头铁臂' (Bronze Head Iron Arm) is a well-known transformation/ability name from the game, not the spirit slot; the sub-agent appears to have read or confabulated an ability-HUD label rather than the actual 精魄 icon that the correct rollout (02) identified as a wolf silhouette ('地狼').",
+      "evidence_checked": "Compared this clip_qa's claimed evidence (a text label reading '铜头铁臂') against rollout-02's correctly-read frame, which shows the spirit slot as an unlabeled wolf-silhouette icon with no visible name text at that resolution -- suggesting rollout-04's sub-agent fabricated or misattributed a legible name where none was actually present."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The correct Red Boy encounter window (~75390-75480s) is well retrievable via text search (episodes/topic_facts/entities/visual_clips all surface '红孩儿' clearly). However the specific spirit name 'Earth Wolf (地狼)' never appears as text anywhere in entities, topic_facts, or semantic_triples -- it is only visible as an unlabeled wolf-silhouette icon in the HUD's spirit slot. So the time window is retrievable from the DB, but the actual answer is visual-only and depends entirely on clip_qa correctly recognizing a small icon shape, not reading text."
+  },
+  "root_causes": [
+    "The critical evidence (spirit identity) is encoded only as a small, unlabeled icon shape in the HUD, not as on-screen text, making this a hard icon-recognition task rather than an OCR task for the visual sub-agent.",
+    "clip_qa crop choice was highly inconsistent across rollouts (crop sizes ranging from a full 1000x1000 frame down to a ~140x220px sliver); overly tight crops (rollout 0, 3) removed contextual cues and led to misidentification, while a crop that preserved the icon in its ring/gem context (rollout 2) led to a correct read.",
+    "One rollout (1) picked the wrong time window entirely despite having already found the correct one via semantic_search, confusing a different unrelated boss encounter for the Red Boy fight.",
+    "Two rollouts (3, 4) show clip_qa producing confident but unsupported readings (a ginseng-shape guess, and a fabricated ability-HUD text label) when the actual icon has no visible name text -- consistent with vision-model hallucination under ambiguous/illegible input rather than faithful 'not visible' reporting."
+  ],
+  "what_worked": [
+    "Rollout 2's clip_qa used a crop wide enough to keep the spirit icon's full circular border and adjacent gem markers visible, which preserved enough shape detail for a wolf silhouette to be correctly recognized as 地狼.",
+    "Text retrieval (semantic_search + run_sql over episodes/topic_facts/entities) reliably located the correct 75390-75480s Red Boy time window in 4 of 5 rollouts."
+  ],
+  "transferable_lessons": [
+    "When the visible evidence is an icon/silhouette rather than legible text, instruct clip_qa to use a crop that preserves surrounding context (the icon's frame/border/other HUD elements) rather than zooming in tightly on just the icon -- over-zooming lost the shape cues needed for correct icon recognition.",
+    "If clip_qa returns a confident answer without evidence of a legible name/text, treat it with more skepticism and consider a second confirming call with a different crop/frame before submitting, since vision sub-agents can guess plausible-sounding names from ambiguous icons instead of reporting 'not legible'.",
+    "When a strong textual match is already found for a claimed event's time window (e.g. explicit '红孩儿' entity tag), don't let a later, weaker semantic-search hit for a superficially similar scene override the earlier stronger match -- verify against the original candidate first.",
+    "For HUD-icon identification questions, prefer game-domain knowledge of icon conventions (e.g. known spirit icon set) as a secondary check alongside the visual read, since icon shapes alone can be genuinely ambiguous at low resolution."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the vision sub-agent (clip_qa) had access to a zoom/multi-crop tool it could have used to double check an ambiguous icon read before answering, or whether crop selection was entirely up to the calling agent's single request.",
+    "Whether the underlying source video frame resolution near the spirit-icon HUD element is high enough for any crop to reliably read a name if one were textually present at all, or whether icon-only recognition is the best achievable signal for this UI element."
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "question_id": "day-53",
+  "timeline": "day",
+  "index": 53,
+  "question": "Which Gourd (葫芦) does the player obtain on the Webbed Hollow (盘丝洞) map in Chapter 4? 1. Miaoxian Gourd (葫芦) 2. Xiangfei Gourd (葫芦) 3. Jade Guanyin Gourd (葫芦) 4. Burning Gourd (葫芦)",
+  "reference_answer": "2",
+  "question_type": "Event Recognition",
+  "temporal_certificate": "Long",
+  "total_intervals": [[49745, 49753]],
+  "clue_interval": [[49745, 49753]],
+  "scores": [0, 0, 0, 5, 0],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. Miaoxian gourd (妙仙葫芦), citing a vendor interface around 59,160-59,220s selling it for 10,800.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(topic_facts/event_steps/entities/episodes) x5 -> run_sql(topic_facts join episodes @55000-55200) -> semantic_search(topic_facts, Xiangfei/Miaoxian/JadeGuanyin/Burning queries) x4 -> run_sql(episodes @58800-59400) -> run_sql(episodes text LIKE %葫芦% @50000-62000) -> run_sql(topic_facts join episodes @59580-59820, finds boss-defeat) -> semantic_search(event_steps/visual_clips, gourd pickup) x2 -> run_sql(topic_facts @64620-64860, @64740-64800) -> run_sql(entities LIKE %葫芦%) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 22, "what_happened": "semantic_search on 'Miaoxian gourd 妙仙葫芦 obtained chapter 4 Webbed Hollow' surfaces topic_facts:00024177 '中猴 vendor: 妙仙葫芦 at 10800' at 59160s, which textually matches option 1 almost verbatim and gets treated as the answer"},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 58, "what_happened": "submit_answer picks Miaoxian gourd from the vendor listing without ever visiting the 49740-49770s crate-opening window or invoking clip_qa to verify an actual 'obtain' event"}
+      ],
+      "failure_point": "Never retrieved or visited the true clue window (49740-49770s); latched onto a textually-matching but semantically wrong candidate (a vendor *for-sale* listing, not an acquisition) purely because its DB caption used the exact English-choice-adjacent name 妙仙葫芦.",
+      "evidence_checked": "Confirmed via sql that topic_facts:00024177 at 59160s is indeed a vendor listing (中猴 vendor: 妙仙葫芦 at 10800), not an obtain event."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. Miaoxian gourd (妙仙葫芦), citing the monkey vendor browsing/listing it for 10,800.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/event_steps/entities/topic_facts) x4 -> semantic_search(episodes, per-choice-name queries) x4 -> run_sql(episodes @46000-58000 text LIKE gourd) -> run_sql(episodes @49680-49830, the CORRECT clue window) -> run_sql(semantic_triples @49680-...) -> run_sql(topic_facts @49680-49830) -> semantic_search(visual_clips) -> run_sql(entities LIKE 葫芦) x2 -> semantic_search(topic_facts, per-choice-name) x4 -> run_sql(episodes/topic_facts @58980-59460) -> semantic_search(episodes, vendor 妙仙葫芦) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 30, "what_happened": "run_sql(episodes WHERE start_s BETWEEN 49680 AND 49830) DOES return the correct clue window, whose caption text reads '...孩弹丝葵, 缠蛇葫芦, 细金线...' (an OCR/captioning-garbled item name) — this doesn't match any of the four answer choices verbatim so the agent doesn't recognize it as relevant"},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 61, "what_happened": "submit_answer falls back to the vendor listing '妙仙葫芦' at 59160s because it is the only DB text that verbatim-matches one of the four given choice names"}
+      ],
+      "failure_point": "Retrieved the correct clue window via SQL but the stored caption text for the item name is garbled ('缠蛇葫芦' instead of the true on-screen '湘妃葫芦'), so nothing in that window looked like any of the 4 answer choices; the agent never called clip_qa to visually verify this ambiguous window and instead reverted to a wrong but textually-clean match elsewhere.",
+      "evidence_checked": "Verified via sql that episodes rows at 49740-49770s contain the mistranscribed '缠蛇葫芦' string, and via frame extraction that the true on-screen text at 49749-49753s is '湘妃葫芦' (Xiangfei gourd)."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. Miaoxian gourd (妙仙葫芦), citing the map screen and the 中猴 vendor listing around 59,160s.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(topic_facts/event_steps/episodes) x3 -> run_sql(episodes @54800-55350) -> semantic_search(semantic_triples, per-choice-name) x4 -> run_sql(episodes text LIKE 妙仙/... broad and @43200-57600) -> run_sql(episodes @59040-59250) -> semantic_search(topic_facts/visual_clips/episodes, gourd acquisition) x3 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 34, "what_happened": "run_sql(episodes @59040-59250) surfaces the 中猴 vendor '妙仙葫芦' listing; this is treated as the acquisition event"},
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 44, "what_happened": "submit_answer commits to Miaoxian gourd without ever querying the 49700-49800s window at all"}
+      ],
+      "failure_point": "Never retrieved the true clue window (49745-49753s) in any query; search terms centered on the four choice names and the wrong '盘丝洞 chapter 4' framing that biased toward the map/vendor scene near 54800-59250s instead of the earlier crate-looting scene.",
+      "evidence_checked": "Confirmed via trace-list that none of this rollout's run_sql/semantic_search calls touched start_s in [49700,49800]."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "2. Xiangfei gourd (湘妃葫芦), citing the acquisition notification in the Webbed Hollow section.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(topic_facts/event_steps/episodes) x3 -> semantic_search(topic_facts, per-choice-name incl. 香妃/玉观音/妙仙) x3 -> run_sql(episodes @43000-65000 LIKE gourd) -> semantic_search(episodes, per-choice-name) x3 -> run_sql(event_steps @48000-61000 LIKE gourd/description, finds 49740-49770 crate-loot event) -> run_sql(entities LIKE gourd) -> semantic_search(visual_clips, chest/gourd) x2 -> read_skill(visual-verification) -> clip_qa(49735-49780, 'what exact gourd name appears...') -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 37, "what_happened": "run_sql on event_steps finds event_steps:00001301 @49740-49770 'character robs woven wooden crates; pop-ups show 金锭丹, 朱纹桃杖, 灵玉花, 缠蛇葫芦, 细金线' — the garbled-caption item near the correct time"},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 51, "what_happened": "clip_qa(49735,49780) is dispatched specifically to read the on-screen item name; it returns 'The notification reads 湘妃葫芦 (Xiangfei gourd)' with evidence_times_s ~49749s, resolving the mismatch between the garbled DB text and the four answer choices"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Verified via frame extraction at 49749-49753s that the on-screen loot notification indeed reads '湘妃葫芦', matching the clip_qa sub-agent's reading and the reference answer."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "1. Miaoxian gourd (妙仙葫芦), citing the Chapter 4 vendor screen showing it priced at 10,800.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(topic_facts/episodes/entities/semantic_triples) x4 -> semantic_search(episodes, per-choice-name incl 妙仙/香妃/玉观音) x4 -> run_sql(topic_facts join episodes @54100-59220 LIKE 妙仙/gourd names) -> read_skill(visual-verification) -> clip_qa(59160-59190, vendor interface gourd identity) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 35, "what_happened": "clip_qa(59160,59190) is dispatched on the VENDOR window (not the true clue window) and correctly reports 'The vendor shows 妙仙葫芦 (Miaoxian gourd)... The player does NOT obtain/buy it during the interval'"},
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 38, "what_happened": "submit_answer nonetheless answers Miaoxian gourd, directly contradicting its own clip_qa finding that the item was never actually obtained/bought in that window"}
+      ],
+      "failure_point": "Wrong time window chosen for visual verification (never located the 49745-49753s crate-loot window at all, its searches stayed anchored to 54100-59220s), and then it ignored its own clip_qa's explicit statement that the gourd was not obtained in that window, submitting the answer anyway.",
+      "evidence_checked": "Confirmed via trace-list that this rollout's clip_qa call targeted 59160-59190s, far from the true clue interval (49745-49753s), and that its own sub-agent output explicitly said the item was not obtained there."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The event_steps/episodes captions for the 49740-49770s crate-loot window (event_steps:00001301, episodes:30sec:001658, episodes:3min:000276) exist and are reachable by both semantic_search (with generic queries like 'gourd obtained') and run_sql (LIKE %葫芦%, LIKE %gourd%), but the stored caption transcribes the on-screen item name as '缠蛇葫芦' instead of the true '湘妃葫芦' (verified by extracting frames at 49749-49753s, which clearly show the loot notification text '湘妃葫芦'). This is a captioning/OCR error in the memory DB: the correct answer's item name is present in the right time window but under a wrong string that doesn't match any of the four multiple-choice options, so pure text/semantic search over that caption cannot confirm the answer -- only a clip_qa visual read of the actual frame resolves it. Separately, an unrelated vendor listing at 59160s legitimately and correctly contains the string '妙仙葫芦' (option 1's exact name), making it a strong false-positive text match for any search seeded from the four choice names."
+  },
+  "root_causes": [
+    "DB caption/OCR error at the clue window (49740-49770s) mistranscribes the on-screen item name '湘妃葫芦' as '缠蛇葫芦', making the correct evidence textually invisible to keyword/semantic search seeded from the answer choices",
+    "A textually-clean but semantically-wrong distractor (vendor listing '妙仙葫芦' at 59160s, verbatim-matching choice 1) acts as a retrieval magnet for choice-name-seeded searches, and 3 of 4 losing rollouts converge on it",
+    "2 of 5 rollouts (0, 2) never queried the true clue window at all",
+    "1 rollout (1) reached the correct window via SQL but treated the garbled caption as irrelevant since it matched none of the 4 choices, and did not call clip_qa to disambiguate before falling back to the vendor distractor",
+    "1 rollout (4) called clip_qa but on the wrong (vendor) window, then ignored its own sub-agent's explicit statement that the item was not obtained there, submitting the vendor's item name anyway",
+    "Only the 1 successful rollout (3) both located the crate-loot event_steps row near the clue time via a generic gourd/description SQL search and then used clip_qa specifically to visually re-read the on-screen text, catching the caption/answer-choice mismatch"
+  ],
+  "what_worked": [
+    "Rollout 3's run_sql query on event_steps with a broad LIKE '%葫芦%'/'%gourd%' filter over a wide time range (48000-61000) surfaced the actual crate-loot event even though its caption text was garbled",
+    "Rollout 3 recognized that a garbled/unfamiliar item name near the target scene warranted visual verification rather than being discarded, and used clip_qa on a tight window (49735-49780s) bracketing the clue interval to read the exact on-screen text",
+    "Rollout 3's clip_qa correctly OCR'd the true item name '湘妃葫芦' and matched it to the correct multiple-choice option"
+  ],
+  "transferable_lessons": [
+    "When a candidate item/name found near the target scene does not exactly match any given multiple-choice option, don't discard it as irrelevant -- it may be the correct answer under a caption/OCR error; verify visually with clip_qa before falling back to a distractor that happens to string-match a choice",
+    "A caption/topic_facts snippet that verbatim-matches one of the multiple-choice strings is not automatically reliable evidence -- check whether it actually represents the queried event (an 'obtain' action) rather than an unrelated appearance (e.g., a vendor's for-sale listing) of the same item name",
+    "When clip_qa's answer explicitly states the target action did NOT occur in the queried window (e.g., 'item not obtained here'), do not submit that item as the answer -- treat it as evidence to rule out that window and search elsewhere",
+    "For 'obtain a specific named item' questions, prioritize SQL searches over event_steps/episodes using generic domain terms (e.g., 'gourd', '葫芦', 'obtain', 'loot', 'chest') across the full plausible time range rather than searching per-choice-name, since the choice names may not appear verbatim in captions near the true event but a generic term still will",
+    "Always run clip_qa to visually confirm the exact on-screen text for short, precise-answer multiple-choice questions with a narrow clue interval (a few seconds), since DB captions can mis-transcribe visually similar or unfamiliar Chinese item names"
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the caption pipeline's OCR/captioning model systematically confuses '湘妃' with '缠蛇' for this specific UI font/rendering, which would predict the same failure mode recurs for other similarly-styled item-acquisition questions in this timeline"
+  ]
+}

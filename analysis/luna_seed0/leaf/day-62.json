@@ -1,0 +1,101 @@
+{
+  "question_id": "day-62",
+  "timeline": "day",
+  "index": 62,
+  "question": "Which Magic Treasure (法宝) did the player use in the fight with the Hundred-Eyed Demon Lord?",
+  "reference_answer": "Embroidered Needle (绣花针)",
+  "question_type": "Event Recognition",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[61767, 62472]],
+  "clue_interval": [[61767, 62472]],
+  "scores": [5, 5, 5, 0, 5],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "The player used 绣花针 (the Embroidery Needle); equipped at ~61,770s just before the Hundred-Eyed Demon Lord fight (~62,220-62,490s).",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/event_steps/topic_facts) x3 -> semantic_search(episodes,'百眼魔君 绣花针') -> semantic_search x3 -> run_sql(episodes near 61600-62500) x2 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 8, "what_happened": "targeted semantic_search over episodes for 'hundred-eyed demon lord fight, player uses magic treasure' surfaced episodes:3min:000343 (61740-61920) whose preview literally names 绣花针 with a 已装备 (equipped) button"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "did not need clip_qa; episode text preview was explicit enough and time-adjacent to the clue interval"
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "绣花针 (Embroidery/Flower Needle), equipped right before the fight against the multi-legged boss.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x3 -> run_sql x4 -> semantic_search x4 -> run_sql x4 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 39, "what_happened": "run_sql on visual_clips WHERE start_s BETWEEN 61700 AND 63050 returned visual_clips:002058 (61740-61770) describing the equip screen naming 绣花针 with 已装备, directly inside the clue window"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "verified via SQL windowed on the correct logical-time interval rather than trusting only semantic_search rank"
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 5,
+      "answer": "绣花针 (Xiùhuā Zhēn), equipped just before the fight with the hundred-eyed demon lord.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> semantic_search x4 -> run_sql -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 36, "what_happened": "run_sql on episodes WHERE start_s BETWEEN 61600 AND 62250 returned episodes:30sec:002056 (needle close-up) and episodes:30sec:002058 (equip screen naming 绣花针), inside the clue window"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "same as rollout-01: anchored SQL to the correct time window instead of relying only on a semantically-similar but temporally distant distractor"
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "碧尘 (Bichen) - claimed the 宝/法宝 panel during the 'many-eyed demon lord' fight showed this name.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes) x1 [hit 61740-61920 with 绣花针, ignored] -> semantic_search(event_steps/topic_facts/entities) x3 -> semantic_search(episodes/topic_facts/visual_clips/semantic_triples, anchored on '百眼魔君 法宝') x4 [distractor: topic_facts hit at 13260s 'multiple glowing yellow eyes and webbed spider-like body'] -> run_sql(episodes 50400-51600, entities LIKE '%百%', episodes 13140-13440, semantic_triples 13000-13500, topic_facts 13000-13500, event_steps 13000-13500) -> read_skill(visual-verification) -> clip_qa(13250-13290, wrong interval) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 22, "what_happened": "semantic_search over episodes at step index 18 already returned episodes:3min:000343 (61740-61920) whose preview names 绣花针 with 已装备, exactly matching the clue interval and reference answer, but the agent did not act on it"},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 23, "what_happened": "a subsequent semantic_search on topic_facts for '百眼魔君 法宝' returned a semantically-similar but temporally wrong hit at 13260s describing a different multi-eyed/spider-bodied boss and a different treasure spell (碧石化形); the agent adopted this as the target fight"},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-01.json", "item_index": 44, "what_happened": "clip_qa was called on 13250-13290s (the wrong, distractor interval, far outside the clue_interval 61767-62472) and returned 碧尘, which the agent submitted as final answer"}
+      ],
+      "failure_point": "wrong time window selected for verification: agent found the correct evidence early (episode at 61740-61920 naming 绣花针) but abandoned it in favor of a semantically similar distractor boss fight at 13260s, then visually verified the wrong interval instead of the correct one",
+      "evidence_checked": "confirmed via sql (episodes 30sec, 61740-62520) that the equip event naming 绣花针 with 已装备 sits at 61740-61770s, directly inside/adjacent to the clue interval, and that the actual Hundred-Eyed Demon Lord fight (title card 百鬼魔君/百眼魔君 style OCR at 62190-62220, multi-legged boss fight 62220-62490) follows it; the 13260s scene the agent used instead is a distinct earlier multi-legged/spider boss encounter with an unrelated 碧石化形 spell shown on its own talisman panel"
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "绣花针 (the Embroidery Needle); equipment screen shows it labeled 已装备 at ~61762-61768s.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(episodes/semantic_triples/topic_facts/visual_clips) x4 [same 13260s distractor surfaced] -> run_sql(episodes 13100-13450) -> semantic_search('碧石化形 法宝') -> semantic_search('绣花针 百眼魔君', semantic_triples) [hit at 61770s] -> semantic_search(visual_clips 'treasure panel...boss battle') [hit at 62190-62220] -> run_sql(semantic_triples 61600-62500) -> run_sql(topic_facts 61500-62500) -> run_sql(event_chains) -> read_skill(visual-verification) -> clip_qa(61720-61800, correct interval) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 25, "what_happened": "after initially chasing the same 13260s distractor as rollout-03, the agent ran a further targeted semantic_search for '绣花针 百眼魔君' on semantic_triples, which returned semantic_triples:0001011 (61770s) 'player character equips 绣花针 (embroidery needle) weapon' with score 0.71, redirecting it to the correct window"},
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 40, "what_happened": "clip_qa on 61720-61800s (inside the clue interval) confirmed the equipment panel reads 绣花针 and 已装备, and the agent submitted the correct answer"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "same DB rows as rollout-03's correct-but-ignored evidence, this time acted on and visually confirmed in the right window"
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "episodes:30sec:002058 / episodes:3min:000343 (61740-61770/61740-61920) and semantic_triples:0001011 (61770s) both explicitly name 绣花针 (embroidery needle) as equipped, with a 已装备 (equipped) indicator, immediately preceding the title-card/fight sequence for the boss (62190-62490, multi-legged/spider-humanoid enemy). The DB also contains a semantically similar but temporally distant distractor: topic_facts around 13260s describing a different multi-eyed/spider-bodied boss whose talisman panel shows an unrelated spell name 碧石化形, and whose visually-verified item name (via rollout-03's misdirected clip_qa) reads 碧尘. Both fights share generic descriptive vocabulary ('multi-legged', 'many eyes', 'spider-like'), making semantic_search alone ambiguous between them; only the temporal window (clue_interval 61767-62472) disambiguates which is the Hundred-Eyed Demon Lord fight."
+  },
+  "root_causes": [
+    "rollout-03 (score 0) found the correct evidence early via semantic_search but abandoned it after a later semantic_search query returned a semantically-similar distractor scene from a different, much earlier boss fight (13260s) with generic overlapping vocabulary ('multiple eyes', 'spider-like/multi-legged')",
+    "rollout-03 then anchored all follow-up SQL and its final clip_qa verification on the distractor's time window (13000-13500s / 50400-51600s) instead of cross-checking against the question's implied fight and never re-queried the 61600-62500s window it had already seen contain the correct evidence",
+    "the underlying DB text is unambiguous and correctly places 绣花针 at the equip event directly preceding the correct boss fight; the failure is a retrieval/reasoning selection error (choosing the wrong candidate interval to verify), not missing evidence"
+  ],
+  "what_worked": [
+    "anchoring run_sql on the time window given/implied by earlier episode hits (61600-63050s) rather than relying solely on semantic_search ranking, as rollouts 0/1/2 did, directly surfaces the unambiguous equip-screen text",
+    "when a distractor is initially picked, a follow-up semantic_search with a more specific compound query (rollout-04: '绣花针 百眼魔君' combining the suspected item name with the boss name) can redirect the agent back to the correct interval",
+    "visual verification (clip_qa) confirms but does not by itself select the correct interval; it only reinforces whatever hypothesis interval was passed to it, so an early wrong interval choice propagates through clip_qa unchanged"
+  ],
+  "transferable_lessons": [
+    "when multiple candidate boss/entity fights match a generic description (e.g. 'multi-legged', 'many eyes'), do not commit to a clip_qa verification window until it has been cross-checked against the specific named boss/entity or against a temporally-anchored SQL scan; verifying the wrong interval yields a confident but wrong answer",
+    "do not discard an earlier semantic_search hit that already contains the literal target term (e.g. 绣花针 with 已装备) in favor of a later, more 'on-topic-sounding' but unverified hit; when two candidate intervals conflict, run SQL scoped to each interval before choosing which to visually verify",
+    "clip_qa answers are only as good as the interval passed to it — the sub-agent has no way to know it is looking at the wrong fight, so interval selection responsibility stays with the calling agent"
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "the reference clip's title card OCR reads '百鬼魔君' at 62190-62220s in the episode text rather than '百眼魔君' as in the question; this is presumably an OCR/transcription variant of the same boss name, but was not independently confirmed against the video frame"
+  ]
+}

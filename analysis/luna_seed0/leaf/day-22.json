@@ -1,0 +1,101 @@
+{
+  "question_id": "day-22",
+  "timeline": "day",
+  "index": 22,
+  "question": "The Spirit (精魄) of Stone is obtained by defeating which boss?",
+  "reference_answer": "Mother of Stones (石母)",
+  "question_type": "Event Tracking",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[13045, 13050]],
+  "clue_interval": [[13045, 13050]],
+  "scores": [5, 5, 0, 5, 5],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "The spirit 石之精魄 (Stone Essence) is obtained by defeating 石母 (Stone Mother).",
+      "tool_call_sequence": "read_skill x2 -> semantic_search(topic_facts) -> read_skill(sql-schema) -> run_sql(topic_facts by row_id) -> run_sql(episodes 12900-14500) -> run_sql(semantic_triples 12900-14500) -> semantic_search(semantic_triples) -> semantic_search(episodes) -> semantic_search(topic_facts, multi-boss-name query) -> run_sql(entities LIKE %石%) -> run_sql(topic_facts 11800-13100) -> run_sql(event_steps) -> run_sql(event_chains) -> run_sql(visual_clips) -> run_sql(entities near 12500-13100) -> semantic_search('Stone Mother 石母 boss', episodes) -> semantic_search('石母 boss defeated', topic_facts) -> semantic_search('石母 石之精魄', semantic_triples) -> submit (no clip_qa call)",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 39, "what_happened": "semantic_search('Stone Mother 石母 boss', episodes) returns no matching hit near 13020-13050 (top hit is an unrelated clip at 20730s); the DB never confirms the name '石母' anywhere in text"},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 46, "what_happened": "agent submits 'defeating 石母' without ever calling clip_qa or finding any DB row containing '石母' — the correct name appears to come from the model's own prior knowledge of the game (Black Myth: Wukong) rather than grounded retrieval"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "sql LIKE '%石母%' over episodes returns 0 rows; entities LIKE '%母%' returns only unrelated 'princess yumian (mother)' rows — confirms '石母' is not present anywhere in this timeline's text DB, so rollout-00's correct answer was not textually grounded"
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "石之精魄 is obtained by defeating 石母 (Mother of Stones); boss health bar identifies 石母, reward screen shows 石之精魄.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(topic_facts/episodes/event_steps) -> run_sql(episodes 12900-13080) -> semantic_search(semantic_triples/topic_facts/episodes/event_steps, multiple boss-name guesses) -> run_sql(episodes 30sec 12300-13320) -> run_sql(semantic_triples) -> run_sql(topic_facts JOIN topic_chains) -> read_skill(visual-verification) -> clip_qa(12900-13050) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/clip-be36e5cb4c9b44f1a34049560d55837f-segment-00.json", "item_index": null, "what_happened": "clip_qa samples frames 12900-13050s and crops the boss health-bar/name region, reads '石母' directly off the on-screen text, and confirms the reward popup shows 石之精魄"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "clip_qa evidence_times_s ~13040-13042s align with the caption-derived boss-fall time (13020-13050 episode row); consistent with db_evidence window"
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "The stone spirit (石之精魄) is obtained by defeating Stone Vanguard (石先锋).",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(topic_facts/episodes/semantic_triples) -> run_sql(episodes 12900-13110) -> run_sql(semantic_triples) -> run_sql(topic_facts JOIN topic_chains) -> semantic_search('石先锋 Stone Vanguard 石之精魄', episodes) -> semantic_search('石之精魄 boss name defeated', topic_facts) -> run_sql(entities LIKE %石%) -> semantic_search(episodes 14400-14580 area) -> run_sql(episodes 12060-13050) -> run_sql(event_chains JOIN event_steps) -> run_sql(entities 11900-13100) -> semantic_search('Stone Vanguard 石先锋 boss reward', semantic_triples) -> semantic_search('石先锋', episodes) -> run_sql(episodes text LIKE %先锋%/%精魄%) -> submit (no clip_qa call)",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 23, "what_happened": "semantic_search('石先锋 Stone Vanguard 石之精魄', episodes) returns an unrelated top hit at 14400-14580s (a different combat clip, not the 13020-13050 boss-fall interval)"},
+        {"segment_file": "rollout-02/attempt-1/traces/answer-segment-00.json", "item_index": 44, "what_happened": "agent submits 'Stone Vanguard (石先锋)' — a name it appears to have generated/guessed itself (its own query already contained '石先锋' before any hit returned that string) rather than one confirmed by any retrieved row; it never called clip_qa to check the boss health bar visually despite text never confirming a boss name"}
+      ],
+      "failure_point": "Never invoked clip_qa despite exhausting text/SQL/semantic search without ever finding the boss's name in the DB text; instead submitted a self-generated/hallucinated boss name ('Stone Vanguard 石先锋') that is unsupported by any retrieved evidence and wrong.",
+      "evidence_checked": "sql LIKE '%先锋%' OR '%石之精魄%' OR '%精魄%' over episodes returns only the 6-hour rollup and the correct 13020-13050 boss-fall clip — no row anywhere mentions '石先锋'; confirms the name was not retrieved from any DB source"
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 5,
+      "answer": "石之精魄 is obtained by defeating 石母 (Stone Mother); boss name visible during fight, reward popup shows 石之精魄.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search(topic_facts) -> run_sql(topic_facts) -> run_sql(episodes 12900-13500-ish) -> semantic_search/run_sql several -> clip_qa(12960-13050) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/clip-d6c50523927245e9837b16bbf103e84d-segment-00.json", "item_index": null, "what_happened": "clip_qa samples 12960-13050s, crops the boss-name/health-bar region and the reward popup, reads '石母' and confirms 石之精魄 reward"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "clip_qa evidence frames at ~12962s and ~13041-13042s bracket the caption boss-fall time (13020-13050); consistent"
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 5,
+      "answer": "Spirit of Stone (石之精魄) obtained by defeating 石母 (Mother of Stones); reward popup ~13041.5s.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search/run_sql several -> clip_qa(13020-13050) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/clip-fbb5fb8ab9c0405592ce9d29a99fe390-segment-00.json", "item_index": null, "what_happened": "clip_qa samples 13020-13050s at fps=2, crops boss-name and reward-popup regions across several frames (~13022-13042s), reads '石母' and confirms 石之精魄 reward"}
+      ],
+      "failure_point": null,
+      "evidence_checked": "clip_qa evidence_frame_ids timestamps fall within 13022-13042s, matching the episode-caption boss-fall interval"
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The event itself (boss falls, reward popup for 石之精魄, resource counts 灵蕴/精石/琥珀) is well captured in text at episodes:30sec:000434 (13020-13050s), topic_facts (time_s 13020), and semantic_triples (snapshot_s 13050). But the boss's NAME '石母' never appears in any text table (episodes/semantic_triples/topic_facts/entities) for this timeline — confirmed with direct LIKE '%石母%' queries returning 0 rows. The name is only readable from the on-screen boss health-bar/name UI, i.e. it is a visual-only fact requiring clip_qa."
+  },
+  "root_causes": [
+    "The boss's name (石母) is a visual-only fact never written into any captioned/text table, so any rollout that skips clip_qa has no grounded way to know it — this is a genuine gap in the text memory, not a retrieval bug",
+    "Rollout 2 failed because it never called clip_qa despite exhausting semantic_search/SQL without finding the boss name anywhere, and instead submitted a self-generated boss name ('Stone Vanguard 石先锋') that appeared in its own query text before any evidence confirmed it — an ungrounded guess presented as a retrieved fact",
+    "Rollout 0 scored 5 without clip_qa; its correct '石母' answer is not supported by any retrieved DB row (verified via LIKE queries), so it most plausibly recovered the boss name from the model's own prior knowledge of the game (Black Myth: Wukong) rather than genuine grounded retrieval — a correct-but-ungrounded answer",
+    "Rollouts 1, 3, 4 succeeded because they recognized the text evidence was insufficient to name the boss and called clip_qa on the correct 12900-13050s window, cropping the boss health-bar/name region directly"
+  ],
+  "what_worked": [
+    "Locating the correct time window (13020-13050s) via semantic_search/run_sql on 'reward popup for 石之精魄' was easy and done correctly by all 5 rollouts",
+    "Recognizing that a visual detail (boss name text on screen) cannot be settled by text search alone, and switching to clip_qa on the already-located window, reliably produced the correct answer (rollouts 1, 3, 4)",
+    "clip_qa's crop_frame tool successfully zoomed into the boss health-bar/name and reward-popup regions across multiple frames to read the Chinese text directly"
+  ],
+  "transferable_lessons": [
+    "For 'defeating which boss' / on-screen-name questions, first check whether the name appears anywhere in text tables (episodes/semantic_triples/topic_facts/entities); if a well-located time window still yields no boss name in text, that is a strong signal to call clip_qa on that exact window rather than keep guessing via semantic_search over unrelated intervals",
+    "Treat a semantic_search hit as evidence only if its returned text actually contains the candidate name — do not submit a name that only appeared in your own query string, never in a retrieved row's text (this is how rollout 2 hallucinated 'Stone Vanguard 石先锋')",
+    "A correct final answer does not always mean grounded retrieval happened; when text evidence for a needed fact is absent, verify via the tool trace (not just the submitted answer) whether the fact came from clip_qa/DB evidence or from the model's own background knowledge of the game"
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether rollout 0's correct answer came from genuine (if unlogged) recall of a frame it glimpsed in one of its run_sql/episodes text previews, versus pure world-knowledge of Black Myth: Wukong boss names, cannot be fully distinguished from the trace alone since reasoning text is encrypted"
+  ]
+}

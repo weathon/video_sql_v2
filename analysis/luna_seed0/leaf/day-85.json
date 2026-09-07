@@ -1,0 +1,106 @@
+{
+  "question_id": "day-85",
+  "timeline": "day",
+  "index": 85,
+  "question": "Which of the following statements are incorrect? 1. The player obtains Earth Lotus seeds in Chapter 3 2. The player obtains Shuyu Flower seeds in Chapter 4 3. The player obtains licorice seeds in Chapter 2 4. The player obtains Fire Jujube seeds in Chapter 5",
+  "reference_answer": "1, 4",
+  "question_type": "Hallucination Detection",
+  "temporal_certificate": "Ultra-Long",
+  "total_intervals": [[51935, 51945], [19617, 19627]],
+  "clue_interval": [[51935, 51945], [19617, 19627]],
+  "scores": [0, 0, 2, 2, 0],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "None of the statements are incorrect. All four are correct (lotus ch3, shuyu ch4, licorice ch2, fire jujube ch5).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps)x4 -> semantic_search(topic_facts)x3 -> semantic_search(episodes) -> run_sql(episodes '种子'/'seed') -> run_sql(episodes lotus/莲子) -> run_sql(episodes 玉/花/枣 seed combos, 0 rows) -> run_sql(event_steps 甘草/莲子/种子) -> semantic_search(visual_clips)x4 -> run_sql(chapter markers 第X回) -> run_sql(chest/seed near ch3, ch4-5) -> semantic_search(entities: 地莲子/玉女花/甘草/火枣) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 33, "what_happened": "run_sql explicitly targeting '玉%种子%'/'花种子'/'枣%种子'/'火枣' across episodes returned 0 rows, i.e. no textual DB record of a fire-jujube-seed or shuyu-flower-seed pickup anywhere"},
+        {"segment_file": "rollout-00/attempt-1/traces/answer-segment-00.json", "item_index": 65, "what_happened": "despite the repeated empty/irrelevant search results for shuyu-flower and fire-jujube, submitted 'all four correct' without ever calling clip_qa to visually check the two clue windows"}
+      ],
+      "failure_point": "treated absence of textual evidence as 'nothing to contradict the premise' instead of as a trigger for visual verification; never called clip_qa at all in this rollout",
+      "evidence_checked": "confirmed via sql that no semantic_triples/episodes/topic_facts row anywhere contains 漱玉/火枣/花种子/枣种子 text"
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "None are incorrect - all four correct, citing the licorice pickup at 19,590s in Chapter 2 as the only concrete evidence, with the other three asserted by 'chapter transitions and corresponding herb-seed progression'.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(episodes)x4 -> run_sql(episodes union seed terms) -> semantic_search(topic_facts)x3 -> run_sql(topic_facts 地莲/漱玉/甘草/火枣/种子) -> run_sql(episodes same terms) -> run_sql(visual_clips same terms) -> run_sql(chapter titles) -> run_sql(semantic_triples same terms) -> run_sql(union query, syntax error, retry) -> run_sql(topic_facts BETWEEN 64000-67000) -> run_sql(object_states, 0 rows) -> read_skill(visual-verification) -> semantic_search(topic_facts 'seed item pickup') -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 62, "what_happened": "read the visual-verification skill (which exists precisely for cases where stored text cannot establish a detail) after exhausting text search for shuyu/jujube seeds"},
+        {"segment_file": "rollout-01/attempt-1/traces/answer-segment-00.json", "item_index": 68, "what_happened": "immediately after reading that skill, ran one more semantic_search on topic_facts instead of calling clip_qa, then submitted 'all correct'"}
+      ],
+      "failure_point": "recognized the need for visual verification (read the skill) but did not follow through with an actual clip_qa call before submitting; also never revisited the earlier lotus-seed-at-10860s-in-chapter-2 evidence it had already retrieved, which would have flagged statement 1",
+      "evidence_checked": "same as rollout 0: exhaustive sql/semantic_search across all tables for 漱玉/火枣/种子 near the relevant chapters returns nothing supporting shuyu-flower or fire-jujube seed pickups"
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 2,
+      "answer": "Only statement 4 incorrect: the chapter-5-era pickup shown is 九转金丹 (a golden elixir), not a seed. Recorded seed pickups are licorice seeds (ch2) and 珠树种子 'pearl-tree/Shuyu flower seeds' (late ch4).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps)x4 -> run_sql(episodes seed-term combos) -> run_sql(event_steps 种子/seed) -> semantic_search(topic_facts)x4 -> run_sql(event_chains chapter summary) -> semantic_search(event_steps 'flower/lotus/shuyu/jujube seeds')x4 -> semantic_search(visual_clips)x4 -> read_skill(visual-verification) -> clip_qa(29280-29370 lotus-seed item) -> clip_qa(60540-60640 chest loot text) -> clip_qa(61940-62020 ch5 pickup) -> run_sql(semantic_triples seed, 0 rows) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-2/traces/answer-segment-03.json", "item_index": 62, "what_happened": "clip_qa(61940-62020) visually confirmed the chapter-5-era pickup notification reads 九转金丹 (Nine-Turn Golden Elixir), not a seed, directly disproving statement 4"},
+        {"segment_file": "rollout-02/attempt-2/traces/answer-segment-03.json", "item_index": 61, "what_happened": "clip_qa(60540-60640) read the chest notification as 珠树种子 ('pearl tree seed') and the rollout labeled this as 'Shuyu flower seeds', which is a mistranslation/mismatch (the actual shuyu-flower-seed pickup, 漱玉花种子, occurs at 51935-51945s and was never visited by this rollout)"}
+      ],
+      "failure_point": "never re-checked or re-confirmed the earth-lotus/chapter-3 claim (statement 1) after the initial weak semantic_search hits; relied on the chapter-4-window loot at 60570s as if it were the 'Shuyu Flower' item without visiting the actual clue interval at 51935-51945s",
+      "evidence_checked": "verified via clip_qa that 61940-62020s pickup is 九转金丹 not a seed (correctly disproves statement 4); verified via memcli frame extraction at 51940s that the true Shuyu-Flower-seed item (漱玉花种子) pickup exists and is dated within chapter 4, which this rollout did not visit"
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 2,
+      "answer": "Only statement 1 incorrect: lotus-seed entry appears at ~10,860s in Chapter 2, not Chapter 3; licorice seeds at ~19,590s in Chapter 2; 'the other two statements match the chapter progression' (unverified).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(topic_facts)x4 -> semantic_search(episodes)x4 -> run_sql(topic_facts+episodes join, seed terms) -> semantic_search(topic_facts)x3 -> run_sql(episodes CAST text seed terms) -> run_sql(entities seed terms) -> semantic_search(topic_facts 'flower/lotus/jujube seeds from chest')x3 -> semantic_search(episodes chapter-title queries)x3 -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": 29, "what_happened": "run_sql joining topic_facts to episodes on '种子'/'seed' surfaced the 10860s lotus-seed entry, correctly placed before the 21420s Chapter-3 boundary, i.e. in Chapter 2 -> correctly flags statement 1"},
+        {"segment_file": "rollout-03/attempt-1/traces/answer-segment-00.json", "item_index": 60, "what_happened": "submitted with only statement 1 flagged; never called clip_qa despite repeated empty/irrelevant hits for shuyu-flower and fire-jujube seeds, so statement 4 (also incorrect per reference) was never caught"}
+      ],
+      "failure_point": "correctly solved statement 1 via careful boundary comparison but stopped investigating once text search for statement 4 came up empty, defaulting to 'matches the chapter progression' without any positive or visual evidence",
+      "evidence_checked": "confirmed lotus-seed entry at 10860s falls in Chapter 2 (before the 21420s Chapter-3 title card), matching the rollout's own correct claim"
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "None are incorrect - all four correct, restating each chapter assignment with fabricated-sounding chapter start times (ch3~21750, ch4~44580, ch5~76830).",
+      "tool_call_sequence": "read_skill x4 -> semantic_search(event_steps)x4 -> run_sql(episodes seed/lotus/jujube combos) -> semantic_search(topic_facts)x4 -> run_sql(episodes wide seed-term search) -> run_sql(episodes 地莲/漱玉/甘草/火枣/种子) -> run_sql(episodes chapter-title search) -> run_sql(episodes multi-window BETWEEN) -> semantic_search(episodes 漱玉花/火枣/地莲 seed pickup)x3 -> run_sql(event_steps collect/loot description near ch3) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": 45, "what_happened": "semantic_search(episodes, '火枣 seed pickup collectible plant') returned only unrelated hits (no fire-jujube-seed evidence anywhere in the DB)"},
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-00.json", "item_index": 57, "what_happened": "despite exhaustive negative search results for shuyu-flower and fire-jujube seeds, submitted 'all four correct' with specific but unverified/fabricated chapter timestamps and never invoked clip_qa"}
+      ],
+      "failure_point": "same pattern as rollouts 0 and 1: extensive text-only search, no clip_qa call at all, defaults to trusting the question's premise when text evidence is silent, and even asserts specific numeric chapter-start times not actually grounded in any retrieved row",
+      "evidence_checked": "none beyond what other rollouts already found; DB text search for fire-jujube and shuyu-flower seeds is empty across all tables"
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "Statement 3 (licorice, chapter 2) and statement 1's disproof (lotus seed actually picked up at 10860s, before the 21420s Chapter-3 title card, i.e. Chapter 2 not Chapter 3) are both fully retrievable from semantic_triples/topic_facts text. Statement 4's disproof (no fire-jujube-seed pickup exists anywhere; the chapter-5-era pickup at ~61950s is 九转金丹, a golden elixir, not a seed) requires either an exhaustive negative text search plus a confirming clip_qa, or a clip_qa directly on the chapter-5 pickup. Statement 2's confirmation (Shuyu Flower seeds, 漱玉花种子, actually obtained inside the 51935-51945s clue window in Chapter 4) is NOT present in any text table (semantic_triples/topic_facts/object_states/entities/visual_clips at that timestamp describe only '灵药 x197 and 金苹果 x1/x3' from a beast kill, missing the seed-pickup HUD notification entirely) - it is visible only in the raw video frame, confirmed by directly extracting frames at 51940-51946s which show an on-screen '漱玉花种子' item-pickup notification. This is a captioning/logging gap in the memory DB, not a retrieval failure by the agent."
+  },
+  "root_causes": [
+    "3 of 5 rollouts (0, 1, 4) never called clip_qa at all despite exhaustive, repeated empty/irrelevant text search results for 'shuyu flower seed' and 'fire jujube seed' across every table (episodes, semantic_triples, topic_facts, object_states, entities, visual_clips) - they treated absence of contradicting text evidence as confirmation of the question's premise ('all four correct') rather than as a signal that visual verification was required",
+    "The two partial-credit rollouts (2, 3) each solved only one of the two errors: rollout 3 correctly used a text-based interval-boundary comparison to catch statement 1 but stopped short of visually checking statement 4; rollout 2 used clip_qa to correctly disprove statement 4 but never revisited or re-verified statement 1, and additionally misidentified an unrelated item (珠树种子, 'pearl-tree seed', at 60570s) as 'Shuyu Flower seeds' rather than visiting the actual 51935-51945s clue window",
+    "A genuine DB gap: the Shuyu-Flower-seed pickup notification within the given clue interval (51935-51945s) was never captured by any text-generation layer (episodes/semantic_triples/topic_facts/object_states/entities all describe that window only via combat/loot text, omitting the seed-pickup HUD popup), so any rollout relying purely on text search for statement 2 could not find it - only a targeted clip_qa or frame extraction in that exact window would surface it",
+    "This is a Hallucination-Detection question type designed to test whether the agent trusts fabricated premises when memory is silent; three rollouts failed exactly that test by defaulting to 'all consistent' under uncertainty instead of treating an exhaustively empty search as grounds for either a hedged answer or mandatory visual verification"
+  ],
+  "what_worked": [
+    "Rollout 3's careful boundary check: retrieving the exact chapter-3 title-card timestamp (21420s) and comparing it against the lotus-seed pickup timestamp (10860s) correctly and reliably identified statement 1 as false from text alone",
+    "Rollout 2's use of clip_qa on the chapter-5-era pickup (61940-62020s) correctly read the on-screen Chinese text (九转金丹) and correctly concluded it was not a seed, disproving statement 4",
+    "All 5 rollouts consistently and correctly retrieved the licorice-seed pickup at 19590-19620s within Chapter 2 (matching clue interval 19617-19627), so statement 3 was never wrongly flagged by any rollout"
+  ],
+  "transferable_lessons": [
+    "For Hallucination-Detection questions, an exhaustive empty/negative text search result for a named item is itself evidence that the item may not exist as described - it should trigger a mandatory clip_qa/visual check of the referenced time window(s) rather than being read as passive confirmation of the premise",
+    "When several statements in a multi-part question must each be checked, verify every statement independently before submitting - do not stop as soon as one contradiction (or one confirmation) has been found; partial verification led directly to the two 2/5 scores here",
+    "When a clue interval is given, visit it directly with clip_qa/frame extraction rather than substituting a similarly-named or thematically-similar item found elsewhere via text search (rollout 2 substituted 珠树种子 at 60570s for the actual 漱玉花种子 event at 51940s)",
+    "Text captioning of on-screen item-pickup HUD notifications can be incomplete even when combat/loot narration for the same window is present in the DB - for identity/counting/precise-item questions the text layer should not be trusted as exhaustive without a spot-check frame extraction"
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether the memory-DB captioning pipeline systematically under-captures brief HUD item-pickup popups relative to combat narration (only one such gap was directly confirmed here, at 51935-51945s) - would need a broader sample to quantify",
+    "Whether the general-retrieval skill instructs agents to escalate to clip_qa after N consecutive empty searches; none of the failing rollouts did so despite reading the skill, and rollout 1 even read the visual-verification skill without acting on it"
+  ]
+}

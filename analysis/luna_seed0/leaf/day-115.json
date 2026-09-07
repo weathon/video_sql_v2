@@ -1,0 +1,109 @@
+{
+  "question_id": "day-115",
+  "timeline": "day",
+  "index": 115,
+  "question": "After entering the Flaming Mountains (火焰山), during the player's second challenge against Yin Tiger, compared to the first time, what is the most noticeable equipment upgrade?",
+  "reference_answer": "Gourd (葫芦) upgrade",
+  "question_type": "State Change",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[68811, 68825]],
+  "clue_interval": [[68811, 68825]],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "Headgear/armor upgrade (mask 青铜猴面 -> 百戏傩面), weapon unchanged; cites level/HP/defense stat jump.",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(episodes/event_steps/visual_clips) x4 -> run_sql(episodes 49800-50400 & 68600-69300) -> clip_qa(50120-50220) -> clip_qa(68820-68920) -> clip_qa(50130-50160) -> clip_qa(68820-68845) -> semantic_search x3 -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-04.json", "item_index": 24, "what_happened": "run_sql pulled episodes text for 68600-69300, which includes the 68790-68820 row explicitly describing the player opening the elixir/inventory screen and consuming '上清金葫芦 (upper clarity golden gourd)'. This text was in the agent's context."},
+        {"segment_file": "answer-segment-04.json", "item_index": 28, "what_happened": "clip_qa(68820-68845) asked only about 'exact weapon and headgear equipped' -> answer returned 绣花针 weapon and 百戏傩面 headgear, never mentioning the gourd/potion slot."},
+        {"segment_file": "answer-segment-04.json", "item_index": 44, "what_happened": "submit_answer picks headgear (百戏傩面) as the upgrade, ignoring the gourd text retrieved earlier."}
+      ],
+      "failure_point": "Evidence retrieved (gourd-consumption caption in SQL episode text) but never treated as an 'equipment' candidate; all follow-up clip_qa questions restricted scope to weapon/armor/headgear.",
+      "evidence_checked": "Verified via trace-item on step 24 that the full SQL output text contains '上清金葫芦' at ~68790-68820, inside the exact window the agent queried."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "Weapon upgrade: 楮白枪 (Chu Bai Spear) replacing earlier three-pointed polearm.",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(episodes/visual_clips/event_steps/entities) x4 -> run_sql(episodes 49800-50500 & 68700-69300, event_chains, visual_clips, object_states) -> clip_qa(50145-50220) -> clip_qa(68840-68920) -> clip_qa(68815-68855) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-03.json", "item_index": 22, "what_happened": "run_sql over episodes 68700-69300 again returns the same 68790-68820 golden-gourd consumption caption, present in context."},
+        {"segment_file": "answer-segment-03.json", "item_index": 39, "what_happened": "clip_qa(68815-68855) asked to 'compare which visible items changed' but the model's own answer explicitly frames the result as 'weapon rather than armor or headgear', again never surfacing the gourd/consumable slot despite the window overlapping the clue interval almost exactly (68815-68855 vs clue 68811-68825)."},
+        {"segment_file": "answer-segment-03.json", "item_index": 42, "what_happened": "submit_answer locks in the weapon (楮白枪) as the upgrade."}
+      ],
+      "failure_point": "Same pattern as rollout 0: clue-interval text evidence retrieved by SQL, clip_qa window almost exactly matched the clue interval, but the visual sub-agent (and the main agent framing its question) never considered the gourd/potion item as 'equipment'.",
+      "evidence_checked": "Same underlying SQL text checked in rollout 0 analysis; window queried (68700-69300) covers the clue interval."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "Weapon upgrade: larger ornate bladed polearm/spear replacing simpler staff; also notes armor level 51->66.",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(episodes/event_steps/visual_clips/entities) x4 -> semantic_search(event_steps/episodes/visual_clips/topic_facts, 寅虎-specific) x4 -> run_sql(episodes text LIKE 寅虎/阴虎/挑战; episodes 30720-31020; episodes 68760-69150; object_states; visual_clips) -> clip_qa(30810-30870) -> clip_qa(68820-68880) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 37, "what_happened": "run_sql over episodes 68760-69150 (30sec granularity) again includes the 68790-68820 golden-gourd row."},
+        {"segment_file": "answer-segment-02.json", "item_index": 46, "what_happened": "clip_qa(68820-68880) asked 'what is visibly equipped on the player in the equipment/inventory screen' -> answer focused on weapon/armor, gourd not raised."},
+        {"segment_file": "answer-segment-02.json", "item_index": 50, "what_happened": "submit_answer names weapon as the biggest change."}
+      ],
+      "failure_point": "Same systematic pattern: gourd text present in retrieved SQL rows, not elevated by the agent, clip_qa scoped to weapon/armor only.",
+      "evidence_checked": "Window 68760-69150 confirmed to include the 68790-68820 30sec episode row with the gourd caption."
+    },
+    {
+      "rollout": 3,
+      "status": "answered (attempt 2, attempt 1 errored)",
+      "score": 0,
+      "answer": "Golden waist/curio piece '金棕衣' added in second encounter.",
+      "tool_call_sequence": "read_skill x5 -> semantic_search(episodes/event_steps/visual_clips/entities) x4 -> read_skill x2 -> run_sql(episodes 49980-50340 & 68820-69420; visual_clips; event_steps; semantic_triples; object_states) -> clip_qa(50160-50190) -> clip_qa(69060-69180) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 28, "what_happened": "run_sql against semantic_triples for the same time windows would surface the gourd rows (e.g. row 0001117/0001118 at 68730/68820) but the model's second-challenge clip_qa window (69060-69180) is offset ~250s later than the true clue interval (68811-68825), landing after the gourd scene into a different equipment/travel scene, so its visual read never lands on the gourd screen at all."},
+        {"segment_file": "answer-segment-02.json", "item_index": 41, "what_happened": "submit_answer names an ornate gold waist piece '金棕衣' seen in the later window, unrelated to the reference gourd upgrade."}
+      ],
+      "failure_point": "Wrong second-encounter time window for the visual check (69060-69180 instead of ~68811-68825) compounded the same equipment-framing bias; the SQL text with the gourd mention may have been present but the decisive clip_qa call looked at the wrong seconds entirely.",
+      "evidence_checked": "Confirmed clue interval is 68811-68825 vs rollout's clip_qa window 69060-69180 -- a ~250s miss."
+    },
+    {
+      "rollout": 4,
+      "status": "answered (attempt 2, attempt 1 errored)",
+      "score": 0,
+      "answer": "Weapon upgrade: staff replaced by a longer glowing polearm/spear; also notes heavier dark armor.",
+      "tool_call_sequence": "read_skill x6 -> semantic_search(episodes/event_steps/visual_clips/topic_facts) x4 -> semantic_search(episodes/event_steps/visual_clips 寅虎-specific) x3 -> run_sql(episodes 36800-37350 & 68400-69250) -> clip_qa(37140-37230) -> clip_qa(68820-68940) -> run_sql(topic_facts) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 33, "what_happened": "run_sql episodes 68400-69250 includes the gourd-consumption caption at 68790-68820, inside the queried window and inside the agent's context."},
+        {"segment_file": "answer-segment-02.json", "item_index": 38, "what_happened": "clip_qa(68820-68940) asks 'what equipment is [visible]' generically, but the returned answer emphasizes the weapon glow/spear and armor plating, not the gourd."},
+        {"segment_file": "answer-segment-02.json", "item_index": 44, "what_happened": "submit_answer commits to the weapon change."}
+      ],
+      "failure_point": "Same systemic pattern: gourd evidence present in SQL text pulled directly from the clue window, but the agent's synthesis and visual verification both defaulted to weapon/armor as 'equipment'.",
+      "evidence_checked": "Window 68400-69250 confirmed to include the 68790-68820 30sec episode row with the gourd caption."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": true,
+    "notes": "The memory DB has explicit, unambiguous evidence at exactly the clue interval: episodes:30sec:002293 (68790-68820) captions the player opening the elixir/inventory screen and drinking '上清金葫芦' (restores 5% max health); semantic_triples row 0001118 (snapshot_s=68820) records 'player character consumes 上清金葫芦 (restores 5% max health)', and row 0001117 (snapshot_s=68730) records 'player character upgrades 药王葫芦 via 直接饮用'. Critically, semantic_triples row 0000035 (snapshot_s=1950, much earlier in the game) establishes that this game's equipment system explicitly lists 头冠, 衣甲, 背甲, 臂甲, 腿甲, 护手, 铃儿, 葫芦 (headgear, robe, back-armor, arm-armor, leg-armor, gloves, bell, GOURD) as equipment slots -- i.e. the gourd genuinely is one of the game's 'equipment' slots, not merely a consumable, which is why the reference answer treats a gourd change as 'the most noticeable equipment upgrade'. All 5 rollouts' SQL queries covered the 68700-69300ish window and thus pulled this gourd text into context, but none surfaced it as an equipment answer."
+  },
+  "root_causes": [
+    "Systematic framing bias: every rollout implicitly narrowed 'equipment' to weapon/armor/headgear and phrased every clip_qa question around those three categories, so even when the golden-gourd consumption text was sitting in the SQL results they had already pulled, none of them asked the visual sub-agent about the gourd/potion equipment slot.",
+    "The agents did not use the domain fact (established earlier in the same DB, semantic_triples row 0000035) that the equipment menu itself explicitly enumerates 葫芦 (gourd) as one of its slots alongside headgear/armor -- they never queried or noticed that fact, so they had no prior reason to treat a gourd change as 'equipment'.",
+    "Rollout 3 additionally missed the exact clue window in its visual check (clip_qa at 69060-69180 vs the true clue interval 68811-68825), landing on an unrelated scene and producing an unrelated wrong answer ('金棕衣').",
+    "Visually, weapon/armor/mask changes are more salient and easier for a frame-sampling clip_qa call to describe than a small gourd icon swap inside a menu list, biasing the visual sub-agent's free-form descriptions toward weapon/armor even when asked more broadly."
+  ],
+  "what_worked": [
+    "All 5 rollouts correctly located the general clue time window via SQL/semantic_search over episodes/visual_clips/event_steps around both the first and second Yin Tiger challenges -- retrieval of the relevant time window was not the bottleneck for 4 of 5 rollouts.",
+    "All rollouts appropriately escalated to clip_qa to visually verify equipment differences between the two encounters, following the intended tool workflow."
+  ],
+  "transferable_lessons": [
+    "For 'equipment upgrade' questions in this game's memory DB, do not assume 'equipment' means only weapon/armor/headgear -- check the DB's own equipment-slot enumeration (e.g. semantic_triples rows describing the equipment menu's slot list) before restricting the visual sub-agent's question scope.",
+    "When run_sql or semantic_search returns episode/visual_clip captions that explicitly name an item (here '上清金葫芦'/'葫芦'), that literal keyword match should be weighed at least as heavily as a subjective visual weapon/armor comparison -- don't let a later clip_qa call silently override strong direct textual evidence already in context.",
+    "When asking clip_qa to compare two time windows for 'what changed', keep the question maximally open ('list every visible change in the full equipment/inventory screen including consumables/gourd/talismans') rather than pre-naming candidate categories (weapon, armor, headgear), since pre-naming categories biases the sub-agent's answer toward those categories and away from anything else in frame.",
+    "Verify the exact clue-interval seconds before issuing the decisive clip_qa call; a few hundred seconds of drift (as in rollout 3) can land the visual check on a completely different, unrelated scene."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether a clip_qa question phrased to explicitly include 'gourd/potion/consumable slot' would have caught the 上清金葫芦 change visually, since none of the 5 rollouts tried it -- this was not empirically tested here.",
+    "Whether the reference answer intends the specific 68811-68825 consumption event (drinking 上清金葫芦) or a broader gourd-tier upgrade (e.g. 老葫芦 -> 药王葫芦 progression seen earlier at 68730s) as 'the' equipment upgrade; the exact wording of what change counts as 'the gourd upgrade' is not fully disambiguated from the DB alone."
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "question_id": "day-161",
+  "timeline": "day",
+  "index": 161,
+  "question": "When fighting Bu Yunlu, what is the name of the item mapped to RT + left on the D-pad?",
+  "reference_answer": "Life-Saving Pill",
+  "question_type": "Entity Recognition",
+  "temporal_certificate": "Short",
+  "total_intervals": [[79110, 79114]],
+  "clue_interval": [[79110, 79114]],
+  "scores": [5, 5, 0, 0, 0],
+  "score_spread": "mixed",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 5,
+      "answer": "The item mapped to RT + left on the D-pad is 聚命丹 (around 79,367s).",
+      "tool_call_sequence": "read_skill x2 -> semantic_search x6 -> read_skill -> clip_qa(79200-79320) -> clip_qa(79320-79440) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-00/attempt-1/traces/clip-671b135bdc7849359cf0d2b4efe7e2f4-segment-01.json", "item_index": 0, "what_happened": "Second clip_qa call, window 79320-79440s, pulled evidence frames at t=79367.011s showing the item radial wheel with left slot text '保命丹'; sub-agent transcribed the first character wrong ('聚' instead of '保') producing '聚命丹' in its answer and in the final submitted answer."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "copy-frame of both evidence_frame_ids (a8ff11b9.../57886cdb...) at t=79367.011s: HUD radial wheel clearly reads top=龙光倍力丸, left=保命丹, right=如意画轴, bottom=缩地青符. The submitted '聚命丹' is a one-character misread of the correctly-located, correctly-cropped frame, not a missing-evidence problem."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 5,
+      "answer": "The item mapped to RT + left on the D-pad is 保命丹.",
+      "tool_call_sequence": "read_skill x2 -> semantic_search x3 -> read_skill -> run_sql x3 -> read_skill -> clip_qa(79110-79440) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-01/attempt-1/traces/clip-1de8f302124340fbba0c1b6ff8d79063-segment-00.json", "item_index": 0, "what_happened": "Single clip_qa call spanning the whole clue-to-post-clue window (79110-79440s) found the item radial wheel and read the left slot correctly as '保命丹', distinguishing it from the other slots (龙光倍力丸 above, 缩地青符 below)."}
+      ],
+      "failure_point": null,
+      "evidence_checked": "Same underlying HUD frame content as rollout 0 confirms '保命丹' is the correct on-screen left-slot label; this rollout read it correctly."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "The item mapped to RT + left is 聚气丹 (Qi-Gathering Pill).",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x2 -> read_skill -> run_sql x3 -> semantic_search x2 -> run_sql x2 -> run_sql -> clip_qa(79380-79440) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-02/attempt-1/traces/clip-b8402c736b7f40fdb71dbe221fc5c54b-segment-00.json", "item_index": 0, "what_happened": "clip_qa window 79380-79440s pulled evidence frames at t=79420.011s showing the same item radial wheel with left slot text '保命丹', but the sub-agent transcribed it entirely wrong as '聚气丹', an unrelated item name not present anywhere in the frame."}
+      ],
+      "failure_point": "clip_qa visual misread: the correct, legible frame (left slot = 保命丹) was retrieved but the sub-agent hallucinated a different item name instead of transcribing what was on screen.",
+      "evidence_checked": "copy-frame of evidence_frame_ids (a874ac73.../ea725128...) at t=79420.011s: HUD radial wheel again clearly reads left=保命丹 (with icon and '1/1' count), right=如意画轴, bottom partially visible. '聚气丹' does not appear anywhere in the crop; this is a pure OCR/VQA misread of legible text, not missing or ambiguous evidence."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "The item mapped to RT + left on the D-pad is 定身法 (Immobilize).",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> read_skill -> run_sql x3 -> semantic_search x4 -> run_sql -> clip_qa(79200-79440) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-03/attempt-1/traces/clip-2006b2c0a5a249e494005cb4790272d4-segment-00.json", "item_index": 0, "what_happened": "clip_qa window 79200-79440s pulled evidence frames at t=79420.011s but from a crop of the RIGHT side of the screen (x=500-1000), which shows a DIFFERENT radial menu entirely: the skill/technique wheel bound to face buttons (Y=铜头铁臂, X=定身法, B=金蟬, A=身外身法), not the item wheel bound to D-pad+RT. The sub-agent read the X-button skill label '定身法' and reported it as the D-pad-left item."}
+      ],
+      "failure_point": "Wrong-HUD-element confusion: the game has two visually similar radial wheels (item wheel on D-pad+RT vs skill wheel on face buttons X/Y/A/B) shown at overlapping times; the sub-agent answered from the wrong wheel.",
+      "evidence_checked": "copy-frame of both evidence_frame_ids at t=79420.011s: confirmed the crop shows the face-button skill wheel (labels next to Y/X/B/A glyphs), not the D-pad item wheel that appears in rollouts 0/1/2's frames (which show 保命丹/龙光倍力丸/如意画轴/缩地青符 with no button-letter glyphs)."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "The item mapped to RT + left is 'Red Tides'.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x3 -> run_sql x2 -> clip_qa(79050-79110) -> submit",
+      "decisive_steps": [
+        {"segment_file": "rollout-04/attempt-1/traces/answer-segment-01.json", "item_index": 21, "what_happened": "run_sql over episodes 79000-79500 correctly located the Bu Yunlu fight window, but the agent then issued a single narrow clip_qa call for 79050-79110s, i.e. right up to (and not past) the start of the clue interval, before the item wheel with legible Chinese text ever appears on screen (that only shows up around t=79360-79420 in the other rollouts)."},
+        {"segment_file": "rollout-04/attempt-1/traces/clip-1a5730e219cd4981a35c8ff1de105ff6-segment-00.json", "item_index": 0, "what_happened": "clip_qa's evidence frames at t~79057-79070s show an early RT item wheel with unlabeled icons only (no visible text at all, pre-fight loadout). With no legible text present, the sub-agent still returned a specific English name 'Red Tides' that appears nowhere in the frame, i.e. a fabricated answer rather than an 'unreadable' report."}
+      ],
+      "failure_point": "Time window chosen for clip_qa stopped at the very start of the clue interval and never reached the later in-fight frames where the item label becomes legible; combined with the sub-agent hallucinating a plausible-sounding but fabricated English name instead of flagging illegible/no-text icons.",
+      "evidence_checked": "copy-frame of both evidence_frame_ids at t=79057-79070s: icons visible but no readable text in the crop; 'Red Tides' does not correspond to anything on screen and is not a real item name pattern used elsewhere in this game's HUD (all real items in this fight are Chinese-labeled, e.g. 保命丹, 龙光倍力丸, 如意画轴, 缩地青符)."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "SQL search over entities and semantic_triples for '%命丹%' / '%Life%' returned zero rows: the structured memory DB (episodes/entities/semantic_triples/topic_facts) never captured the on-screen HUD item-wheel text at all — it is not OCR'd or entity-extracted anywhere in the timeline's memory tables. The fact is only recoverable by calling clip_qa on the source video and visually reading the radial-wheel HUD, which is legible (left slot = 保命丹, clearly readable) at multiple points during the fight (confirmed at t=79367.011s and t=79420.011s), well after the tight 79110-79114s clue_interval which just marks the start of the encounter."
+  },
+  "root_causes": [
+    "The item-wheel HUD text is entirely absent from the structured memory DB (episodes/entities/semantic_triples all return zero hits for the item name), so every rollout's success or failure hinges purely on clip_qa's visual OCR/reading of small on-screen Chinese text.",
+    "clip_qa is unreliable at reading small in-game HUD text even when the correct frame is retrieved: rollout 0 read 保命丹 as 聚命丹 (one-character error, still scored 5) and rollout 2 read the same legible label as an unrelated item 聚气丹 (scored 0) from an equally legible frame.",
+    "The game exposes two visually similar radial wheels near the same time window: an item wheel (D-pad + RT, labels like 保命丹/龙光倍力丸/如意画轴/缩地青符) and a skill wheel (face buttons X/Y/A/B, labels like 定身法/铜头铁臂/金蟬/身外身法). Rollout 3's clip_qa answered from the wrong wheel (the skill wheel) without noticing the button-glyph mismatch.",
+    "Rollout 4 anchored its clip_qa window too early (79050-79110s, ending exactly at the clue_interval start) and never reached the later part of the fight (around 79360-79420s) where the item wheel actually becomes legible with text; with no legible text in its sampled frames, the sub-agent fabricated a plausible-sounding but nonexistent English item name ('Red Tides') instead of reporting the icons were unreadable.",
+    "The judge appears to grade on gloss/semantic closeness to the English reference 'Life-Saving Pill' rather than exact Chinese-string match: a one-character misread ('聚命丹' vs correct '保命丹') still scored 5, while a wholly different item name ('聚气丹') scored 0."
+  ],
+  "what_worked": [
+    "Rollouts 0 and 1 both chose (or arrived at) clip_qa windows extending well past the clue_interval into the mid/late fight (79110-79440s and 79320-79440s respectively), which is where the item radial wheel with legible text actually appears on screen.",
+    "Correctly narrowing the SQL/semantic search to the Bu Yunlu fight's episode time range (~79000-79500s) before invoking clip_qa, done by all 5 rollouts, successfully located the right general window even when the final clip_qa sub-window choice later failed."
+  ],
+  "transferable_lessons": [
+    "For questions about on-screen HUD/controller-mapping text, do not expect the structured memory DB to help — go straight to clip_qa, and query it over a window that extends well past the start of the clue_interval, since the labelled UI element may only become legible several minutes into the event.",
+    "When a game/video has multiple visually similar HUD radial menus, explicitly instruct clip_qa to identify which control scheme triggers the wheel (e.g. 'the wheel opened by holding RT and pressing D-pad directions, NOT the face-button X/Y/A/B skill wheel') so the sub-agent doesn't answer from the wrong one.",
+    "Treat a single clip_qa text-read as unverified: when the on-screen text is small, cross-check by sampling a second independent frame/time before submitting, since the same legible label was read correctly by some rollouts and misread or hallucinated by others.",
+    "A visual sub-agent should report 'icons visible but no legible text' rather than inventing a specific-sounding but fabricated name when the sampled frames genuinely lack readable text (as happened in rollout 4)."
+  ],
+  "confidence": "high",
+  "open_questions": [
+    "Whether clip_qa's own frame-sampling resolution/downscaling (as opposed to prompt wording) is the primary driver of the read errors in rollouts 0 and 2, given the same underlying source frame was legible enough for a human/analyst to read directly.",
+    "Whether the judge's grading criterion is a fixed semantic-similarity threshold to the English reference, which would explain scoring the one-character misread '聚命丹' as full credit (5) while a differently-named item '聚气丹' scored 0."
+  ]
+}

@@ -1,0 +1,103 @@
+{
+  "question_id": "day-120",
+  "timeline": "day",
+  "index": 120,
+  "question": "What plant did the player go to gather on the way to challenge the Bishui Golden-Eyed Beast (碧水金睛兽)?",
+  "reference_answer": "fire jujube",
+  "question_type": "Event Recognition",
+  "temporal_certificate": "Medium",
+  "total_intervals": [[73895, 73903]],
+  "clue_interval": [[73895, 73903]],
+  "scores": [0, 0, 0, 0, 0],
+  "score_spread": "all_low",
+  "rollouts": [
+    {
+      "rollout": 0,
+      "status": "answered",
+      "score": 0,
+      "answer": "The plant was 火铃草 (Fire Bell Grass) x2 gathered on the way; a separate tree material 落伽香藤 was also collected nearby.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x3 -> run_sql -> semantic_search x3 -> run_sql x2 -> semantic_search x3 -> run_sql x4 -> read_skill -> clip_qa(64790-64840) -> clip_qa(71120-71160) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-02.json", "item_index": 58, "what_happened": "clip_qa asked to visually verify the plant name at 64790-64840s; sub-agent read on-screen item text and reported the caption's '大体草' label was WRONG, the true on-screen name is '火铃草 x2' (with 落伽香藤 as a separate tree material), citing frame at 64826.031s."},
+        {"segment_file": "answer-segment-02.json", "item_index": 59, "what_happened": "second clip_qa on the 71120-71160s window (post-boss loot) visually confirmed the loot text as '九叶灵芝草种子'; agent treated this as a distinct, less relevant event and kept 火铃草 as the primary answer."}
+      ],
+      "failure_point": "Answered with the visually-best-verified plant name (火铃草) from the only confirmed 'player gathers a glowing plant' scene in the multi-hour lead-up, but this does not match the reference 'fire jujube'; no on-screen or caption text anywhere in the DB reads 'jujube'/'枣' in connection with a gathering scene tied to this boss.",
+      "evidence_checked": "Independently re-queried episodes/topic_facts/object_states/entities for '枣' near 60000-74000s; only hit is an unrelated inventory browse of '药枣' (medicinal jujube, count 59) at 65910s, not a gathering action and not this rollout's window."
+    },
+    {
+      "rollout": 1,
+      "status": "answered",
+      "score": 0,
+      "answer": "The plant was 九叶灵芝草 (nine-leaf lingzhi herb); player gathered its 九叶灵芝草种子 (seeds), with 九叶灵芝精 also appearing in the reward notification.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x4 -> run_sql x3 -> semantic_search x3 -> run_sql x2 -> read_skill -> clip_qa(71120-71160) -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-01.json", "item_index": 44, "what_happened": "clip_qa visually confirmed the reward-notification text at 71145s reads '九叶灵芝草种子' then '九叶灵芝精', appearing right after the 70830s dialogue line mentioning the bishui jinjingshou; agent used this as 'the plant gathered on the way'."}
+      ],
+      "failure_point": "Conflated a post-combat loot/reward drop (from defeating an enemy) with the player actively 'going to gather a plant'; also this event happens ~3000s before the actual clue window (73895-73903s, the boss encounter itself), and still does not match 'fire jujube'.",
+      "evidence_checked": "Confirmed via own sql query that 71130s topic_facts fact is 'after defeating a quadruped enemy, reward notifications appear (九叶灵芝草种子, 九叶灵芝精)' -- i.e. combat loot, not a gathered plant."
+    },
+    {
+      "rollout": 2,
+      "status": "answered",
+      "score": 0,
+      "answer": "The plant was 九叶灵芝草; player received 九叶灵芝草种子 and 九叶灵芝精 around 71130s, then reached 碧水洞 encounter around 72660s.",
+      "tool_call_sequence": "read_skill x4 -> semantic_search x3 -> run_sql x2 -> semantic_search x3 -> run_sql x2 -> semantic_search x2 -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": null, "what_happened": "Reached the same 71130s topic_facts reward-notification row as rollout 1 via run_sql/semantic_search alone, but never called clip_qa to visually verify the on-screen text or to check whether it is a 'gathered plant' vs. combat loot."}
+      ],
+      "failure_point": "Same conflation as rollout 1 (loot reward mistaken for 'gathered plant'), compounded by no visual verification step at all -- trusted the caption text directly.",
+      "evidence_checked": "Same as rollout 1: 71130s fact is a post-combat reward, not a gathering action."
+    },
+    {
+      "rollout": 3,
+      "status": "answered",
+      "score": 0,
+      "answer": "The plant was 大体草 (Dàtǐ cǎo), collected from a green-glowing plant at ~64830s; dialogue identifying 碧水金睛兽 appears around 70830s.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> read_skill -> run_sql x3 -> semantic_search x3 -> run_sql x2 -> semantic_search x2 -> run_sql -> semantic_search -> run_sql x3 -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": null, "what_happened": "Found the 64800-64830s episode caption describing 'collects a green glowing plant that yields a \"大体草\" item' via run_sql/semantic_search over episodes, and also found the 70830s dialogue mentioning bishui jinjingshou, correctly linking the two as 'on the way'. Never called clip_qa."}
+      ],
+      "failure_point": "Trusted the 30-sec caption text '大体草' at face value without visual verification; rollout 0's clip_qa on the SAME 64790-64840s window later showed this caption label is inaccurate -- the actual on-screen text reads '火铃草 x2', not 大体草. So this rollout picked the right scene/window but the wrong item name because it relied on a mis-OCR'd caption rather than reading the frame.",
+      "evidence_checked": "Compared against rollout 0's clip_qa transcript for the identical 64790-64840s window, which visually contradicts the '大体草' caption."
+    },
+    {
+      "rollout": 4,
+      "status": "answered",
+      "score": 0,
+      "answer": "The plant was 大体草; collected from a glowing green plant at ~64800s, before entering 璧水洞 to face the beast.",
+      "tool_call_sequence": "read_skill x3 -> semantic_search x4 -> read_skill -> run_sql x2 -> semantic_search x4 -> run_sql -> submit",
+      "decisive_steps": [
+        {"segment_file": "answer-segment-00.json", "item_index": null, "what_happened": "Same as rollout 3: found the 64800-64830s episode caption text '大体草' via SQL/semantic_search and submitted it directly, no clip_qa call to verify."}
+      ],
+      "failure_point": "Identical failure mode to rollout 3 -- correct scene, caption-trusted wrong item name (大体草 vs. the visually-confirmed 火铃草), and still does not match reference 'fire jujube' either way.",
+      "evidence_checked": "Same cross-check against rollout 0's clip_qa result for 64790-64840s."
+    }
+  ],
+  "db_evidence": {
+    "clue_retrievable": "partial",
+    "notes": "The clue_interval (73895-73903s) itself is fully retrievable and visually confirmed: a boss-health-bar frame at 73898s reads the beast's name, matching a hard boss encounter (episode/topic_facts describe 'boss fight in dark cavern with ashen flame-wreathed demon' at 73830-73890s culminating in an item drop '三味真火' at 73890s). However, this window contains the CHALLENGE itself, not a plant-gathering scene. The 'plant gathered on the way' has no unambiguous single match anywhere in episodes/topic_facts/object_states/entities/semantic_triples across the entire lead-up (60000-74000s): three candidate plant/herb events exist (火铃草 x2 gathered at ~64826s, confirmed visually; 九叶天芝草/九叶灵芝草种子 loot drops at ~65040s and ~71130s from combat, not gathering; a '药枣' inventory browse at 65910s showing an existing stock of 59, not a new gather). None of these, nor any other DB text, contains a token matching 'jujube' or '枣' tied to a gathering action. A direct SQL LIKE search for '%枣%' across episodes/topic_facts/object_states/entities/semantic_triples returns essentially nothing relevant to this scene."
+  },
+  "root_causes": [
+    "The reference answer 'fire jujube' does not textually or (as far as sampled frames show) visually match any plant/item name captured anywhere in the memory DB for this multi-hour lead-up window, so no rollout could have retrieved the exact reference term from the given tools/DB.",
+    "Two rollouts (3, 4) trusted a 30-sec episode caption ('大体草') at face value without visual verification; a sibling rollout's clip_qa call on the identical time window shows this caption is an OCR/captioning error -- the true on-screen text is '火铃草'.",
+    "Two rollouts (1, 2) conflated a post-combat loot/reward notification (九叶灵芝草种子, obtained by defeating an enemy) with the player actively 'gathering a plant', and this event is temporally far from the true clue interval (71130s reward vs. 73898s challenge).",
+    "The clue_interval given (73895-73903s) marks only the boss-encounter moment itself, not the antecedent plant-gathering event referenced by the question, so all rollouts had to search backward through a long, event-dense window with several superficially plausible 'plant gathered' candidates and no clear signal for which one is the reference's intended one.",
+    "Rollout 0 did the most rigorous work (visually corrected a caption error via clip_qa) and still scored 0, suggesting the reference answer may itself be keyed to game/localization knowledge not present in this DB's captions at all, or to a scene/plant this pipeline's automated captions never surfaced correctly."
+  ],
+  "what_worked": [
+    "Rollout 0's use of clip_qa to re-verify a caption's item-name claim against the actual on-screen frame text caught and corrected a real caption error (大体草 -> 火铃草), which is good retrieval discipline even though it didn't yield the reference answer.",
+    "Rollout 3's SQL/semantic_search correctly located both halves of the causal chain (the plant-gathering scene at ~64800s and the beast-naming dialogue at ~70830s), showing the retrieval agents can link a distant antecedent event to a later named-entity mention across a large time gap."
+  ],
+  "transferable_lessons": [
+    "For 'what item/plant did the player gather' questions, always visually verify via clip_qa before submitting -- 30-sec auto-captions can misread on-screen Chinese item-name text (confirmed OCR error here: 大体草 vs 火铃草).",
+    "Distinguish 'the player goes to gather X' (an active pickup of a resource node/plant) from 'the player receives X as combat loot/reward' -- these are different game actions and questions about 'gathering' should be answered from the former, not the latter.",
+    "When a clue_interval marks the culminating event (e.g. the boss fight itself), search backward through the full lead-up for the specific antecedent action asked about, rather than assuming the clue_interval itself contains the answer.",
+    "If a search for the reference term (e.g. a keyword like '枣'/'jujube') returns nothing anywhere in the DB despite exhaustive search across all evidence tables, flag this to the user/harness as a possible DB-caption coverage gap or reference-answer mismatch rather than assuming a retrieval failure."
+  ],
+  "confidence": "medium",
+  "open_questions": [
+    "Is 'fire jujube' an official/fan localization of an in-game item name (e.g. 火枣) that never appears verbatim in this run's auto-generated captions, meaning the caption pipeline simply failed to name it correctly at the true source moment?",
+    "Is there a plant-gathering scene between roughly 65900s and 73800s that none of the 5 rollouts' semantic_search/run_sql queries surfaced at all (a true retrieval miss), which would require directly sampling video frames across that whole span to rule out?",
+    "Could the reference clue actually be tied to a different, unlabeled 'Bishui Golden-Eyed Beast' encounter elsewhere in the 84900s-long video (this run only checked the encounter matching the given clue_interval) if the game has multiple similarly-named bosses?"
+  ]
+}
