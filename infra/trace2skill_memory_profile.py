@@ -1,0 +1,12 @@
+"""Add exact rank-local accounting to the inspected vLLM image."""
+
+from pathlib import Path
+
+path = Path('/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_worker.py')
+source = path.read_text()
+target = '        unrequested_memory = self.init_snapshot.free_memory - self.requested_memory'
+if source.count(target) != 1:
+    raise RuntimeError('The installed vLLM memory profiler differs from the inspected implementation')
+source = source.replace(target, '''        logger.info("TRACE2SKILL_KV_BUDGET rank=%d bytes=%d requested=%d non_kv=%d cuda_graph=%d", self.rank, int(self.available_kv_cache_memory_bytes), int(self.requested_memory), int(profile_result.non_kv_cache_memory), int(cudagraph_memory_estimate_applied))
+''' + target)
+path.write_text(source)
