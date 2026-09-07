@@ -22,6 +22,7 @@ from pydantic import BaseModel, ValidationError
 import skill_evolver.parallel_evolving_agent as parallel
 from skill_evolver.parallel_success_evolving_agent import CombinedParallelSkillEvolver
 from skill_evolver.skill_evolving_agent import SkillEvolver
+from tracing_bridge import init_weave
 
 
 MODEL = "Qwen/Qwen3.8-27B-FP8"
@@ -30,6 +31,7 @@ BRIDGE_RULES = """
 Environment adaptation: SKILL.md is the automatically loaded ROOT-SKILL guide.
 references/*.md are on-demand subskills exposed through read_skill(name). Keep their
 YAML frontmatter (name and description); name must equal the file stem. Never inline
+Use unquoted, one-line `name: ...` and `description: ...` fields for the harness catalog.
 all subskills into the root. Preserve the loading guide, catalog and read_skill API.
 Change only SKILL.md or references/<name>.md. Never delete SKILL.md. Do not mention
 gold answers or individual training examples in learned reusable guidance.
@@ -79,6 +81,9 @@ class BridgeSkillEvolver(SkillEvolver):
                 return False, f"{name}: {error}"
             if not isinstance(metadata, dict) or metadata.get("name") != Path(name).stem or not isinstance(metadata.get("description"), str) or not metadata["description"].strip():
                 return False, f"{name}: name must equal filename stem and description must be a nonempty string"
+            lines = match.group(1).splitlines()
+            if f"name: {metadata['name']}" not in lines or f"description: {metadata['description']}" not in lines:
+                return False, f"{name}: catalog requires unquoted one-line name: and description: fields"
         for reference in re.findall(r"references/[\w.-]+\.md", state["SKILL.md"]):
             if reference not in state:
                 return False, f"Dangling skill reference: {reference}"
@@ -250,7 +255,7 @@ def evolve(run_directory):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     parallel.ThreadPoolExecutor = ContextExecutor
-    weave.init("3dsmile/video-sql-v2")
+    init_weave()
     with weave.attributes({"run": Path(sys.argv[1]).name, "skill_version": "initial-to-evolved"}):
         evolve(sys.argv[1])
     weave.finish()

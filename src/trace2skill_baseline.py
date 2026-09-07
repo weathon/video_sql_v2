@@ -10,9 +10,9 @@ import uuid
 from pathlib import Path
 
 import weave
-from agents import Agent, OpenAIResponsesModel, StopAtTools, ToolOutputImage, function_tool, set_trace_processors, trace
+from agents import Agent, OpenAIResponsesModel, StopAtTools, ToolOutputImage, function_tool, trace
 from pydantic import BaseModel, Field, ValidationError
-from weave.integrations.openai_agents.openai_agents import WeaveTracingProcessor
+from third_party.trace2skill.tracing_bridge import init_weave
 
 from src.harness import InvalidTrace, VideoSQLHarness, run_stream, tool_error_json
 from src.val import judge_answer, retryable, write_error
@@ -272,8 +272,7 @@ async def analyze(result, semaphore):
 
 async def main():
     RUN.mkdir(parents=True, exist_ok=True)
-    weave.init("3dsmile/video-sql-v2")
-    set_trace_processors([WeaveTracingProcessor()])
+    init_weave()
     initial = RUN / "skills/initial"
     if not initial.exists():
         shutil.copytree(ROOT / "skills/initial", initial)
@@ -326,8 +325,7 @@ async def main():
                 status = await process.wait()
             if status != 0:
                 raise RuntimeError(f"Trace2Skill evolution exited {status}; see {RUN / 'evolution.log'}")
-            weave.init("3dsmile/video-sql-v2")
-            set_trace_processors([WeaveTracingProcessor()])
+            init_weave()
     comparison = {version: json.loads((RUN / f"{version}-summary.json").read_text()) for version in ("initial", "evolved")}
     (RUN / "comparison.json").write_text(json.dumps(comparison, indent=2) + "\n")
     weave.finish()
