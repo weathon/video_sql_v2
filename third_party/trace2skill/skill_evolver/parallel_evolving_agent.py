@@ -242,8 +242,7 @@ def _apply_patch_edit_to_content(content: str, edit: "PatchEdit") -> str:
     """Apply a single PatchEdit to file content and return the updated content.
 
     All supported ops are handled in pure Python — no LLM call.
-    If the target text / section cannot be found the original content is
-    returned unchanged (a warning is logged).
+    Missing targets raise; an unapplied edit must never be counted as success.
 
     ``create`` and ``delete_file`` ops are not handled here; callers should
     deal with them at the file level before calling this function.
@@ -254,7 +253,7 @@ def _apply_patch_edit_to_content(content: str, edit: "PatchEdit") -> str:
         bounds = _find_section_bounds(lines, edit.target_section)
         if bounds is None:
             log.warning("append_to_section: section not found: %r", edit.target_section)
-            return content
+            raise ValueError(f"append_to_section: section not found: {edit.target_section!r}")
         _, end = bounds
         # Insert after the last non-empty line inside the section
         insert_at = end
@@ -270,7 +269,7 @@ def _apply_patch_edit_to_content(content: str, edit: "PatchEdit") -> str:
                 log.warning(
                     "replace_in_section: section not found: %r", edit.target_section
                 )
-                return content
+                raise ValueError(f"replace_in_section: section not found: {edit.target_section!r}")
             start, end = bounds
             section_text = "\n".join(lines[start:end])
             if edit.old_text not in section_text:
@@ -278,14 +277,14 @@ def _apply_patch_edit_to_content(content: str, edit: "PatchEdit") -> str:
                     "replace_in_section: old_text not found in section %r",
                     edit.target_section,
                 )
-                return content
+                raise ValueError(f"replace_in_section: old_text not found: {edit.old_text!r}")
             new_section = section_text.replace(edit.old_text, edit.content, 1)
             lines = lines[:start] + new_section.split("\n") + lines[end:]
         else:
             full = "\n".join(lines)
             if edit.old_text not in full:
                 log.warning("replace_in_section: old_text not found in file")
-                return content
+                raise ValueError(f"replace_in_section: old_text not found: {edit.old_text!r}")
             lines = full.replace(edit.old_text, edit.content, 1).split("\n")
         return "\n".join(lines)
 
@@ -294,7 +293,7 @@ def _apply_patch_edit_to_content(content: str, edit: "PatchEdit") -> str:
             bounds = _find_section_bounds(lines, edit.target_section)
             if bounds is None:
                 log.warning("%s: section not found: %r", edit.op, edit.target_section)
-                return content
+                raise ValueError(f"{edit.op}: section not found: {edit.target_section!r}")
             start, end = bounds
             search_text = "\n".join(lines[start:end])
             offset, section_len = start, end - start
@@ -304,7 +303,7 @@ def _apply_patch_edit_to_content(content: str, edit: "PatchEdit") -> str:
 
         if edit.target_text not in search_text:
             log.warning("%s: target_text not found: %r", edit.op, edit.target_text[:60])
-            return content
+            raise ValueError(f"{edit.op}: target_text not found: {edit.target_text!r}")
 
         if edit.op == "insert_after":
             new_text = search_text.replace(
@@ -325,12 +324,14 @@ def _apply_patch_edit_to_content(content: str, edit: "PatchEdit") -> str:
                     "add_section: after_section not found: %r, appending at EOF",
                     edit.after_section,
                 )
-                insert_at = len(lines)
+                raise ValueError(f"add_section: after_section not found: {edit.after_section!r}")
             else:
                 insert_at = bounds[1]
         else:
             insert_at = len(lines)
-        header = edit.target_section or "## New Section"
+        if not edit.target_section:
+            raise ValueError("add_section requires target_section")
+        header = edit.target_section
         new_section = ["", header, ""] + edit.content.split("\n")
         lines = lines[:insert_at] + new_section + lines[insert_at:]
         return "\n".join(lines)
@@ -339,7 +340,7 @@ def _apply_patch_edit_to_content(content: str, edit: "PatchEdit") -> str:
         bounds = _find_section_bounds(lines, edit.target_section)
         if bounds is None:
             log.warning("delete_section: section not found: %r", edit.target_section)
-            return content
+            raise ValueError(f"delete_section: section not found: {edit.target_section!r}")
         start, end = bounds
         # Strip blank lines immediately before the header
         while start > 0 and not lines[start - 1].strip():
@@ -348,7 +349,7 @@ def _apply_patch_edit_to_content(content: str, edit: "PatchEdit") -> str:
         return "\n".join(lines)
 
     log.warning("Unknown PatchEdit op: %r — edit not applied", edit.op)
-    return content
+    raise ValueError(f"Unsupported patch operation: {edit.op}")
 
 
 class ParallelSkillEvolver:
@@ -1758,7 +1759,7 @@ class ParallelSkillEvolver:
                     conversation_trace=conversation_trace,
                     response=response,
                 )
-            return []
+            raise ValueError("Patch parsing failed after LLM correction opportunities")
         return [self._patch_from_data(data) for data in payloads]
 
     def _parse_semantic_patches(
@@ -1916,6 +1917,7 @@ class ParallelSkillEvolver:
                             tqdm.write(
                                 f"  MAP batch {batch_idx}/{total_batches}: parse failed"
                             )
+                        raise ValueError(f"MAP batch {batch_idx} produced no patch")
                 except Exception as e:
                     fail_count += 1
                     if batch_idx == 1:
@@ -1924,6 +1926,7 @@ class ParallelSkillEvolver:
                         tqdm.write(
                             f"  MAP batch {batch_idx}/{total_batches}: error: {e}"
                         )
+                    raise
                 pbar.set_postfix(ok=success_count, fail=fail_count, refresh=False)
                 pbar.update(1)
 
@@ -2291,11 +2294,11 @@ class ParallelSkillEvolver:
                         else:
                             fail_count += 1
                             tqdm.write(f"  REDUCE level {level}, batch {merge_idx}: merge failed")
-                            merged_results_by_index[merge_idx] = list(batch)
+                            raise ValueError(f"REDUCE level {level} batch {merge_idx} produced no patch")
                     except Exception as exc:
                         fail_count += 1
                         tqdm.write(f"  REDUCE level {level}, batch {merge_idx}: error: {exc}")
-                        merged_results_by_index[merge_idx] = list(batch)
+                        raise
                     pbar.set_postfix(ok=success_count, fail=fail_count, refresh=False)
                     pbar.update(1)
             pbar.close()
@@ -2415,9 +2418,7 @@ class ParallelSkillEvolver:
             )
             if final is not None:
                 return final
-            # Ultimate fallback: return first patch
-            log.warning("REDUCE: forced merge failed, returning first patch")
-            return current[0]
+            raise ValueError("REDUCE: forced merge failed after correction opportunities")
 
         return current[0]
 
@@ -2503,7 +2504,7 @@ class ParallelSkillEvolver:
         """Build user message for translating one semantic item into exact edits."""
         parts: list[str] = []
         for file_path in file_paths:
-            file_content = skill_state.get(file_path, "")
+            file_content = skill_state[file_path]
             if file_content:
                 n_lines = file_content.count("\n") + 1
                 parts.append(
@@ -2591,16 +2592,16 @@ class ParallelSkillEvolver:
                     index,
                     file_path,
                 )
-                return index, edit
+                raise ValueError(f"Translation failed for edit {index}: {file_path}")
             # Filter to edits for this file only (guard against hallucinated paths).
             translated_edits = [e for e in translated.edits if e.file == file_path]
-            if not translated_edits:
+            if len(translated.edits) != 1 or len(translated_edits) != 1:
                 log.warning(
                     "Translation returned no matching edits for edit %d (%s) — using original",
                     index,
                     file_path,
                 )
-                return index, edit
+                raise ValueError(f"Translation must return exactly one edit for {file_path}")
             return index, translated_edits[0]
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -2619,7 +2620,7 @@ class ParallelSkillEvolver:
                     )
                 except Exception as exc:
                     log.error("Translation error for edit %d (%s): %s", idx, file_path, exc)
-                    translated_slots[idx] = final_patch.edits[idx]
+                    raise
 
         corrected_edits = [translated_slots[i] for i in range(len(final_patch.edits))]
 
@@ -2847,19 +2848,21 @@ class ParallelSkillEvolver:
                     applied += 1
                 else:
                     log.warning("delete_file: file not found: %s", edit.file)
-                    skipped += 1
+                    raise ValueError(f"delete_file: file not found: {edit.file}")
                 continue
 
             if edit.op == "create":
+                if edit.file in updated:
+                    raise ValueError(f"create would overwrite existing file: {edit.file}")
                 updated[edit.file] = edit.content
                 changelog.append(f"Created {edit.file}")
                 applied += 1
                 continue
 
-            current = updated.get(edit.file, "")
+            current = updated[edit.file]
             new_content = _apply_patch_edit_to_content(current, edit)
             if new_content == current:
-                skipped += 1
+                raise ValueError(f"Patch edit made no change: {edit}")
             else:
                 updated[edit.file] = new_content
                 label = edit.target_section or edit.target_text or edit.old_text or ""
@@ -2942,7 +2945,7 @@ class ParallelSkillEvolver:
                 fix_changelog.append(
                     f"Verification round {round_num}: no fix produced — {msg}"
                 )
-                break
+                raise ValueError(f"Verification produced no fix: {msg}")
 
             fix_file_edits, fix_reasoning, fix_entries = self.run_apply_phase_programmatic(
                 current_state, fix_patch
@@ -2968,7 +2971,7 @@ class ParallelSkillEvolver:
                 fix_changelog.append(
                     f"Verification round {round_num}: patch made no changes — {msg}"
                 )
-                break
+                raise ValueError(f"Verification patch made no change: {msg}")
 
             self._evolver.apply_edits(changed_fix_edits)
             fix_changelog.extend(
@@ -2991,6 +2994,7 @@ class ParallelSkillEvolver:
                 fix_changelog.append(
                     f"Verification FAILED after {max_rounds} rounds: {msg}"
                 )
+                raise ValueError(f"Verification exhausted {max_rounds} rounds: {msg}")
 
         return fix_changelog
 
