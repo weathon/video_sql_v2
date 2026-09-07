@@ -55,6 +55,19 @@ class LimitedResponsesModel(OpenAIResponsesModel):
                 yield event
 
 
+class LimitedEmbeddingClient:
+    def __init__(self, client, semaphore):
+        self.client = client
+        self.semaphore = semaphore
+
+    async def post(self, *args, **kwargs):
+        async with self.semaphore:
+            return await self.client.post(*args, **kwargs)
+
+    async def aclose(self):
+        await self.client.aclose()
+
+
 def make_harness(directory, skill_dir, semaphore):
     harness = VideoSQLHarness(
         database=RUNTIME / "index.duckdb", embedding_index=RUNTIME / "embedding_index",
@@ -64,6 +77,7 @@ def make_harness(directory, skill_dir, semaphore):
         context_limit=314573, compaction_threshold=178000, reasoning_context=None,
     )
     harness.context.model = LimitedResponsesModel(harness.context.client, semaphore)
+    harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
     return harness
 
 
@@ -156,10 +170,10 @@ async def analyze(result, semaphore):
                                 reasoning={"effort": "medium"}, store=False,
                                 text_format=SuccessReport,
                             )
-                        body = await raw.aread()
+                        body = raw.content
                         (directory / f"success-response-{attempt}.json").write_bytes(body)
                         messages.extend(json.loads(body)["output"])
-                        response = await raw.parse()
+                        response = raw.parse()
                         if response.status != "completed" or response.output_parsed is None:
                             raise RuntimeError(f"Incomplete success analysis: {response.model_dump_json()}")
                         report = response.output_parsed
@@ -276,7 +290,8 @@ async def main():
 
         async def collect_worker():
             for question, index in jobs:
-                results.append(await rollout(question, index, version, semaphore))
+                with weave.attributes({"run": RUN.name, "question": str(question["index"]), "rollout": index, "skill_version": version}):
+                    results.append(await rollout(question, index, version, semaphore))
 
         async with asyncio.TaskGroup() as group:
             for _ in range(128):

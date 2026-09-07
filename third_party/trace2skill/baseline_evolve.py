@@ -128,7 +128,7 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
                 model=MODEL, instructions=instructions, input=messages,
                 reasoning={"effort": "medium"}, store=False, text_format=PatchResponse,
             )
-            body = raw.read()
+            body = raw.content
             number = continuations + format_fixes
             (directory / f"response-{number}.json").write_bytes(body)
             payload = json.loads(body)
