@@ -872,8 +872,7 @@ class SkillEvolver:
         """Run quick_validate.py on the skill directory."""
         script = QUICK_VALIDATE_SCRIPT
         if not script.exists():
-            log.warning("quick_validate.py not found at %s, skipping validation", script)
-            return True, "Validation skipped (script not found)"
+            raise FileNotFoundError(f"Required Trace2Skill validator missing: {script}")
 
         try:
             result = subprocess.run(
