@@ -31,8 +31,8 @@ BRIDGE_RULES = """
 Environment adaptation: SKILL.md is the automatically loaded ROOT-SKILL guide.
 references/*.md are on-demand subskills exposed through read_skill(name). Keep their
 YAML frontmatter (name and description); name must equal the file stem. Never inline
-Use unquoted, one-line `name: ...` and `description: ...` fields for the harness catalog.
 all subskills into the root. Preserve the loading guide, catalog and read_skill API.
+Use unquoted, one-line `name: ...` and `description: ...` fields for the harness catalog.
 Change only SKILL.md or references/<name>.md. Never delete SKILL.md. Do not mention
 gold answers or individual training examples in learned reusable guidance.
 Use the supplied structured JSON schema, with empty strings for unused edit fields.

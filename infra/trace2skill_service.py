@@ -14,7 +14,7 @@ NETWORK = "video-sql-trace2skill"
 VOLUME = "video-sql-trace2skill-ec"
 role = sys.argv[1]
 name = "trace2skill-" + role
-command = ["docker", "run", "--name", name, "--network", NETWORK]
+command = ["docker", "run", "--init", "--name", name, "--network", NETWORK]
 shared = ["-e", "HF_HOME=/hf_cache", "-v", "/raid/huggingface:/hf_cache", "-v", VOLUME + ":/epd_shared/cache"]
 if role in ("profile", "pd"):
     command += ["--gpus", '"device=0,1,2,3"', "--shm-size=32g", "-p", "127.0.0.1:8024:8000",
