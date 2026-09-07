@@ -29,7 +29,7 @@ is 60 seconds; read/write/pool timeout is 100000 seconds; pools permit 1000 conn
 and 256 keepalive connections. The EPD proxy has no short total request deadline.
 Weave uses the Agents SDK processor and rollout roots, with local traces retained.
 
-Infrastructure uses PD GPUs 0,2, encoder GPU 3 and embedding GPU 4, with separate
+Infrastructure uses TP4 on PD GPUs 0,1,2,3, encoder GPU 4 and embedding GPU 4, with separate
 trace2skill containers, network, ports and EC tmpfs volume. Context is 314573 with
 YaRN factor 1.2, thinking and preserved reasoning. The 480p image budget is 650:
 Qwen's patch size 16 and merge size 2 round 854×480 to 864×480, yielding 405 visual
@@ -38,11 +38,12 @@ tokens plus two delimiters; 50000 tokens are reserved for text/reasoning.
 The researched configuration uses 32768 batched tokens, MTP1 and FlashInfer autotune;
 these are deployment candidates, not a measured throughput claim. CPU eager KV offload,
 BF16 KV, prefix cache, async scheduling and 4GiB MM processor cache remain enabled.
-Start the profile service with max-num-seqs 128. Its native profiler records the exact
-integer available KV budget for each rank after non-KV and CUDA-graph deductions.
-Use the minimum rank budget B and exact group-aware cache_config.kv_cache_max_concurrency
-C from server_info; save B and floor(1.5*C) to capacity.json for the final PD launch.
-CPU offload space is not included in resident C. No inference preflight is sent.
+The user selected max-num-seqs 50 for TP4. The PD service performs native memory
+profiling for this configuration and lets vLLM schedule requests when KV is constrained.
+Its profiler records the exact available KV budget for each rank after non-KV and
+CUDA-graph deductions; server_info reports the exact resident concurrency capacity.
+The earlier TP2 budget is not reused. CPU offload space is not included in resident
+capacity. No inference preflight is sent.
 
 Services run in foreground exec sessions via infra/trace2skill_service.py. Full
 repository review precedes the formal run. Formal traces provide correctness evidence;
