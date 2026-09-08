@@ -16,6 +16,7 @@ import httpx2
 import numpy as np
 from agents import (
     Agent,
+    ModelInputData,
     ModelSettings,
     OpenAIResponsesModel,
     RunConfig,
@@ -23,6 +24,7 @@ from agents import (
     StopAtTools,
     ToolOutputImage,
     ToolOutputText,
+    ToolContext,
     ToolsToFinalOutputResult,
     function_tool,
 )
@@ -120,6 +122,9 @@ class HarnessContext:
     sources: list[dict[str, Any]] = field(init=False)
     notes_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     trace_counter: int = 0
+    tool_counter: int = 0
+    tool_calls: dict[int, dict[str, Any]] = field(default_factory=dict)
+    tool_ids: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -271,6 +276,7 @@ def save_trace(
     header: dict[str, Any],
     events_path: Path,
     error: BaseException | None,
+    tool_calls: list[dict[str, Any]],
 ) -> str:
     path = context.run_dir / "traces" / f"{label}-segment-{context.trace_counter:02d}.json"
     while path.exists():
@@ -297,6 +303,7 @@ def save_trace(
         "input": stripped_json(result.input),
         "history": stripped_json(result.to_input_list()),
         "raw_responses": raw_responses,
+        "tool_calls": stripped_json(tool_calls),
         "final_output": stripped_json(result.final_output),
         "is_complete": result.is_complete,
     }
@@ -311,6 +318,48 @@ async def run_stream(
     label: str,
     watch_context: bool,
 ) -> tuple[Any, bool, str]:
+    tool_calls = []
+
+    @function_tool(failure_error_function=tool_error_json)
+    async def replace_tool(tool_id: int, replacement: str) -> str:
+        """Replace any completed tool result in model context with your replacement text.
+
+        Every tool call has an integer tool_id, numbered from 1 within this rollout
+        attempt, shared with nested agents. Any tool's returned content, including
+        images and earlier replace_tool results, can be replaced. Prefer replacing
+        the latest tool result to preserve as much of the KV cache prefix as possible.
+
+        Use this to remove irrelevant results from a wrong tool call (for example,
+        reading the wrong file or executing the wrong SQL): large useless outputs
+        consume context and distract attention. Also use it to summarize redundant
+        results, such as long SQL output containing only a little useful information.
+        Preserve the useful evidence in your replacement. Only the returned content
+        changes; this does not undo the tool's side effects. Original results remain
+        in the saved trace for reflection and Trace2Skill analysis.
+        """
+        if tool_id not in context.tool_calls:
+            raise ValueError(f"tool_id {tool_id} is not a completed tool call")
+        context.tool_calls[tool_id]["replacements"].append(replacement)
+        return json.dumps({"replaced_tool_id": tool_id})
+
+    wrapped_tools = []
+    for tool in [*agent.tools, replace_tool] if agent.tools else []:
+        async def invoke_tool(tool_context: ToolContext, arguments: str, original=tool.on_invoke_tool):
+            context.tool_counter += 1
+            tool_id = context.tool_counter
+            output = await original(tool_context, arguments)
+            record = {"tool_id": tool_id, "call_id": tool_context.tool_call_id,
+                      "name": tool_context.tool_name, "arguments": arguments,
+                      "original_output": stripped_json(output), "replacements": []}
+            context.tool_calls[tool_id] = record
+            context.tool_ids[tool_context.tool_call_id] = tool_id
+            tool_calls.append(record)
+            # SDK final-answer callbacks consume the original typed result. The input
+            # filter adds the ID and replaces only the view sent to the next model call.
+            return output
+
+        wrapped_tools.append(dataclasses.replace(tool, on_invoke_tool=invoke_tool))
+    agent = agent.clone(tools=wrapped_tools)
     header = {
         "agent": {
             "name": agent.name,
@@ -339,6 +388,23 @@ async def run_stream(
     context_triggered = False
     caught: BaseException | None = None
     with events_path.open("x", buffering=1) as events:
+        def model_input(data):
+            items = []
+            for item in data.model_data.input:
+                if item.get("type") == "function_call_output":
+                    tool_id = context.tool_ids[item["call_id"]]
+                    record = context.tool_calls[tool_id]
+                    output = record["replacements"][-1] if record["replacements"] else item["output"]
+                    prefix = json.dumps({"tool_id": tool_id}) + "\n"
+                    if isinstance(output, str):
+                        output = prefix + output
+                    else:
+                        output = [{"type": "input_text", "text": prefix}, *output]
+                    item = {**item, "output": output}
+                items.append(item)
+            events.write(json.dumps({"type": "model_input", "input": stripped_json(items)}, ensure_ascii=False) + "\n")
+            return ModelInputData(input=items, instructions=data.model_data.instructions)
+
         events.write(json.dumps({
             "type": "run_start", **header, "input": stripped_json(input_items),
         }, ensure_ascii=False) + "\n")
@@ -346,7 +412,7 @@ async def run_stream(
             agent,
             input_items,
             max_turns=MAX_TURNS,
-            run_config=context.run_config,
+            run_config=dataclasses.replace(context.run_config, call_model_input_filter=model_input),
         )
         try:
             async for event in result.stream_events():
@@ -360,6 +426,8 @@ async def run_stream(
                         "item_type": event.item.type,
                         "item": stripped_json(event.item.raw_item),
                     }
+                    if event.item.type == "tool_call_output_item":
+                        record["tool_id"] = context.tool_ids[event.item.raw_item["call_id"]]
                 else:
                     record = {"type": event.type, "agent": event.new_agent.name}
                 events.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -393,6 +461,7 @@ async def run_stream(
     trace_file = save_trace(
         context, label, result, header, events_path,
         caught if caught is not None else result.run_loop_exception,
+        tool_calls,
     )
     if caught is not None:
         raise caught
