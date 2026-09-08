@@ -16,7 +16,6 @@ import httpx2
 import numpy as np
 from agents import (
     Agent,
-    ModelInputData,
     ModelSettings,
     OpenAIResponsesModel,
     RunConfig,
@@ -24,10 +23,11 @@ from agents import (
     StopAtTools,
     ToolOutputImage,
     ToolOutputText,
-    ToolContext,
     ToolsToFinalOutputResult,
     function_tool,
 )
+from agents.run import ModelInputData
+from agents.tool_context import ToolContext
 from openai import APIError, AsyncOpenAI, DefaultAsyncHttpxClient
 from PIL import Image, ImageOps
 from pydantic import BaseModel
