@@ -81,6 +81,9 @@ def write_error(path: Path, error: BaseException) -> None:
     ) for item in exception_chain(error)):
         # Preserve the pause without marking this QA/judge attempt as exhausted.
         path = path.with_name(f"{path.stem}-quota-pause-{uuid.uuid4().hex}.json")
+    elif any(isinstance(item, asyncio.CancelledError) for item in exception_chain(error)):
+        # SDK stream cleanup can wrap cancellation; it still did not exhaust an attempt.
+        path = path.with_name(f"{path.stem}-cancelled-{uuid.uuid4().hex}.json")
     print(f"error_file={path} " + " <- ".join(
         f"{type(item).__name__}: {item}" for item in exception_chain(error)
     ), flush=True)
