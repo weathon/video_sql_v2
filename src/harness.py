@@ -378,7 +378,7 @@ async def run_stream(
         after = {**original, "output": prefix + replacement}
         (context.run_dir / f"replace-{tool_context.tool_call_id}.json").write_text(json.dumps({
             "tool_id": tool_id, "replace_call_id": tool_context.tool_call_id,
-            "model": context.model.model, "reasoning": context.model_settings.reasoning,
+            "model": context.model.model, "reasoning": stripped_json(context.model_settings.reasoning),
             "before": [call, before], "after": [call, after],
         }, ensure_ascii=False) + "\n")
         context.tool_calls[tool_id]["replacements"].append(replacement)
