@@ -17,4 +17,4 @@
 
 本次四卡配置未通过提示词检查；异常并非只出现在 Responses 路径。关闭 custom all-reduce 未消除这些异常，但本次测试没有确定底层根因，也没有证明权重退化。后续 SQL、结构化输出、工具往返和图像测试未执行。
 
-完整启动命令、服务日志、请求及流式原始输出保存在 [runs/nvfp4-tp4-recheck-20260908](../runs/nvfp4-tp4-recheck-20260908/)。
+完整启动命令、服务日志、请求及流式原始输出保存在 [runs/nvfp4-tp4-recheck-20260908](../runs/nvfp4-tp4-recheck-20260908/)。上述测试实际使用的命令保留在 `server-command-before-removing-disable-custom-all-reduce.json`；`server-command.json` 已按用户要求移除 `--disable-custom-all-reduce`，尚未按修改后的命令重新启动。
