@@ -6,12 +6,12 @@ The upstream source is pinned to Qwen-Applications/Trace2Skill commit
 anthropics/skills blob `ed8e1dddce77b16af13c6f36b3fe86c4ac7c590c`.
 
 Run `uv run python -m src.trace2skill_baseline` from this worktree with
-`DEEPINFRA_API_KEY` in its ignored `.env` and the existing embedding service at
+`OPENROUTER_API_KEY` in its ignored `.env` and the existing embedding service at
 `http://127.0.0.1:8014/v1`. It collects all 266 month training questions with five
 independent rollouts each, analyzes score 4–5 as success and 0–3 as failure, performs
 one upstream Combined evolution, then collects the same 1,330 rollouts with the frozen
 evolved skill. Results, complete traces/media, intermediate patches and comparison
-are written under `runs/trace2skill-baseline-deepinfra-glm-5.3-flash-image-replace`. Completed rollout, analysis and evolution
+are written under `runs/trace2skill-baseline-openrouter-glm-5.3-flash-modal-fp8`. Completed rollout, analysis and evolution
 LLM artifacts are reused on resume; failures exhaust their applicable correction
 opportunities and raise. No held-out evaluation is started.
 
@@ -24,8 +24,10 @@ stages while requiring SDK Chat structured-parse output and rejecting silent fal
 The upstream spreadsheet failure-analysis prompt is adapted in error_analysis_qa.txt
 to evidence search, minimal answer correction and the original 0–5 QA judge.
 
-All generative model calls use DeepInfra `zai-org/GLM-5.3-Flash` through
-`https://api.deepinfra.com/v1/openai` Chat Completions with medium reasoning.
+All generative model calls use OpenRouter `z-ai/glm-5.3-flash` through
+`https://openrouter.ai/api/v1` Chat Completions with medium reasoning.
+Every request uses `provider.only=["modal/fp8"]`, `allow_fallbacks=false` and
+`require_parameters=true`.
 Agents SDK explicitly replays same-model `reasoning_content`; direct analysis and
 evolution calls preserve it in assistant messages during correction and continuation.
 The shared request
@@ -41,7 +43,7 @@ Each tool result exposes an integer tool_id. replace_tool(tool_id, replacement) 
 the model's context while preserving original outputs and replacement calls in the trace
 for Trace2Skill analysis. Its description recommends replacing the latest result for KV
 cache reuse and explains removing wrong-call output and summarizing redundant evidence.
-This run starts from scratch with the DeepInfra model. W&B records completed-rollout mean generated
+This run starts from scratch with the OpenRouter Modal FP8 endpoint. W&B records completed-rollout mean generated
 tokens (including reasoning), model/tool calls, mean input tokens and peak context tokens,
 including retries and nested agents but excluding judge from trace length. Throughput is
 completion-accounted input/output tokens and responses per second over 60 seconds,
