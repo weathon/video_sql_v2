@@ -198,7 +198,9 @@ async def analyze(result, semaphore, metrics):
         if artifact["agent"]["name"] == "judge":
             continue
         histories.append({"file": filename, "agent": artifact["agent"],
-                          "history": artifact["history"], "tool_calls": artifact["tool_calls"],
+                          "history": artifact["history"],
+                          "tool_calls": [{k: v for k, v in call.items() if k != "original_output"}
+                                         for call in artifact["tool_calls"]],
                           "error": artifact["error"]})
     bundle = {"question": result["question_text"], "answer": result["answer"],
               "score": result["score"], "histories": histories}
