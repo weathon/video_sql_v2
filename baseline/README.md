@@ -28,6 +28,15 @@ semaphore is 256, including nested agents, judges and embeddings. HTTP connect t
 is 60 seconds; read/write/pool timeout is 100000 seconds; pools permit 1000 connections
 and 256 keepalive connections. The EPD proxy has no short total request deadline.
 Weave uses the Agents SDK processor and rollout roots, with local traces retained.
+Each tool result exposes an integer tool_id. replace_tool(tool_id, replacement) changes
+the model's context while preserving original outputs and replacement calls in the trace
+for Trace2Skill analysis. Its description recommends replacing the latest result for KV
+cache reuse and explains removing wrong-call output and summarizing redundant evidence.
+This run starts from scratch with that tool. W&B records completed-rollout mean generated
+tokens (including reasoning), model/tool calls, mean input tokens and peak context tokens,
+including retries and nested agents but excluding judge from trace length. Throughput is
+completion-accounted input/output tokens and responses per second over 60 seconds,
+including judge; input-token throughput includes cached tokens.
 
 Infrastructure uses TP4 on PD GPUs 0,1,2,3, encoder GPU 4 and embedding GPU 4, with separate
 trace2skill containers, network, ports and EC tmpfs volume. Context is 314573 with

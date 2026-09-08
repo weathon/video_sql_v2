@@ -6,11 +6,14 @@ import dataclasses
 import json
 import shutil
 import sys
+import time
 import uuid
+from collections import deque
 from pathlib import Path
 
 import httpx
 import weave
+import wandb
 from agents import Agent, OpenAIResponsesModel, StopAtTools, ToolOutputImage, function_tool, trace
 from pydantic import BaseModel, Field, ValidationError
 from third_party.trace2skill.tracing_bridge import init_weave
@@ -44,15 +47,51 @@ class FailureReport(BaseModel):
     failure_memory: list[MemoryItem] = Field(max_length=3)
 
 
+class RunMetrics:
+    def __init__(self, run, phase):
+        self.run = run
+        self.phase = phase
+        self.started = time.monotonic()
+        self.responses = deque()
+        self.trace_lengths = []
+
+    def record_response(self, usage):
+        now = time.monotonic()
+        self.responses.append((now, usage["input_tokens"], usage["output_tokens"]))
+        while self.responses[0][0] < now - 60:
+            self.responses.popleft()
+        elapsed = min(now - self.started, 60)
+        # Completion-accounted throughput over the last 60 seconds, including nested
+        # agents, retries and judge; input counts include tokens served from cache.
+        self.run.log({
+            f"{self.phase}/throughput/input_tokens_per_s": sum(r[1] for r in self.responses) / elapsed,
+            f"{self.phase}/throughput/output_tokens_per_s": sum(r[2] for r in self.responses) / elapsed,
+            f"{self.phase}/throughput/responses_per_s": len(self.responses) / elapsed,
+            f"{self.phase}/request_context_tokens": usage["input_tokens"] + usage["output_tokens"],
+        })
+
+    def record_rollout(self, result):
+        self.trace_lengths.append(result["trace_length"])
+        count = len(self.trace_lengths)
+        values = {f"{self.phase}/completed_rollouts": count}
+        for key in result["trace_length"]:
+            values[f"{self.phase}/trace/mean_{key}"] = sum(r[key] for r in self.trace_lengths) / count
+        self.run.log(values)
+        (RUN / f"{self.phase}-trace-metrics.json").write_text(json.dumps(values, indent=2) + "\n")
+
+
 class LimitedResponsesModel(OpenAIResponsesModel):
-    def __init__(self, client, semaphore):
+    def __init__(self, client, semaphore, metrics):
         super().__init__(model=MODEL, openai_client=client)
         self.semaphore = semaphore
+        self.metrics = metrics
 
     async def stream_response(self, *args, **kwargs):
         # Acquire per model request, so nested agents and judges share the same 256 slots.
         async with self.semaphore:
             async for event in super().stream_response(*args, **kwargs):
+                if event.type == "response.completed":
+                    self.metrics.record_response(event.response.usage.model_dump())
                 yield event
 
 
@@ -69,7 +108,7 @@ class LimitedEmbeddingClient:
         await self.client.aclose()
 
 
-def make_harness(directory, skill_dir, semaphore):
+def make_harness(directory, skill_dir, semaphore, metrics):
     harness = VideoSQLHarness(
         database=RUNTIME / "index.duckdb", embedding_index=RUNTIME / "embedding_index",
         media_map=RUNTIME / "media-map.json", skill_dir=skill_dir, run_dir=directory,
@@ -77,13 +116,13 @@ def make_harness(directory, skill_dir, semaphore):
         embedding_url="http://127.0.0.1:8014/v1", embedding_model="qwen3-vl-embedding-8b",
         context_limit=314573, compaction_threshold=178000, reasoning_context=None,
     )
-    harness.context.model = LimitedResponsesModel(harness.context.client, semaphore)
+    harness.context.model = LimitedResponsesModel(harness.context.client, semaphore, metrics)
     harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
     return harness
 
 
-@weave.op(postprocess_inputs=lambda x: {k: v for k, v in x.items() if k != "semaphore"})
-async def rollout(question, rollout_index, skill_version, semaphore):
+@weave.op(postprocess_inputs=lambda x: {k: v for k, v in x.items() if k not in ("semaphore", "metrics")})
+async def rollout(question, rollout_index, skill_version, semaphore, metrics):
     directory = RUN / skill_version / f"question-{question['index']}" / f"rollout-{rollout_index:02d}"
     directory.mkdir(parents=True, exist_ok=True)
     result_path = directory / "result.json"
@@ -99,7 +138,7 @@ async def rollout(question, rollout_index, skill_version, semaphore):
                 continue
             if attempt_dir.exists() and not (attempt_dir / "answer.json").exists():
                 attempt_dir.rename(directory / f"interrupted-{attempt}-{uuid.uuid4().hex}")
-            harness = make_harness(attempt_dir, skill_dir, semaphore)
+            harness = make_harness(attempt_dir, skill_dir, semaphore, metrics)
             try:
                 with weave.attributes({"attempt": attempt}):
                     answer_path = attempt_dir / "answer.json"
@@ -117,6 +156,19 @@ async def rollout(question, rollout_index, skill_version, semaphore):
                           "score": score, "success": score >= 4, "status": "answered",
                           "trace_files": sorted(str(p) for p in directory.rglob("traces/*.json")),
                           "media_files": sorted(str(p) for p in directory.rglob("media/*.jpg"))}
+                responses = []
+                tool_count = 0
+                for filename in result["trace_files"]:
+                    artifact = json.loads(Path(filename).read_text())
+                    if artifact["agent"]["name"] != "judge":
+                        responses.extend(artifact["raw_responses"])
+                        tool_count += len(artifact["tool_calls"])
+                result["trace_length"] = {
+                    "generated_tokens": sum(r["usage"]["output_tokens"] for r in responses),
+                    "model_calls": len(responses), "tool_calls": tool_count,
+                    "input_tokens": sum(r["usage"]["input_tokens"] for r in responses) / len(responses),
+                    "peak_context_tokens": max(r["usage"]["input_tokens"] + r["usage"]["output_tokens"] for r in responses),
+                }
                 result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
                 print(f"{skill_version} question={question['index']} rollout={rollout_index} score={score}", flush=True)
                 return result
@@ -132,7 +184,7 @@ async def rollout(question, rollout_index, skill_version, semaphore):
 
 
 @weave.op(postprocess_inputs=lambda x: {"question": x["result"]["question"], "rollout": x["result"]["rollout"], "success": x["result"]["success"]})
-async def analyze(result, semaphore):
+async def analyze(result, semaphore, metrics):
     directory = RUN / "analysis" / f"question-{result['question']}" / f"rollout-{result['rollout']:02d}"
     directory.mkdir(parents=True, exist_ok=True)
     output_path = directory / "record.json"
@@ -146,11 +198,12 @@ async def analyze(result, semaphore):
         if artifact["agent"]["name"] == "judge":
             continue
         histories.append({"file": filename, "agent": artifact["agent"],
-                          "history": artifact["history"], "error": artifact["error"]})
+                          "history": artifact["history"], "tool_calls": artifact["tool_calls"],
+                          "error": artifact["error"]})
     bundle = {"question": result["question_text"], "answer": result["answer"],
               "score": result["score"], "histories": histories}
     (directory / "analysis_input.json").write_text(json.dumps(bundle, ensure_ascii=False, indent=2) + "\n")
-    harness = make_harness(directory, RUN / "skills/initial", semaphore)
+    harness = make_harness(directory, RUN / "skills/initial", semaphore, metrics)
     metadata = {"run": RUN.name, "question": result["question"], "rollout": result["rollout"], "skill_version": "initial"}
     try:
         with weave.attributes(metadata), trace("Trace2Skill trajectory analysis", metadata=metadata):
@@ -173,6 +226,7 @@ async def analyze(result, semaphore):
                             )
                         body = raw.content
                         (directory / f"success-response-{attempt}.json").write_bytes(body)
+                        metrics.record_response(json.loads(body)["usage"])
                         messages.extend(json.loads(body)["output"])
                         response = raw.parse()
                         if response.status != "completed" or response.output_parsed is None:
@@ -208,7 +262,7 @@ async def analyze(result, semaphore):
                     """Validate the corrected answer and minimal reasoning/tool change using the unchanged 0–5 judge."""
                     nonlocal validated_fix
                     fix_id = uuid.uuid4().hex
-                    judge_harness = make_harness(directory / f"fix-{fix_id}", RUN / "skills/initial", semaphore)
+                    judge_harness = make_harness(directory / f"fix-{fix_id}", RUN / "skills/initial", semaphore, metrics)
                     try:
                         score = await judge_answer(judge_harness, result["question_text"], result["reference_answer"], answer, 3)
                     finally:
@@ -274,6 +328,12 @@ async def analyze(result, semaphore):
 async def main():
     RUN.mkdir(parents=True, exist_ok=True)
     init_weave()
+    wandb_run = wandb.init(entity="3dsmile", project="video-sql-v2", id=RUN.name,
+                           name=RUN.name, resume="allow", dir=str(RUN),
+                           config={"model": MODEL, "reasoning": "medium", "max_num_seqs": 50,
+                                   "client_concurrency": 256, "replace_tool": True,
+                                   "rollouts_per_question": 5})
+    (RUN / "wandb-run.json").write_text(json.dumps({"id": wandb_run.id, "url": wandb_run.url}, indent=2) + "\n")
     initial = RUN / "skills/initial"
     if not initial.exists():
         shutil.copytree(ROOT / "skills/initial", initial)
@@ -285,6 +345,7 @@ async def main():
     semaphore = asyncio.Semaphore(256)
     # A separate scheduling bound avoids loading thousands of simultaneous harness contexts.
     for version in ("initial", "evolved"):
+        metrics = RunMetrics(wandb_run, version)
         jobs = iter((question, index) for question in questions for index in range(5))
         results = []
 
@@ -293,9 +354,12 @@ async def main():
                 saved = RUN / version / f"question-{question['index']}" / f"rollout-{index:02d}" / "result.json"
                 if saved.exists():
                     results.append(json.loads(saved.read_text()))
+                    metrics.record_rollout(results[-1])
                     continue
                 with weave.attributes({"run": RUN.name, "question": str(question["index"]), "rollout": index, "skill_version": version}):
-                    results.append(await rollout(question, index, version, semaphore))
+                    result = await rollout(question, index, version, semaphore, metrics)
+                    results.append(result)
+                    metrics.record_rollout(result)
 
         async with asyncio.TaskGroup() as group:
             for _ in range(256):
@@ -315,11 +379,12 @@ async def main():
         if version == "evolved":
             break
         analysis_jobs = iter(results)
+        metrics = RunMetrics(wandb_run, "analysis")
         records = []
 
         async def analysis_worker():
             for result in analysis_jobs:
-                records.append(await analyze(result, semaphore))
+                records.append(await analyze(result, semaphore, metrics))
 
         async with asyncio.TaskGroup() as group:
             for _ in range(256):
@@ -348,6 +413,7 @@ async def main():
     comparison = {version: json.loads((RUN / f"{version}-summary.json").read_text()) for version in ("initial", "evolved")}
     (RUN / "comparison.json").write_text(json.dumps(comparison, indent=2) + "\n")
     weave.finish()
+    wandb_run.finish()
     print("TRACE2SKILL BASELINE COMPLETE " + json.dumps(comparison), flush=True)
 
 
