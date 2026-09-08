@@ -389,7 +389,20 @@ async def run_stream(
             return [ToolOutputText(text=prefix), *output]
 
         wrapped_tools.append(dataclasses.replace(tool, on_invoke_tool=invoke_tool))
-    agent = agent.clone(tools=wrapped_tools)
+    behavior = agent.tool_use_behavior
+    if isinstance(behavior, dict):
+        def finish_numbered(_run_context: Any, tool_results: list[Any]) -> ToolsToFinalOutputResult:
+            for result in tool_results:
+                if result.tool.name in behavior["stop_at_tool_names"]:
+                    return ToolsToFinalOutputResult(
+                        is_final_output=True,
+                        final_output=result.output.partition("\n")[2],
+                    )
+            return ToolsToFinalOutputResult(is_final_output=False)
+
+        agent = agent.clone(tools=wrapped_tools, tool_use_behavior=finish_numbered)
+    else:
+        agent = agent.clone(tools=wrapped_tools)
     header = {
         "agent": {
             "name": agent.name,
@@ -1140,7 +1153,7 @@ class VideoSQLHarness:
             trace_files.append(trace_file)
             history = result.to_input_list()
             if result.final_output is not None:
-                submission = AnswerSubmission.model_validate_json(str(result.final_output).partition("\n")[2])
+                submission = AnswerSubmission.model_validate_json(str(result.final_output))
                 return RolloutSession(
                     answer=submission.answer,
                     status="answered",
