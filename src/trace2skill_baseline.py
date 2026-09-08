@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, ValidationError
 from third_party.trace2skill.tracing_bridge import init_weave
 
 from src.harness import InvalidTrace, VideoSQLHarness, run_stream, tool_error_json
-from src.val import judge_answer, retryable, write_error
+from src.val import JudgeAttemptsExhausted, judge_answer, retryable, write_error
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -137,6 +137,9 @@ async def rollout(question, rollout_index, skill_version, semaphore, metrics):
     result_path = directory / "result.json"
     if result_path.exists():
         return json.loads(result_path.read_text())
+    if (directory / "skipped.json").exists():
+        print(f"SKIP saved exhausted rollout: {directory}", flush=True)
+        return None
     skill_dir = RUN / "skills" / skill_version
     metadata = {"run": RUN.name, "question": str(question["index"]),
                 "rollout": rollout_index, "skill_version": skill_version}
@@ -215,13 +218,22 @@ async def rollout(question, rollout_index, skill_version, semaphore, metrics):
                 return result
             except asyncio.CancelledError:
                 raise
+            except JudgeAttemptsExhausted as error:
+                write_error(attempt_dir / "error.json", error)
+                break
             except BaseException as error:
                 write_error(attempt_dir / "error.json", error)
                 if not retryable(error):
                     raise
             finally:
                 await harness.close()
-    raise RuntimeError(f"All three QA attempts exhausted: {directory}")
+    (directory / "skipped.json").write_text(json.dumps({
+        **metadata, "status": "skipped", "reason": "qa_or_judge_attempts_exhausted",
+        "trace_files": sorted(str(p) for p in directory.rglob("traces/*.json")),
+        "media_files": sorted(str(p) for p in directory.rglob("media/*.jpg")),
+    }, indent=2) + "\n")
+    print(f"SKIP QA/judge attempts exhausted: {directory}", flush=True)
+    return None
 
 
 @weave.op(postprocess_inputs=lambda x: {"question": x["result"]["question"], "rollout": x["result"]["rollout"], "success": x["result"]["success"]})
@@ -231,6 +243,9 @@ async def analyze(result, semaphore, metrics):
     output_path = directory / "record.json"
     if output_path.exists():
         return json.loads(output_path.read_text())
+    if (directory / "skipped.json").exists():
+        print(f"SKIP saved exhausted analysis: {directory}", flush=True)
+        return None
     # Canonical histories contain every model/tool input and returned value. Raw events,
     # usage, duplicate API representations and images remain in the original artifacts.
     histories = []
@@ -288,8 +303,15 @@ async def analyze(result, semaphore, metrics):
                         raise
                     except BaseException as error:
                         write_error(directory / f"success-attempt-{attempt}-error.json", error)
-                        if attempt == 3 or not retryable(error):
+                        if not retryable(error):
                             raise
+                        if attempt == 3:
+                            (directory / "skipped.json").write_text(json.dumps({
+                                **metadata, "status": "skipped", "reason": "success_analysis_attempts_exhausted",
+                                "source_file": str(directory / "analysis_input.json"),
+                            }, indent=2) + "\n")
+                            print(f"SKIP success analysis attempts exhausted: {directory}", flush=True)
+                            return None
                         if isinstance(error, ValidationError):
                             messages.append({"role": "user", "content": f"Correct the structured output. Validation error: {error}"})
                 (directory / "success_report.json").write_text(report.model_dump_json(indent=2) + "\n")
@@ -361,8 +383,15 @@ async def analyze(result, semaphore, metrics):
                         raise
                     except BaseException as error:
                         write_error(directory / f"analysis-attempt-{attempt}-error.json", error)
-                        if attempt == 3 or not retryable(error):
+                        if not retryable(error):
                             raise
+                        if attempt == 3:
+                            (directory / "skipped.json").write_text(json.dumps({
+                                **metadata, "status": "skipped", "reason": "failure_analysis_attempts_exhausted",
+                                "source_file": str(directory / "analysis_input.json"),
+                            }, indent=2) + "\n")
+                            print(f"SKIP failure analysis attempts exhausted: {directory}", flush=True)
+                            return None
                 (directory / "failure_report.json").write_text(report.model_dump_json(indent=2) + "\n")
                 groups = {"failure_cause": report.failure_cause, "failure_memory": report.failure_memory}
     finally:
@@ -400,8 +429,10 @@ async def main():
         metrics = RunMetrics(wandb_run, version)
         jobs = iter((question, index) for question in questions for index in range(5))
         results = []
+        skipped = 0
 
         async def collect_worker():
+            nonlocal skipped
             for question, index in jobs:
                 saved = RUN / version / f"question-{question['index']}" / f"rollout-{index:02d}" / "result.json"
                 if saved.exists():
@@ -410,6 +441,9 @@ async def main():
                     continue
                 with weave.attributes({"run": RUN.name, "question": str(question["index"]), "rollout": index, "skill_version": version}):
                     result = await rollout(question, index, version, semaphore, metrics)
+                    if result is None:
+                        skipped += 1
+                        continue
                     results.append(result)
                     metrics.record_rollout(result)
 
@@ -417,7 +451,7 @@ async def main():
             for _ in range(256):
                 group.create_task(collect_worker())
         results.sort(key=lambda r: (int(r["question"]), r["rollout"]))
-        summary = {"questions": len(questions), "rollouts": len(results),
+        summary = {"questions": len(questions), "rollouts": len(results), "skipped_rollouts": skipped,
                    "mean_score_over_5": sum(r["score"] / 5 for r in results) / len(results),
                    "successes": sum(r["success"] for r in results)}
         (RUN / f"{version}-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
@@ -426,15 +460,23 @@ async def main():
         analysis_jobs = iter(results)
         metrics = RunMetrics(wandb_run, "analysis")
         records = []
+        analysis_skipped = 0
 
         async def analysis_worker():
+            nonlocal analysis_skipped
             for result in analysis_jobs:
-                records.append(await analyze(result, semaphore, metrics))
+                record = await analyze(result, semaphore, metrics)
+                if record is None:
+                    analysis_skipped += 1
+                    continue
+                records.append(record)
 
         async with asyncio.TaskGroup() as group:
             for _ in range(256):
                 group.create_task(analysis_worker())
         records.sort(key=lambda r: r["instance_id"])
+        summary["analysis_skipped_rollouts"] = analysis_skipped
+        (RUN / f"{version}-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         (RUN / "combined-records.json").write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n")
         evolved = RUN / "skills/evolved"
         if not evolved.exists():
