@@ -1,8 +1,9 @@
 # QA harness + Trace2Skill baseline
 
-The Luna run resumed after funding and stopped when question 17, rollout 3 exhausted
-three attempts with API connection errors. Additional attempts await user authorization;
-restarting unchanged will stop on that rollout again. It retains 121 completed rollouts
+The previous Luna run stopped when question 17, rollout 3 exhausted three attempts
+with API connection errors. The user has clarified that exhausted samples must be
+skipped; the code now records the skip and continues without increasing attempt limits.
+The previous run retains 121 completed rollouts
 across 37 month training questions; analysis, evolution and
 reevaluation have not started. See [the current handoff](../notes/TRACE2SKILL_LUNA_HANDOFF.md)
 for verified artifacts, old-dataset findings, service state and resume commands.
@@ -23,8 +24,12 @@ are written under `runs/trace2skill-baseline-openai-gpt-5.6-luna-high`. Keep thi
 and use a new foreground log filename when resuming. Completed rollout, analysis and evolution
 LLM artifacts are reused on resume; saved answers continue through judging without
 repeating QA, while interrupted attempts without an answer are archived and rerun.
-Failures exhaust their applicable correction
-opportunities and raise. No held-out evaluation is started.
+Exhausted QA/judge retries skip the whole rollout, preserving traces/media and a
+resumable skipped.json record; skipped rollouts are excluded from scored means and
+trajectory analysis, with skipped_rollouts counted in the phase summary. Per-trajectory
+analysis skips also retain records and are counted separately; no empty report enters
+evolution. Quota exhaustion and non-retryable errors still stop the run. Upstream
+patch evolution retains its error behavior. No held-out evaluation is started.
 
 The seven initial Markdown files are copied byte-for-byte. Only the directory bridge
 adds frontmatter and reference links to upstream SKILL.md. The six subskills retain

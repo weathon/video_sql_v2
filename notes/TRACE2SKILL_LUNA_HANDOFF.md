@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-用户充值后已使用同一 `PERSONAL_OPENAI_KEY` 恢复过一次。当前因网络连接错误耗尽既定重试次数而停止；尚未收到追加重试次数的授权。
+用户充值后已使用同一 `PERSONAL_OPENAI_KEY` 恢复过一次。用户现已明确：耗尽重试次数时跳过当前样本。代码已按此修改，继续沿用原有次数，余额耗尽仍暂停整个 run。
 
 - 工作目录：`/raid/wg25r/video_sql_2`；分支：`codex/trace2skill-baseline`。原仓库 `/raid/wg25r/video_sql_v2` 的数据和索引供读取，新输出写入本 worktree。
 - 入口：[src/trace2skill_baseline.py](../src/trace2skill_baseline.py)。这是问答 harness + 上游 Trace2Skill baseline，技能学习不使用本项目原来的 reflection、branching 或 updater 方法。
@@ -57,7 +57,7 @@
 
 入口保留的流程为：每题 5 条独立初始 rollout → 0–5 judge 评分 → 4–5 成功、0–3 失败的 Combined 分析 → 一次完整 Trace2Skill evolution → 冻结技能后，在相同训练集每题再做 5 条复评。没有 held-out 测试。
 
-`skills/initial/` 的 ROOT-SKILL 和六份 subskill 已逐字节复制到 run 内快照，停止后再次核对一致。Catalog、按需加载和 `read_skill(name)` 保留。桥接层映射上游目录格式；所有 patch 基于同一初始快照，保留并行提议、分层合并、translation、应用和验证。上游固定版本及详细协议见 [baseline/README.md](../baseline/README.md)。JSON 分析使用 SDK structured-parse，保留既定纠错机会，耗尽后报错。
+`skills/initial/` 的 ROOT-SKILL 和六份 subskill 已逐字节复制到 run 内快照，停止后再次核对一致。Catalog、按需加载和 `read_skill(name)` 保留。桥接层映射上游目录格式；所有 patch 基于同一初始快照，保留并行提议、分层合并、translation、应用和验证。上游固定版本及详细协议见 [baseline/README.md](../baseline/README.md)。JSON 分析使用 SDK structured-parse，保留既定纠错机会；单条轨迹分析耗尽可重试错误的机会后记录并跳过该分析样本，不把空报告送入 evolution。
 
 恢复仍使用当前 run 目录和初始技能快照：
 
@@ -65,10 +65,11 @@
 - 已有 `attempt-N/answer.json` 但没有最终结果时复用答案，继续 judge 和后续统计。
 - 只有中断 trace、没有答案的 attempt 会移到 `interrupted-*` 目录，再执行该 attempt；不会从最后一个工具调用续接会话。
 - 已有 `error.json` 的 attempt 按入口逻辑跳过，继续其余已配置的机会。SDK 重试和最多 3 次 rollout/judge attempt 设置保留。
+- QA 或 judge 重试耗尽后保存 `skipped.json`，保留 trace/media，跳过整条 rollout 并继续其他样本；恢复时复用跳过记录。跳过项不生成评分结果，也不进入 rollout 均值或 Trace2Skill 分析；阶段汇总单列 `skipped_rollouts`。单条分析重试耗尽也保存跳过记录，汇总单列 `analysis_skipped_rollouts`。
 - `write_error` 对 `insufficient_quota` / `no credits remaining` 单独写 `*-quota-pause-*.json` 并抛出停止，不生成会消耗 QA/judge attempt 的错误标记。额度耗尽后的恢复不会因此减少重试机会；本次网络错误不属于此分支。
 - W&B 使用相同 run ID 和 `resume="allow"`；恢复时重新汇总已完成 rollout 的均值，不把中断期间的停机时间加到 QA 时长中。
 
-本次已向用户询问是否给第 17 题 rollout 3 再增加 3 次机会，尚待回复；未经授权不重置错误记录或增加次数。直接重启当前入口仍会在该条报告 attempts exhausted。解决该重试限制后，在两个前台 exec 会话中分别启动 embedding 和 baseline。先核对实际 GPU 资源；embedding 脚本当前指定 GPU 1，资源不足立即报告，不等待或停止其他任务。下面是下一次恢复的命令模板，日志使用新文件名，不能覆盖旧日志。
+恢复时，第 17 题 rollout 3 的既有 3 次失败会触发跳过，不增加重试次数或重置错误记录。在两个前台 exec 会话中分别启动 embedding 和 baseline。先核对实际 GPU 资源；embedding 脚本当前指定 GPU 1，资源不足立即报告，不等待或停止其他任务。下面是下一次恢复的命令模板，日志使用新文件名，不能覆盖旧日志。
 
 ```bash
 cd /raid/wg25r/video_sql_2

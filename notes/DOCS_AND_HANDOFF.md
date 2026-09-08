@@ -1,6 +1,6 @@
 # 问答 Harness 与 Trace2Skill baseline
 
-当前 worktree 为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。Luna baseline 充值后恢复过一次，现因第 17 题 rollout 3 连续连接错误耗尽 3 次 attempt 而停止，保留 121 条完成结果，待授权追加重试次数。当前配置、旧数据核对、指标和恢复步骤见新文档 [TRACE2SKILL_LUNA_HANDOFF.md](TRACE2SKILL_LUNA_HANDOFF.md)。
+当前 worktree 为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。Luna baseline 上次因第 17 题 rollout 3 连续连接错误耗尽 3 次 attempt 而停止，保留 121 条完成结果。用户已明确耗尽重试应跳过当前样本，代码已据此修改；余额耗尽仍暂停整个 run。当前配置、旧数据核对、指标和恢复步骤见新文档 [TRACE2SKILL_LUNA_HANDOFF.md](TRACE2SKILL_LUNA_HANDOFF.md)。
 
 这个 harness 使用静态检索技能回答长视频问题。主 agent 在预先构建的 DuckDB 记忆库和 embedding 索引中定位线索，按需调用视觉 agent 检查源视频，再提交开放式答案。评估入口为每道题运行多个独立 rollout，并用 judge 评分。
 
@@ -319,7 +319,7 @@ accuracy = sum(score) / (5 × rollout 数)
 
 ## 9. 重试与恢复
 
-本节描述 `src.val`。Baseline 直接复用完成的 `result.json`，已有 `answer.json` 时复用答案继续 judge，无答案的中断 attempt 归档后重新执行；W&B 使用固定 run ID 和 `resume="allow"`。其完整恢复规则见 [新交接文档](TRACE2SKILL_LUNA_HANDOFF.md#训练协议与恢复行为)。
+本节描述 `src.val`。Baseline 直接复用完成的 `result.json`，已有 `answer.json` 时复用答案继续 judge，无答案的中断 attempt 归档后重新执行；QA/judge 重试耗尽则保存 `skipped.json` 并跳过整条 rollout，单条分析重试耗尽也记录并跳过该样本。跳过项不补零分、不产生空分析报告，汇总单列跳过数量。W&B 使用固定 run ID 和 `resume="allow"`。其完整恢复规则见 [新交接文档](TRACE2SKILL_LUNA_HANDOFF.md#训练协议与恢复行为)。
 
 SDK 请求重试和评估层重试是两层独立机制。评估层最多执行 `--attempts` 次 rollout；每次成功答题后的 judge 也有自己的 `--attempts` 次机会。可重试类别包括模型输出校验、InvalidTrace、AgentRaised、SDK 轮数/模型行为错误，以及代码列明的连接、超时、限流和服务端错误。重试不切换模型或 reasoning。
 
