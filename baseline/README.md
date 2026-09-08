@@ -1,10 +1,9 @@
 # QA harness + Trace2Skill baseline
 
-The previous Luna run stopped when question 17, rollout 3 exhausted three attempts
-with API connection errors. The user has clarified that exhausted samples must be
-skipped; the code now records the skip and continues without increasing attempt limits.
-The previous run retains 121 completed rollouts
-across 37 month training questions; analysis, evolution and
+The latest Luna run verified that exhausted samples are recorded and skipped while
+other samples continue, without increasing attempt limits. It is now paused after
+the API explicitly returned no credits remaining. It retains 314 completed rollouts
+across 92 month training questions and 53 skipped rollouts; analysis, evolution and
 reevaluation have not started. See [the current handoff](../notes/TRACE2SKILL_LUNA_HANDOFF.md)
 for verified artifacts, old-dataset findings, service state and resume commands.
 

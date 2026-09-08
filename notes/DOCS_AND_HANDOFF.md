@@ -1,6 +1,6 @@
 # 问答 Harness 与 Trace2Skill baseline
 
-当前 worktree 为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。Luna baseline 上次因第 17 题 rollout 3 连续连接错误耗尽 3 次 attempt 而停止，保留 121 条完成结果。用户已明确耗尽重试应跳过当前样本，代码已据此修改；余额耗尽仍暂停整个 run。当前配置、旧数据核对、指标和恢复步骤见新文档 [TRACE2SKILL_LUNA_HANDOFF.md](TRACE2SKILL_LUNA_HANDOFF.md)。
+当前 worktree 为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。Luna baseline 已在正式运行中验证重试耗尽后跳过当前样本，现保存 314 条完成结果和 53 条跳过记录；最新一轮因 API 明确返回余额耗尽而暂停。当前配置、旧数据核对、指标和恢复步骤见新文档 [TRACE2SKILL_LUNA_HANDOFF.md](TRACE2SKILL_LUNA_HANDOFF.md)。
 
 这个 harness 使用静态检索技能回答长视频问题。主 agent 在预先构建的 DuckDB 记忆库和 embedding 索引中定位线索，按需调用视觉 agent 检查源视频，再提交开放式答案。评估入口为每道题运行多个独立 rollout，并用 judge 评分。
 
@@ -340,7 +340,7 @@ SDK 请求重试和评估层重试是两层独立机制。评估层最多执行 
 
 旧 GPT-5.6-Luna 的完整评估产物位于 [training_free_luna_seed0_7510e535](/raid/wg25r/video_sql_v2/runs/training_free_luna_seed0_7510e535/)，汇总见 [result.json](/raid/wg25r/video_sql_v2/runs/training_free_luna_seed0_7510e535/result.json)。这是 seed-0 评估集的 day/week/month 各 100 题 × 5 条，共 1,500 条；其中 month 的 100 题与本次 266 题训练集没有题目 ID 或问题文本重合。不能把它当作完整的 month 训练轨迹。逐 rollout 结果位于 `val/question-<timeline>-<index>/rollout-<N>/result.json`；对应 attempt 的完整 trace 和图像分别在 `attempt-<N>/traces/` 与 `attempt-<N>/media/`。
 
-当前 baseline 的产物位于 [trace2skill-baseline-openai-gpt-5.6-luna-high](../runs/trace2skill-baseline-openai-gpt-5.6-luna-high/)，已保留 121 条完成 rollout，尚未生成分析、evolved skills 或比较结果；其目录与下列 `src.val` 格式不同，详见 [新交接文档](TRACE2SKILL_LUNA_HANDOFF.md)。
+当前 baseline 的产物位于 [trace2skill-baseline-openai-gpt-5.6-luna-high](../runs/trace2skill-baseline-openai-gpt-5.6-luna-high/)，已保留 314 条完成 rollout 和 53 条跳过记录，尚未生成分析、evolved skills 或比较结果；其目录与下列 `src.val` 格式不同，详见 [新交接文档](TRACE2SKILL_LUNA_HANDOFF.md)。
 
 ```text
 <run-dir>/

@@ -2,12 +2,13 @@
 
 ## 当前状态
 
-用户充值后已使用同一 `PERSONAL_OPENAI_KEY` 恢复过一次。用户现已明确：耗尽重试次数时跳过当前样本。代码已按此修改，继续沿用原有次数，余额耗尽仍暂停整个 run。
+用户已明确：耗尽重试次数时跳过当前样本。代码已按此修改并在正式运行中验证；最新一轮使用同一 `PERSONAL_OPENAI_KEY`，因 API 明确返回余额耗尽而暂停，等待充值后恢复。
 
 - 工作目录：`/raid/wg25r/video_sql_2`；分支：`codex/trace2skill-baseline`。原仓库 `/raid/wg25r/video_sql_v2` 的数据和索引供读取，新输出写入本 worktree。
 - 入口：[src/trace2skill_baseline.py](../src/trace2skill_baseline.py)。这是问答 harness + 上游 Trace2Skill baseline，技能学习不使用本项目原来的 reflection、branching 或 updater 方法。
-- 当前输出目录：[runs/trace2skill-baseline-openai-gpt-5.6-luna-high](../runs/trace2skill-baseline-openai-gpt-5.6-luna-high/)。停止后核对到 **121 条已完成、已评分的 rollout，覆盖 37 道训练题**；本次恢复新增 41 条，这 37 题并非都完成了 5 条。
-- 首轮日志 `formal-001.log` 保留；最新日志 `formal-002.log` 的退出码为 1。直接退出原因是 `initial/question-17/rollout-03` 的 3 次 attempt 均为 `APIConnectionError`，最后一次异常链为 TLS `SSLEOFError`。没有 `insufficient_quota` 或 quota-pause 文件；不能把本次停止归因为余额耗尽。
+- 当前输出目录：[runs/trace2skill-baseline-openai-gpt-5.6-luna-high](../runs/trace2skill-baseline-openai-gpt-5.6-luna-high/)。停止后核对到 **314 条已完成、已评分的 rollout，覆盖 92 道训练题，另有 53 条重试耗尽后跳过**；本轮比此前 121 条新增 193 条完成结果。
+- 最新日志为 `formal-003.log`，退出码 1。API 原始错误明确为 `You have no credits remaining`，已保存 8 份 quota-pause 记录。第 17 题 rollout 3 已按新规则写出 `skipped.json`，后续样本继续产出了结果。旧日志 `formal-001.log`、`formal-002.log` 保留。
+- 余额暂停时，SDK 关闭流还产生了包含 `CancelledError` 的包装错误；9 份此类记录已保留为 `*-cancelled-*.json`，未重置真正的网络失败记录。代码也将这类取消记录与 attempt 耗尽标记分开，避免充值恢复时误消耗重试次数。
 - Weave 记录部分 call start 上传超时并丢弃，远端调用树可能不完整；本地 trace 和媒体保留。
 - `initial-summary.json`、`combined-records.json`、`skills/evolved/` 和 `comparison.json` 均未生成。尚未完成初始采集，也未进入 Trace2Skill 分析、evolution 或复评。
 - 本次 `trace2skill-embedding` 已停止并手动删除。旧的 `trace2skill-embedding-gpu4`、PD、encoder、proxy 等历史容器保留为停止状态。
@@ -20,7 +21,7 @@
 | --- | --- | --- |
 | [training_free_luna_seed0_7510e535](/raid/wg25r/video_sql_v2/runs/training_free_luna_seed0_7510e535/) | day/week/month 各 100 题，每题 5 条，共 1,500 条；逐条答案和列出的 trace 文件存在 | seed-0 评估集；其中 month 的 100 题与 266 题训练集的题目 ID、问题文本均无交集 |
 | [pilot_luna_fresh2_personal](/raid/wg25r/video_sql_v2/runs/pilot_luna_fresh2_personal/) | 16 道训练题，每题 5 条，共 80 条；逐条 reference 与训练集一致，列出的 trace 文件存在 | 不完整，且含原项目的 reflection/技能更新流程 |
-| 当前 baseline run | 37 题中已完成 121 条 | 保留在当前目录，恢复时复用；与上一行的旧 pilot 数据独立 |
+| 当前 baseline run | 92 题中已完成 314 条，另有 53 条跳过 | 保留在当前目录，恢复时复用；与上一行的旧 pilot 数据独立 |
 
 旧数据的文件存在性核对不等于所有工具、图像和分析路径都已人工验收。旧 trace 格式也不同：部分没有当前的 `tool_calls` 字段或整数 tool ID，不能直接交给当前分析入口。
 
@@ -69,12 +70,12 @@
 - `write_error` 对 `insufficient_quota` / `no credits remaining` 单独写 `*-quota-pause-*.json` 并抛出停止，不生成会消耗 QA/judge attempt 的错误标记。额度耗尽后的恢复不会因此减少重试机会；本次网络错误不属于此分支。
 - W&B 使用相同 run ID 和 `resume="allow"`；恢复时重新汇总已完成 rollout 的均值，不把中断期间的停机时间加到 QA 时长中。
 
-恢复时，第 17 题 rollout 3 的既有 3 次失败会触发跳过，不增加重试次数或重置错误记录。在两个前台 exec 会话中分别启动 embedding 和 baseline。先核对实际 GPU 资源；embedding 脚本当前指定 GPU 1，资源不足立即报告，不等待或停止其他任务。下面是下一次恢复的命令模板，日志使用新文件名，不能覆盖旧日志。
+充值后恢复时，已完成结果及 53 份跳过记录直接复用；quota-pause 和 cancelled 记录不消耗重试机会。在两个前台 exec 会话中分别启动 embedding 和 baseline。先核对实际 GPU 资源；embedding 脚本当前指定 GPU 1，资源不足立即报告，不等待或停止其他任务。下面是下一次恢复的命令模板，日志使用新文件名，不能覆盖旧日志。
 
 ```bash
 cd /raid/wg25r/video_sql_2
 .venv/bin/python -u infra/trace2skill_service.py embedding \
-  > runs/trace2skill-baseline-openai-gpt-5.6-luna-high/embedding-resume-002.log 2>&1
+  > runs/trace2skill-baseline-openai-gpt-5.6-luna-high/embedding-resume-003.log 2>&1
 ```
 
 从该前台会话的实际启动日志确认服务 ready 后，在另一个前台 exec 执行：
@@ -82,10 +83,10 @@ cd /raid/wg25r/video_sql_2
 ```bash
 cd /raid/wg25r/video_sql_2
 .venv/bin/python -u -m src.trace2skill_baseline \
-  > runs/trace2skill-baseline-openai-gpt-5.6-luna-high/formal-003.log 2>&1
+  > runs/trace2skill-baseline-openai-gpt-5.6-luna-high/formal-004.log 2>&1
 ```
 
-开始正式运行前遵循仓库审查流程：Claude CLI 全仓库审查；若明确因 usage limit 无法完成，改用新的子 agent 阅读 `REVIEW.md` 并审查全量。此前审查产物 `claude-full-review.json` 及本次只读全仓库审查 `claude-resume-002-review.json` 已保留，本次结论为 no blocking issues。不要运行 syntax、smoke 或 preflight tests；从正式运行的真实 trace 检查行为。稳定后按一小时频率检查前台任务，不启动后台 watcher；运行结束核验真实产物后手动清理本次容器。
+开始正式运行前遵循仓库审查流程：Claude CLI 全仓库审查；若明确因 usage limit 无法完成，改用新的子 agent 阅读 `REVIEW.md` 并审查全量。此前审查产物及最新只读全仓库审查 `claude-resume-003-review.json` 已保留，最新结论为 no blocking issues。不要运行 syntax、smoke 或 preflight tests；从正式运行的真实 trace 检查行为。稳定后按一小时频率检查前台任务，不启动后台 watcher；运行结束核验真实产物后手动清理本次容器。
 
 ## W&B、Weave 和本地证据
 
