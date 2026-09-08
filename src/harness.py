@@ -319,6 +319,35 @@ async def run_stream(
     watch_context: bool,
 ) -> tuple[Any, bool, str]:
     tool_calls = []
+    # A fixed-prefix continuation carries the IDs in the actual tool outputs.
+    # Restore those calls before allocating any new IDs in a fresh harness.
+    if isinstance(input_items, list):
+        prior_calls = {item["call_id"]: item for item in input_items
+                       if item.get("type") == "function_call"}
+        restored = []
+        for item in input_items:
+            if item.get("type") != "function_call_output" or item["call_id"] in context.tool_ids:
+                continue
+            output = item["output"]
+            if isinstance(output, str):
+                header, _, original_output = output.partition("\n")
+            else:
+                header, original_output = output[0]["text"], output[1:]
+            tool_id = json.loads(header)["tool_id"]
+            call = prior_calls[item["call_id"]]
+            record = {"tool_id": tool_id, "call_id": item["call_id"], "name": call["name"],
+                      "arguments": call["arguments"], "original_output": stripped_json(original_output),
+                      "replacements": []}
+            context.tool_calls[tool_id] = record
+            context.tool_ids[item["call_id"]] = tool_id
+            context.tool_counter = max(context.tool_counter, tool_id)
+            restored.append(record)
+        for record in restored:
+            if record["name"] == "replace_tool":
+                acknowledgement = json.loads(record["original_output"])
+                if "replaced_tool_id" in acknowledgement:
+                    arguments = json.loads(record["arguments"])
+                    context.tool_calls[arguments["tool_id"]]["replacements"].append(arguments["replacement"])
 
     @function_tool(failure_error_function=tool_error_json)
     async def replace_tool(tool_id: int, replacement: str) -> str:
@@ -354,9 +383,10 @@ async def run_stream(
             context.tool_calls[tool_id] = record
             context.tool_ids[tool_context.tool_call_id] = tool_id
             tool_calls.append(record)
-            # SDK final-answer callbacks consume the original typed result. The input
-            # filter adds the ID and replaces only the view sent to the next model call.
-            return output
+            prefix = json.dumps({"tool_id": tool_id}) + "\n"
+            if isinstance(output, str):
+                return prefix + output
+            return [ToolOutputText(text=prefix), *output]
 
         wrapped_tools.append(dataclasses.replace(tool, on_invoke_tool=invoke_tool))
     agent = agent.clone(tools=wrapped_tools)
@@ -394,13 +424,9 @@ async def run_stream(
                 if item.get("type") == "function_call_output":
                     tool_id = context.tool_ids[item["call_id"]]
                     record = context.tool_calls[tool_id]
-                    output = record["replacements"][-1] if record["replacements"] else item["output"]
-                    prefix = json.dumps({"tool_id": tool_id}) + "\n"
-                    if isinstance(output, str):
-                        output = prefix + output
-                    else:
-                        output = [{"type": "input_text", "text": prefix}, *output]
-                    item = {**item, "output": output}
+                    if record["replacements"]:
+                        output = json.dumps({"tool_id": tool_id}) + "\n" + record["replacements"][-1]
+                        item = {**item, "output": output}
                 items.append(item)
             events.write(json.dumps({"type": "model_input", "input": stripped_json(items)}, ensure_ascii=False) + "\n")
             return ModelInputData(input=items, instructions=data.model_data.instructions)
@@ -926,7 +952,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         def finish_clip(_run_context: Any, tool_results: list[Any]) -> ToolsToFinalOutputResult:
             for result in tool_results:
                 if result.tool.name == "submit_clip_answer":
-                    payload = json.loads(result.output)
+                    payload = json.loads(result.output.partition("\n")[2])
                     if "error" not in payload:
                         submission = ClipSubmission.model_validate(payload)
                         return ToolsToFinalOutputResult(
@@ -1114,7 +1140,7 @@ class VideoSQLHarness:
             trace_files.append(trace_file)
             history = result.to_input_list()
             if result.final_output is not None:
-                submission = AnswerSubmission.model_validate_json(str(result.final_output))
+                submission = AnswerSubmission.model_validate_json(str(result.final_output).partition("\n")[2])
                 return RolloutSession(
                     answer=submission.answer,
                     status="answered",
