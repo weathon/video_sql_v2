@@ -210,8 +210,13 @@ async def analyze(result, semaphore, metrics):
         artifact = json.loads(Path(filename).read_text())
         if artifact["agent"]["name"] == "judge":
             continue
+        # Analysis reads summaries; encrypted state remains in the replay artifacts.
         histories.append({"file": filename, "agent": artifact["agent"],
-                          "history": artifact["history"],
+                          "history": [
+                              {key: value for key, value in item.items() if key != "encrypted_content"}
+                              if item.get("type") == "reasoning" else item
+                              for item in artifact["history"]
+                          ],
                           "tool_calls": [{k: v for k, v in call.items() if k != "original_output"}
                                          for call in artifact["tool_calls"]],
                           "error": artifact["error"]})
