@@ -176,15 +176,19 @@ async def rollout(question, rollout_index, skill_version, semaphore, metrics):
                 responses = []
                 tool_count = 0
                 replace_count = 0
+                replacement_call_ids = set()
                 for filename in result["trace_files"]:
                     artifact = json.loads(Path(filename).read_text())
                     if artifact["agent"]["name"] != "judge":
                         responses.extend(artifact["raw_responses"])
                         tool_count += len(artifact["tool_calls"])
                         replace_count += sum(call["name"] == "replace_tool" for call in artifact["tool_calls"])
+                        replacement_call_ids.update(call["call_id"] for call in artifact["tool_calls"] if call["name"] == "replace_tool")
                 total_context_saved = 0
                 for path in sorted(directory.glob("*/replace-*.json")):
                     measurement = json.loads(path.read_text())
+                    if measurement["replace_call_id"] not in replacement_call_ids:
+                        continue
                     for side in ("before", "after"):
                         if f"{side}_tokens" in measurement:
                             continue
