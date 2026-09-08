@@ -1,8 +1,10 @@
-# Training-free Video Understanding Harness
+# 问答 Harness 与 Trace2Skill baseline
+
+当前 worktree 为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。Luna baseline 已按用户要求暂停，保留 80 条完成 rollout，充值后再继续。当前配置、旧数据核对、指标和恢复步骤见新文档 [TRACE2SKILL_LUNA_HANDOFF.md](TRACE2SKILL_LUNA_HANDOFF.md)。
 
 这个 harness 使用静态检索技能回答长视频问题。主 agent 在预先构建的 DuckDB 记忆库和 embedding 索引中定位线索，按需调用视觉 agent 检查源视频，再提交开放式答案。评估入口为每道题运行多个独立 rollout，并用 judge 评分。
 
-训练不在运行链路中：skills 在推理期间只读，不进行 reflection、技能汇总或自动更新。主检索、视觉问答、SQL 问答和 judge 均使用 OpenAI 官方 Responses API；embedding 使用独立的 Qwen3-VL-Embedding-8B 服务。
+问答期间 skills 只读，不进行 reflection 或技能更新。当前 baseline 的技能学习由 `src.trace2skill_baseline` 在采集完成后交给上游 Trace2Skill Combined 执行，再冻结技能做训练集复评。主检索、视觉问答、SQL 问答、judge 和技能分析均使用 OpenAI 官方 Responses API；embedding 使用独立的 Qwen3-VL-Embedding-8B 服务。
 
 ## 1. 架构与代码入口
 
@@ -30,6 +32,8 @@ flowchart TD
 | --- | --- |
 | [src/harness.py](../src/harness.py) | Agent 配置、检索工具、视频采样与裁剪、证据引用、compaction、trace 保存 |
 | [src/val.py](../src/val.py) | CLI、批次调度、rollout/judge 重试、结果恢复、评分、W&B/Weave |
+| [src/trace2skill_baseline.py](../src/trace2skill_baseline.py) | 当前 baseline：266 道 month 训练题 × 5 条 rollout、Combined 分析、一次 evolution、冻结技能后的同集复评 |
+| [third_party/trace2skill/baseline_evolve.py](../third_party/trace2skill/baseline_evolve.py) | 固定版本上游 Trace2Skill 的目录、Responses structured-parse 和 evolution 桥接 |
 | [src/normalize.py](../src/normalize.py) | 输入文本归一化 |
 | [src/prepare_runtime.py](../src/prepare_runtime.py) | 从已有总库与索引导出按 timeline 隔离的运行数据 |
 | [skills/initial/](../skills/initial/) | ROOT-SKILL 与六个静态检索技能 |
@@ -57,22 +61,24 @@ PERSONAL_OPENAI_KEY=YOUR_OPENAI_API_KEY
 
 | 配置 | 值或行为 |
 | --- | --- |
-| API endpoint | `https://api.openai.com/v1`，代码固定 |
+| API endpoint | 当前 baseline 使用 `https://api.openai.com/v1` |
 | 默认模型 | `gpt-5.6-luna` |
 | SDK | OpenAI Agents SDK 的 `OpenAIResponsesModel` |
-| Reasoning | `effort=medium`、`context=all_turns` |
+| Reasoning | `effort=high`、`summary=auto` |
 | Responses 存储 | `store=false` |
 | Reasoning 返回 | `response_include=["reasoning.encrypted_content"]` |
 | Reasoning item IDs | `reasoning_item_id_policy=preserve` |
 | 请求重试 | OpenAI client 的 `max_retries=3` |
 | 生成参数 | 不设置 temperature、top_p 或输入/输出 token 上限 |
 
-正常工具轮次保留 reasoning items，历史导出使用 `result.to_input_list()`。Encrypted reasoning 是可供 API 延续上下文的不透明内容，不等同于可阅读的思考文本。Agents SDK 自带的 tracing 被关闭；本地 trace 和 Weave 记录独立保留。
+正常工具轮次保留完整 Responses items，历史导出使用 `result.to_input_list()`。模型返回的 reasoning summary 可阅读；encrypted reasoning 是供 API 延续上下文的不透明内容，两者均保存在本地 trace。Agents SDK tracing 已启用，baseline 通过 `WeaveTracingProcessor` 把 agent/tool spans 发到 Weave。
+
+当前 baseline 的实际请求共享 256 个并发名额，包括嵌套 agent、judge、embedding 和 replacement token counting。HTTP connect timeout 为 60 秒，read/write/pool timeout 为 100000 秒；最大连接数 1000，keep-alive 256。
 
 Embedding 服务须提供兼容的 `POST /v1/embeddings` 接口。配套配置为：
 
 ```text
-URL:   http://127.0.0.1:8013/v1
+URL:   http://127.0.0.1:8014/v1
 model: qwen3-vl-embedding-8b
 ```
 
@@ -164,8 +170,11 @@ ROOT-SKILL 自动注入主 agent 指令。其他技能通过 Markdown frontmatte
 | `clip_qa` | `start_s, end_s, question` | 视觉答案、证据时间及图像 |
 | `add_note` / `read_notes` | `note` / 无参数 | 保存和读取该 attempt 的调查笔记 |
 | `read_skill` | `name` | 指定静态 skill 的完整 Markdown |
+| `replace_tool` | `tool_id, replacement` | 用文本替换任意已完成工具的模型可见返回，原始返回保留在 trace |
 | `agent_raise` | `reason` | 抛出 AgentRaised，结束当前 attempt，交由 rollout 重试层处理 |
 | `submit_answer` | `answer` | 提交答案并停止检索 loop |
+
+每个工具返回携带整数 `tool_id`，在同一 rollout attempt 内与嵌套 agent 共用编号。`replace_tool` 可删除错误工具调用产生的无用输出，或总结冗余结果，包括含图像的输出；工具说明建议优先替换最新结果以保留 KV cache 前缀。替换只影响后续模型输入，不撤销副作用；完整原始输出和 replacement 调用供 Trace2Skill 分析使用。
 
 `semantic_search` 支持 `episodes.text`、`entities.name`、`semantic_triples.text`、`topic_facts.fact`、`event_steps.description`、`object_states.text` 和 `visual_clips.text`。先按包含边界的 min/max score 过滤，再按降序取 rank 范围；`rank_start` 从 1 开始，`n` 必须为正，无分数边界使用 JSON `null`。Preview 最多保留 500 字符，长文本同时附原长度；需要全文时可查询原行。
 
@@ -220,7 +229,7 @@ time_s = source.timeline_start_s + pts × time_base_num / time_base_den
 
 ### 累计图片额度
 
-每个 clip_qa 最多累计返回 **1024 张图片**。采样和裁剪共用额度与异步锁，并行请求也串行检查和更新计数。重复调用工具重新发送图像会消耗新额度；SDK 重放已有历史不重新计数。
+每个 clip_qa 最多累计返回 **650 张图片**，没有 30 张限制。采样和裁剪共用额度与异步锁，并行请求也串行检查和更新计数。重复调用工具重新发送图像会消耗新额度；SDK 重放已有历史不重新计数，`replace_tool` 不返还累计采样额度。这是保留的 harness 额度，不是 Luna 的模型容量声明。
 
 超额请求整体返回错误和剩余额度，不部分返回、不自动降低 fps 或缩短区间。额度在整次图片工具返回准备成功后更新；被拒绝请求可能已经在磁盘留下解码产物，但不会将其作为部分成功结果交给模型。
 
@@ -231,7 +240,7 @@ time_s = source.timeline_start_s + pts × time_base_num / time_base_den
 每次 `Runner.run_streamed` 最多执行 100 轮。主 agent 根据每次 completed response 的 usage 计算：
 
 ```text
-remaining = 1,050,000 - input_tokens - output_tokens
+remaining = 314573 - input_tokens - output_tokens
 ```
 
 当 remaining ≤ 178,000 时，请求在当前轮结束后 compaction。若同轮已经产生有效最终答案，先接受答案。
@@ -242,7 +251,9 @@ Compaction 使用同一个主 Agent 和原会话，临时移除工具，要求�
 
 流结束后还会检查：排除 reasoning 并规范化 item IDs 等字段后，如果连续三次 completion 完全相同，抛出 InvalidTrace。模型未按提交格式结束时，按实际结构化输出校验错误处理。
 
-## 7. 运行评估
+## 7. 独立评估入口
+
+本节是 `src.val` 的独立评估接口，不是当前 Trace2Skill baseline 的恢复命令。当前暂停 run 的恢复入口和前台 embedding 启动步骤见 [新交接文档](TRACE2SKILL_LUNA_HANDOFF.md#训练协议与恢复行为)；当前不启动 held-out 评估。
 
 在仓库根目录运行。以下为新评估目录的启动示例；embedding API、数据、.env 和 W&B 登录应已准备好：
 
@@ -255,7 +266,7 @@ PYTHONUNBUFFERED=1 HF_HOME=/raid/huggingface .venv/bin/python -m src.val \
   --skill-dir skills/initial \
   --model-name gpt-5.6-luna \
   --api-key-env PERSONAL_OPENAI_KEY \
-  --embedding-url http://127.0.0.1:8013/v1 \
+  --embedding-url http://127.0.0.1:8014/v1 \
   --embedding-model qwen3-vl-embedding-8b \
   --batch-size 30 --rollouts 5 --attempts 3 \
   > runs/training-free-example/eval.log 2>&1
@@ -308,6 +319,8 @@ accuracy = sum(score) / (5 × rollout 数)
 
 ## 9. 重试与恢复
 
+本节描述 `src.val`。Baseline 直接复用完成的 `result.json`，已有 `answer.json` 时复用答案继续 judge，无答案的中断 attempt 归档后重新执行；W&B 使用固定 run ID 和 `resume="allow"`。其完整恢复规则见 [新交接文档](TRACE2SKILL_LUNA_HANDOFF.md#训练协议与恢复行为)。
+
 SDK 请求重试和评估层重试是两层独立机制。评估层最多执行 `--attempts` 次 rollout；每次成功答题后的 judge 也有自己的 `--attempts` 次机会。可重试类别包括模型输出校验、InvalidTrace、AgentRaised、SDK 轮数/模型行为错误，以及代码列明的连接、超时、限流和服务端错误。重试不切换模型或 reasoning。
 
 普通工具校验和执行错误通常返回 error JSON 供模型纠正。余额不足或 `insufficient_quota` 会沿异常链识别、从通用工具错误处理向上抛出，并被评估层判为不可重试。错误文件保留异常链，stdout 同时打印原因。
@@ -325,7 +338,9 @@ SDK 请求重试和评估层重试是两层独立机制。评估层最多执行 
 
 ## 10. 结果、完整 trace 与日志
 
-GPT-5.6-Luna 的完整评估产物位于 [/raid/wg25r/video_sql_v2/runs/training_free_luna_seed0_7510e535](../runs/training_free_luna_seed0_7510e535/)，汇总见该目录的 [result.json](../runs/training_free_luna_seed0_7510e535/result.json)。逐 rollout 结果位于 `val/question-<timeline>-<index>/rollout-<N>/result.json`；对应 attempt 的完整 trace 和图像分别在 `attempt-<N>/traces/` 与 `attempt-<N>/media/`。
+旧 GPT-5.6-Luna 的完整评估产物位于 [training_free_luna_seed0_7510e535](/raid/wg25r/video_sql_v2/runs/training_free_luna_seed0_7510e535/)，汇总见 [result.json](/raid/wg25r/video_sql_v2/runs/training_free_luna_seed0_7510e535/result.json)。这是 seed-0 评估集的 day/week/month 各 100 题 × 5 条，共 1,500 条；其中 month 的 100 题与本次 266 题训练集没有题目 ID 或问题文本重合。不能把它当作完整的 month 训练轨迹。逐 rollout 结果位于 `val/question-<timeline>-<index>/rollout-<N>/result.json`；对应 attempt 的完整 trace 和图像分别在 `attempt-<N>/traces/` 与 `attempt-<N>/media/`。
+
+当前 baseline 的产物位于 [trace2skill-baseline-openai-gpt-5.6-luna-high](../runs/trace2skill-baseline-openai-gpt-5.6-luna-high/)，已保留 80 条完成 rollout，尚未生成分析、evolved skills 或比较结果；其目录与下列 `src.val` 格式不同，详见 [新交接文档](TRACE2SKILL_LUNA_HANDOFF.md)。
 
 ```text
 <run-dir>/
@@ -359,7 +374,7 @@ GPT-5.6-Luna 的完整评估产物位于 [/raid/wg25r/video_sql_v2/runs/training
 
 错误、notes、clip、sql-qa 与 compaction 文件仅在相应路径发生时生成。Segment 编号在整个 harness attempt 内分配，不能假定 answer 的第一个 segment 一定是 00。
 
-- **config.json**：模型、endpoint、reasoning、embedding 设置、并发、skills 路径、图像设置、Git hash 和 W&B ID，不含 API key。
+- **config.json**：`src.val` 保存模型、endpoint、reasoning、embedding 设置、并发、skills 路径、图像设置、Git hash 和 W&B ID，不含 API key。该独立入口仍把 reasoning 元数据写为旧的 medium/all_turns，实际共享 harness 已使用 high/auto；当前 baseline 的 W&B 配置为 high/auto。核对实际设置应查看真实 trace，不能只读旧元数据。
 - **逐 rollout result.json**：题目身份、rollout 编号、status、answer、reference_answer、score；完成的 answered/compaction_limit 结果还包含 attempt 和该 attempt 的 trace_files。
 - **根目录 result.json**：全部批次结束后写入 `rollouts, score_sum, accuracy`。
 - **segment JSON**：agent 指令、模型设置、工具 schema、初始输入、完整 SDK 历史、raw responses、usage、request/response IDs、最终输出、异常信息及对应 events 文件名。
@@ -369,11 +384,15 @@ GPT-5.6-Luna 的完整评估产物位于 [/raid/wg25r/video_sql_v2/runs/training
 
 JSON 中的 data:image base64 替换为 `<base64-image-removed>`，实际图像保存在 media 中；完整 trace 由文本记录与媒体共同组成。正常历史中的 encrypted reasoning 不删除。结果目录应连同媒体一起保留；仅复制 segment JSON 无法还原图像证据。
 
-W&B 记录 `val/rollout_score`、题目与 rollout 编号，以及每批 `val/batch`、`val/accuracy`、`val/completed_rollouts`。Weave 记录模型调用；大图像历史可能触及远端单次上传大小限制，本地 trace 不依赖上传成功。批次和最终里程碑还追加到工作目录的 `AGENT_STDOUT.txt`。
+独立 `src.val` 的 W&B 记录 `val/rollout_score`、题目与 rollout 编号，以及每批 `val/batch`、`val/accuracy`、`val/completed_rollouts`，批次和最终里程碑追加到工作目录的 `AGENT_STDOUT.txt`。当前 baseline 另记录平均 trace 长度、请求吞吐、平均 rollout 时长、每条 rollout 累计 replacement 节省 token 的均值及 replacement 调用次数；精确 metric 名称和口径见 [新交接文档](TRACE2SKILL_LUNA_HANDOFF.md#wandbweave-和本地证据)。
+
+Baseline 的 Weave 使用完整 rollout 调用树，包含主 agent、工具、嵌套 agent、compaction、API calls 和 judge，带 run/question/rollout/attempt/skill_version。大图像历史可能触及远端单次上传大小限制，本地 trace 和媒体需独立保留。
 
 检查一次执行时，将 result.json 的答案和得分与主 agent、子 agent、judge 的实际输入输出对应起来，再根据 frame ID 打开对应图像。结果文件存在或进程正常退出，仅说明运行产物已写出，不能单独证明检索与视觉证据正确。
 
-## 11. 固定前缀对比轨迹采集（2026-09-07 追加）
+## 11. 历史固定前缀对比轨迹采集（原仓库，2026-09-07）
+
+以下记录属于原仓库的历史方法，不是当前 Trace2Skill baseline。原始文档及其历史产物链接应在 [/raid/wg25r/video_sql_v2/notes/DOCS_AND_HANDOFF.md](/raid/wg25r/video_sql_v2/notes/DOCS_AND_HANDOFF.md) 中查看；下面的历史 GPU、endpoint 和执行状态不适用于当前暂停 run。
 
 ### 代码修改
 
