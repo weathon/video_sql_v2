@@ -2,12 +2,13 @@
 
 ## 当前状态
 
-用户已要求暂停，充值后再继续；本次只更新文档，不启动运行。
+用户充值后已使用同一 `PERSONAL_OPENAI_KEY` 恢复过一次。当前因网络连接错误耗尽既定重试次数而停止；尚未收到追加重试次数的授权。
 
 - 工作目录：`/raid/wg25r/video_sql_2`；分支：`codex/trace2skill-baseline`。原仓库 `/raid/wg25r/video_sql_v2` 的数据和索引供读取，新输出写入本 worktree。
 - 入口：[src/trace2skill_baseline.py](../src/trace2skill_baseline.py)。这是问答 harness + 上游 Trace2Skill baseline，技能学习不使用本项目原来的 reflection、branching 或 updater 方法。
-- 当前输出目录：[runs/trace2skill-baseline-openai-gpt-5.6-luna-high](../runs/trace2skill-baseline-openai-gpt-5.6-luna-high/)。停止后核对到 **80 条已完成、已评分的 rollout，覆盖 30 道训练题**；这 30 题并非都完成了 5 条。
-- 原始日志为 `formal-001.log`；进程由用户要求中断，退出码 130。Weave 退出时的 flush 也被中断，不能保证最后一批远端 spans 全部上传。
+- 当前输出目录：[runs/trace2skill-baseline-openai-gpt-5.6-luna-high](../runs/trace2skill-baseline-openai-gpt-5.6-luna-high/)。停止后核对到 **121 条已完成、已评分的 rollout，覆盖 37 道训练题**；本次恢复新增 41 条，这 37 题并非都完成了 5 条。
+- 首轮日志 `formal-001.log` 保留；最新日志 `formal-002.log` 的退出码为 1。直接退出原因是 `initial/question-17/rollout-03` 的 3 次 attempt 均为 `APIConnectionError`，最后一次异常链为 TLS `SSLEOFError`。没有 `insufficient_quota` 或 quota-pause 文件；不能把本次停止归因为余额耗尽。
+- Weave 记录部分 call start 上传超时并丢弃，远端调用树可能不完整；本地 trace 和媒体保留。
 - `initial-summary.json`、`combined-records.json`、`skills/evolved/` 和 `comparison.json` 均未生成。尚未完成初始采集，也未进入 Trace2Skill 分析、evolution 或复评。
 - 本次 `trace2skill-embedding` 已停止并手动删除。旧的 `trace2skill-embedding-gpu4`、PD、encoder、proxy 等历史容器保留为停止状态。
 
@@ -19,7 +20,7 @@
 | --- | --- | --- |
 | [training_free_luna_seed0_7510e535](/raid/wg25r/video_sql_v2/runs/training_free_luna_seed0_7510e535/) | day/week/month 各 100 题，每题 5 条，共 1,500 条；逐条答案和列出的 trace 文件存在 | seed-0 评估集；其中 month 的 100 题与 266 题训练集的题目 ID、问题文本均无交集 |
 | [pilot_luna_fresh2_personal](/raid/wg25r/video_sql_v2/runs/pilot_luna_fresh2_personal/) | 16 道训练题，每题 5 条，共 80 条；逐条 reference 与训练集一致，列出的 trace 文件存在 | 不完整，且含原项目的 reflection/技能更新流程 |
-| 当前 baseline run | 30 题中已完成 80 条 | 保留在当前目录，恢复时复用；不能与上一行的 80 条混为一组 |
+| 当前 baseline run | 37 题中已完成 121 条 | 保留在当前目录，恢复时复用；与上一行的旧 pilot 数据独立 |
 
 旧数据的文件存在性核对不等于所有工具、图像和分析路径都已人工验收。旧 trace 格式也不同：部分没有当前的 `tool_calls` 字段或整数 tool ID，不能直接交给当前分析入口。
 
@@ -64,14 +65,15 @@
 - 已有 `attempt-N/answer.json` 但没有最终结果时复用答案，继续 judge 和后续统计。
 - 只有中断 trace、没有答案的 attempt 会移到 `interrupted-*` 目录，再执行该 attempt；不会从最后一个工具调用续接会话。
 - 已有 `error.json` 的 attempt 按入口逻辑跳过，继续其余已配置的机会。SDK 重试和最多 3 次 rollout/judge attempt 设置保留。
+- `write_error` 对 `insufficient_quota` / `no credits remaining` 单独写 `*-quota-pause-*.json` 并抛出停止，不生成会消耗 QA/judge attempt 的错误标记。额度耗尽后的恢复不会因此减少重试机会；本次网络错误不属于此分支。
 - W&B 使用相同 run ID 和 `resume="allow"`；恢复时重新汇总已完成 rollout 的均值，不把中断期间的停机时间加到 QA 时长中。
 
-充值后，用户要求继续时，在两个前台 exec 会话中分别启动 embedding 和 baseline。先核对实际 GPU 资源；embedding 脚本当前指定 GPU 1，资源不足立即报告，不等待或停止其他任务。下面是尚未执行的恢复命令，日志使用新文件名，不能覆盖 `formal-001.log`。
+本次已向用户询问是否给第 17 题 rollout 3 再增加 3 次机会，尚待回复；未经授权不重置错误记录或增加次数。直接重启当前入口仍会在该条报告 attempts exhausted。解决该重试限制后，在两个前台 exec 会话中分别启动 embedding 和 baseline。先核对实际 GPU 资源；embedding 脚本当前指定 GPU 1，资源不足立即报告，不等待或停止其他任务。下面是下一次恢复的命令模板，日志使用新文件名，不能覆盖旧日志。
 
 ```bash
 cd /raid/wg25r/video_sql_2
 .venv/bin/python -u infra/trace2skill_service.py embedding \
-  > runs/trace2skill-baseline-openai-gpt-5.6-luna-high/embedding-resume-001.log 2>&1
+  > runs/trace2skill-baseline-openai-gpt-5.6-luna-high/embedding-resume-002.log 2>&1
 ```
 
 从该前台会话的实际启动日志确认服务 ready 后，在另一个前台 exec 执行：
@@ -79,10 +81,10 @@ cd /raid/wg25r/video_sql_2
 ```bash
 cd /raid/wg25r/video_sql_2
 .venv/bin/python -u -m src.trace2skill_baseline \
-  > runs/trace2skill-baseline-openai-gpt-5.6-luna-high/formal-002.log 2>&1
+  > runs/trace2skill-baseline-openai-gpt-5.6-luna-high/formal-003.log 2>&1
 ```
 
-开始正式运行前遵循仓库审查流程：Claude CLI 全仓库审查；若明确因 usage limit 无法完成，改用新的子 agent 阅读 `REVIEW.md` 并审查全量。此前审查产物 `claude-full-review.json` 已保留。不要运行 syntax、smoke 或 preflight tests；从正式运行的真实 trace 检查行为。稳定后按一小时频率检查前台任务，不启动后台 watcher；运行结束核验真实产物后手动清理本次容器。
+开始正式运行前遵循仓库审查流程：Claude CLI 全仓库审查；若明确因 usage limit 无法完成，改用新的子 agent 阅读 `REVIEW.md` 并审查全量。此前审查产物 `claude-full-review.json` 及本次只读全仓库审查 `claude-resume-002-review.json` 已保留，本次结论为 no blocking issues。不要运行 syntax、smoke 或 preflight tests；从正式运行的真实 trace 检查行为。稳定后按一小时频率检查前台任务，不启动后台 watcher；运行结束核验真实产物后手动清理本次容器。
 
 ## W&B、Weave 和本地证据
 

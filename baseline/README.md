@@ -1,7 +1,9 @@
 # QA harness + Trace2Skill baseline
 
-The Luna run is paused at the user's request until funding is added. It retains 80
-completed rollouts across 30 month training questions; analysis, evolution and
+The Luna run resumed after funding and stopped when question 17, rollout 3 exhausted
+three attempts with API connection errors. Additional attempts await user authorization;
+restarting unchanged will stop on that rollout again. It retains 121 completed rollouts
+across 37 month training questions; analysis, evolution and
 reevaluation have not started. See [the current handoff](../notes/TRACE2SKILL_LUNA_HANDOFF.md)
 for verified artifacts, old-dataset findings, service state and resume commands.
 
