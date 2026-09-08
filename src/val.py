@@ -76,6 +76,11 @@ def retryable(error: BaseException) -> bool:
 
 
 def write_error(path: Path, error: BaseException) -> None:
+    if any(isinstance(item, openai.APIError) and (
+        item.code == "insufficient_quota" or "no credits remaining" in str(item).lower()
+    ) for item in exception_chain(error)):
+        # Preserve the pause without marking this QA/judge attempt as exhausted.
+        path = path.with_name(f"{path.stem}-quota-pause-{uuid.uuid4().hex}.json")
     print(f"error_file={path} " + " <- ".join(
         f"{type(item).__name__}: {item}" for item in exception_chain(error)
     ), flush=True)
