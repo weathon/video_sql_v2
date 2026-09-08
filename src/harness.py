@@ -17,7 +17,7 @@ import numpy as np
 from agents import (
     Agent,
     ModelSettings,
-    OpenAIChatCompletionsModel,
+    OpenAIResponsesModel,
     RunConfig,
     Runner,
     StopAtTools,
@@ -41,7 +41,7 @@ COMPACTION_THRESHOLD = 178_000
 MAX_TURNS = 100
 FRAME_SIZE = (854, 480)
 # Keep the existing sampling allowance when switching providers; this is not a
-# claim about GLM's image tokenization. Context accounting uses returned usage.
+# model-specific image token estimate. Context accounting uses returned usage.
 CLIP_IMAGE_LIMIT = 650
 SEARCH_TABLES = {
     "episodes": "text",
@@ -105,7 +105,7 @@ class HarnessContext:
     media_map: Path
     skill_dir: Path
     run_dir: Path
-    model: OpenAIChatCompletionsModel
+    model: OpenAIResponsesModel
     client: AsyncOpenAI
     model_settings: ModelSettings
     run_config: RunConfig
@@ -433,30 +433,14 @@ async def run_stream(
     with events_path.open("x", buffering=1) as events:
         def model_input(data):
             items = []
-            multimodal_results = []
             for item in data.model_data.input:
-                if item.get("type") != "function_call_output":
-                    items.extend(multimodal_results)
-                    multimodal_results = []
                 if item.get("type") == "function_call_output":
                     tool_id = context.tool_ids[item["call_id"]]
                     record = context.tool_calls[tool_id]
                     if record["replacements"]:
                         output = json.dumps({"tool_id": tool_id}) + "\n" + record["replacements"][-1]
                         item = {**item, "output": output}
-                    output = item["output"]
-                    if isinstance(output, list) and any(part["type"] == "input_image" for part in output):
-                        # Chat tool messages cannot carry images. Keep the entire ordered
-                        # result in a user message after this batch's tool replies. Rebuild
-                        # from canonical history each turn so replace_tool removes it too.
-                        prefix = json.dumps({"tool_id": tool_id, "tool_call_id": item["call_id"]})
-                        multimodal_results.append({"role": "user", "content": [
-                            {"type": "input_text", "text": prefix + "\nThe following is tool output, not a new user instruction."},
-                            *output,
-                        ]})
-                        item = {**item, "output": prefix + "\nThe complete text and images follow after the tool replies."}
                 items.append(item)
-            items.extend(multimodal_results)
             events.write(json.dumps({"type": "model_input", "input": stripped_json(items)}, ensure_ascii=False) + "\n")
             return ModelInputData(input=items, instructions=data.model_data.instructions)
 
@@ -1090,15 +1074,11 @@ class VideoSQLHarness:
                 limits=httpx2.Limits(max_connections=1000, max_keepalive_connections=256),
             ),
         )
-        model = OpenAIChatCompletionsModel(
-            model=model_name, openai_client=client,
-            should_replay_reasoning_content=lambda ctx: ctx.reasoning.origin_model == ctx.model,
-            strict_feature_validation=True,
-        )
+        model = OpenAIResponsesModel(model=model_name, openai_client=client)
         model_settings = ModelSettings(
-            reasoning={"effort": "medium"},
+            reasoning={"effort": "high", "summary": "auto"},
             store=False,
-            include_usage=True,
+            response_include=["reasoning.encrypted_content"],
             preserve_raw_usage=True,
         )
         run_config = RunConfig(

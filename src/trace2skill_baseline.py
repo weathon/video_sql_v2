@@ -13,7 +13,7 @@ from pathlib import Path
 
 import weave
 import wandb
-from agents import Agent, OpenAIChatCompletionsModel, StopAtTools, ToolOutputImage, function_tool, trace
+from agents import Agent, OpenAIResponsesModel, StopAtTools, ToolOutputImage, function_tool, trace
 from dotenv import dotenv_values
 from pydantic import BaseModel, Field, ValidationError
 from third_party.trace2skill.tracing_bridge import init_weave
@@ -23,14 +23,13 @@ from src.val import judge_answer, retryable, write_error
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = ROOT / "runs/trace2skill-baseline-openrouter-glm-5.3-flash-modal-fp8"
+RUN = ROOT / "runs/trace2skill-baseline-openai-gpt-5.6-luna-high"
 UPSTREAM = ROOT / "third_party/trace2skill"
 RUNTIME = Path("/raid/wg25r/video_sql_v2/data/runtime/month")
 TRAIN = Path("/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443/month/train.json")
-MODEL = "z-ai/glm-5.3-flash"
-BASE_URL = "https://openrouter.ai/api/v1"
-API_KEY = dotenv_values(ROOT / ".env")["OPENROUTER_API_KEY"]
-PROVIDER = {"only": ["modal/fp8"], "allow_fallbacks": False, "require_parameters": True}
+MODEL = "gpt-5.6-luna"
+BASE_URL = "https://api.openai.com/v1"
+API_KEY = dotenv_values(ROOT / ".env")["PERSONAL_OPENAI_KEY"]
 SKILL_HEADER = "---\nname: video-memory-qa\ndescription: Retrieve and verify evidence to answer questions about long videos.\n---\n\n"
 
 
@@ -86,13 +85,9 @@ class RunMetrics:
         (RUN / f"{self.phase}-trace-metrics.json").write_text(json.dumps(values, indent=2) + "\n")
 
 
-class LimitedChatCompletionsModel(OpenAIChatCompletionsModel):
+class LimitedResponsesModel(OpenAIResponsesModel):
     def __init__(self, client, semaphore, metrics):
-        super().__init__(
-            model=MODEL, openai_client=client,
-            should_replay_reasoning_content=lambda ctx: ctx.reasoning.origin_model == ctx.model,
-            strict_feature_validation=True,
-        )
+        super().__init__(model=MODEL, openai_client=client)
         self.semaphore = semaphore
         self.metrics = metrics
 
@@ -126,10 +121,7 @@ def make_harness(directory, skill_dir, semaphore, metrics):
         embedding_url="http://127.0.0.1:8014/v1", embedding_model="qwen3-vl-embedding-8b",
         context_limit=314573, compaction_threshold=178000,
     )
-    harness.context.model = LimitedChatCompletionsModel(harness.context.client, semaphore, metrics)
-    harness.context.model_settings = dataclasses.replace(
-        harness.context.model_settings, extra_body={"provider": PROVIDER},
-    )
+    harness.context.model = LimitedResponsesModel(harness.context.client, semaphore, metrics)
     harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
     return harness
 
@@ -234,32 +226,30 @@ async def analyze(result, semaphore, metrics):
                 instructions = (UPSTREAM / "analysis/success_analysis_system_llm.txt").read_text()
                 instructions = instructions.replace("spreadsheet manipulation tasks", "video question answering tasks").replace("`input.xlsx`", "video evidence, memory database")
                 instructions += "\nReturn the Lean Solution Path and at most three Success Memory Items using the supplied JSON schema."
-                content = [{"type": "text", "text": json.dumps(bundle, ensure_ascii=False)}]
+                content = [{"type": "input_text", "text": json.dumps(bundle, ensure_ascii=False)}]
                 for filename in result["media_files"]:
-                    content.extend([{"type": "text", "text": filename},
-                                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(Path(filename).read_bytes()).decode()}}])
-                messages = [{"role": "system", "content": instructions}, {"role": "user", "content": content}]
+                    content.extend([{"type": "input_text", "text": filename},
+                                    {"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.b64encode(Path(filename).read_bytes()).decode(), "detail": "high"}])
+                messages = [{"role": "user", "content": content}]
                 for attempt in range(1, 4):
                     try:
                         (directory / f"success-request-{attempt}.json").write_text(json.dumps(messages, ensure_ascii=False) + "\n")
                         async with semaphore:
-                            raw = await harness.context.client.chat.completions.with_raw_response.parse(
-                                model=MODEL, messages=messages,
-                                reasoning_effort="medium", store=False,
-                                response_format=SuccessReport,
-                                extra_body={"provider": PROVIDER},
+                            raw = await harness.context.client.responses.with_raw_response.parse(
+                                model=MODEL, instructions=instructions, input=messages,
+                                reasoning={"effort": "high", "summary": "auto"}, store=False,
+                                include=["reasoning.encrypted_content"],
+                                text_format=SuccessReport,
                             )
                         body = raw.content
                         (directory / f"success-response-{attempt}.json").write_bytes(body)
                         payload = json.loads(body)
-                        metrics.record_response({"input_tokens": payload["usage"]["prompt_tokens"],
-                                                 "output_tokens": payload["usage"]["completion_tokens"]})
-                        messages.append(payload["choices"][0]["message"])
+                        metrics.record_response(payload["usage"])
+                        messages.extend(payload["output"])
                         response = raw.parse()
-                        choice = response.choices[0]
-                        if choice.finish_reason != "stop" or choice.message.parsed is None:
+                        if response.status != "completed" or response.output_parsed is None:
                             raise RuntimeError(f"Incomplete success analysis: {response.model_dump_json()}")
-                        report = choice.message.parsed
+                        report = response.output_parsed
                         break
                     except asyncio.CancelledError:
                         raise
@@ -358,9 +348,8 @@ async def main():
     init_weave()
     wandb_run = wandb.init(entity="3dsmile", project="video-sql-v2", id=RUN.name,
                            name=RUN.name, resume="allow", dir=str(RUN),
-                           config={"model": MODEL, "reasoning": "medium", "base_url": BASE_URL,
-                                   "provider": PROVIDER,
-                                   "api": "chat.completions", "reasoning_replay": True,
+                           config={"model": MODEL, "reasoning": "high", "reasoning_summary": "auto", "base_url": BASE_URL,
+                                   "api": "responses", "reasoning_replay": True,
                                    "client_concurrency": 256, "replace_tool": True,
                                    "rollouts_per_question": 5})
     (RUN / "wandb-run.json").write_text(json.dumps({"id": wandb_run.id, "url": wandb_run.url}, indent=2) + "\n")

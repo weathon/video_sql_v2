@@ -26,8 +26,7 @@ from skill_evolver.skill_evolving_agent import SkillEvolver
 from tracing_bridge import init_weave
 
 
-MODEL = "z-ai/glm-5.3-flash"
-PROVIDER = {"only": ["modal/fp8"], "allow_fallbacks": False, "require_parameters": True}
+MODEL = "gpt-5.6-luna"
 HEADER = "---\nname: video-memory-qa\ndescription: Retrieve and verify evidence to answer questions about long videos.\n---\n\n"
 BRIDGE_RULES = """
 Environment adaptation: SKILL.md is the automatically loaded ROOT-SKILL guide.
@@ -127,25 +126,25 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
             return response_text, conversation + [("assistant", response_text)]
         directory = self.calls / uuid.uuid4().hex
         directory.mkdir()
-        (directory / "request.json").write_text(json.dumps({"instructions": instructions, "user_message": user_message, "model": MODEL, "reasoning": "medium", "tag": tag}, ensure_ascii=False, indent=2) + "\n")
-        messages = [{"role": "system", "content": instructions}, {"role": "user", "content": user_message}]
+        (directory / "request.json").write_text(json.dumps({"instructions": instructions, "user_message": user_message, "model": MODEL, "reasoning": {"effort": "high", "summary": "auto"}, "tag": tag}, ensure_ascii=False, indent=2) + "\n")
+        messages = [{"role": "user", "content": user_message}]
         continuations = format_fixes = 0
         while True:
             number = continuations + format_fixes
             (directory / f"request-{number}.json").write_text(json.dumps(messages, ensure_ascii=False) + "\n")
-            raw = self.client.chat.completions.with_raw_response.parse(
-                model=MODEL, messages=messages,
-                reasoning_effort="medium", store=False, response_format=PatchResponse,
-                extra_body={"provider": PROVIDER},
+            raw = self.client.responses.with_raw_response.parse(
+                model=MODEL, instructions=instructions, input=messages,
+                reasoning={"effort": "high", "summary": "auto"}, store=False,
+                include=["reasoning.encrypted_content"], text_format=PatchResponse,
             )
             body = raw.content
             (directory / f"response-{number}.json").write_bytes(body)
             payload = json.loads(body)
-            # Replay the returned assistant message, including reasoning_content,
-            # during the upstream continuation and format-repair opportunities.
-            messages.append(payload["choices"][0]["message"])
+            # Preserve every output item, including encrypted reasoning, summaries
+            # and assistant phase, through continuation and format repair.
+            messages.extend(payload["output"])
             try:
-                if payload["choices"][0]["finish_reason"] == "length":
+                if payload["status"] == "incomplete" and payload["incomplete_details"]["reason"] == "max_output_tokens":
                     if continuations >= max_continuations:
                         raise RuntimeError(f"Trace2Skill continuation exhausted: {directory}")
                     continuations += 1
@@ -154,10 +153,9 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
                     conversation.append(("user", feedback))
                     continue
                 response = raw.parse()
-                choice = response.choices[0]
-                if choice.finish_reason != "stop" or choice.message.parsed is None:
+                if response.status != "completed" or response.output_parsed is None:
                     raise RuntimeError(f"Trace2Skill response did not complete: {directory}")
-                parsed = choice.message.parsed
+                parsed = response.output_parsed
                 for edit in parsed.edits:
                     if edit.file != "SKILL.md" and re.fullmatch(r"references/[a-z0-9]+(?:-[a-z0-9]+)*\.md", edit.file) is None:
                         raise ValueError(f"Invalid patch path: {edit.file}")
@@ -228,8 +226,8 @@ def evolve(run_directory):
         root += f"- [{source.stem}](references/{source.name})\n"
     (working / "SKILL.md").write_text(root)
     client = OpenAI(
-        api_key=dotenv_values(Path(__file__).resolve().parents[2] / ".env")["OPENROUTER_API_KEY"],
-        base_url="https://openrouter.ai/api/v1", max_retries=3,
+        api_key=dotenv_values(Path(__file__).resolve().parents[2] / ".env")["PERSONAL_OPENAI_KEY"],
+        base_url="https://api.openai.com/v1", max_retries=3,
         http_client=DefaultHttpxClient(
             timeout=httpx2.Timeout(connect=60, read=100000, write=100000, pool=100000),
             limits=httpx2.Limits(max_connections=1000, max_keepalive_connections=256),
