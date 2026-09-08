@@ -2375,14 +2375,14 @@ class ParallelSkillEvolver:
                                 f"  REDUCE level {level}, batch {merge_idx}: "
                                 f"merge failed"
                             )
-                            merged_results_by_index[merge_idx] = list(batch)
+                            raise ValueError(f"REDUCE level {level} batch {merge_idx} produced no patch")
                     except Exception as e:
                         fail_count += 1
                         tqdm.write(
                             f"  REDUCE level {level}, batch {merge_idx}: "
                             f"error: {e}"
                         )
-                        merged_results_by_index[merge_idx] = list(batch)
+                        raise
                     pbar.set_postfix(
                         ok=success_count, fail=fail_count, refresh=False
                     )
