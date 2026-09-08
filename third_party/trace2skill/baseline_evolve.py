@@ -26,8 +26,7 @@ from skill_evolver.skill_evolving_agent import SkillEvolver
 from tracing_bridge import init_weave
 
 
-MODEL = "z-ai/glm-5.3-flash"
-PROVIDER = {"only": ["modal/fp8"], "allow_fallbacks": False, "require_parameters": True}
+MODEL = "zai-org/GLM-5.3-Flash"
 HEADER = "---\nname: video-memory-qa\ndescription: Retrieve and verify evidence to answer questions about long videos.\n---\n\n"
 BRIDGE_RULES = """
 Environment adaptation: SKILL.md is the automatically loaded ROOT-SKILL guide.
@@ -136,7 +135,6 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
             raw = self.client.chat.completions.with_raw_response.parse(
                 model=MODEL, messages=messages,
                 reasoning_effort="medium", store=False, response_format=PatchResponse,
-                extra_body={"provider": PROVIDER},
             )
             body = raw.content
             (directory / f"response-{number}.json").write_bytes(body)
@@ -228,8 +226,8 @@ def evolve(run_directory):
         root += f"- [{source.stem}](references/{source.name})\n"
     (working / "SKILL.md").write_text(root)
     client = OpenAI(
-        api_key=dotenv_values(Path(__file__).resolve().parents[2] / ".env")["OPENROUTER_API_KEY"],
-        base_url="https://openrouter.ai/api/v1", max_retries=3,
+        api_key=dotenv_values(Path(__file__).resolve().parents[2] / ".env")["DEEPINFRA_API_KEY"],
+        base_url="https://api.deepinfra.com/v1/openai", max_retries=3,
         http_client=DefaultHttpxClient(
             timeout=httpx2.Timeout(connect=60, read=100000, write=100000, pool=100000),
             limits=httpx2.Limits(max_connections=1000, max_keepalive_connections=256),

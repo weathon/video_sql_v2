@@ -23,14 +23,13 @@ from src.val import judge_answer, retryable, write_error
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = ROOT / "runs/trace2skill-baseline-openrouter-glm-5.3-flash-modal-fp8"
+RUN = ROOT / "runs/trace2skill-baseline-deepinfra-glm-5.3-flash-image-replace"
 UPSTREAM = ROOT / "third_party/trace2skill"
 RUNTIME = Path("/raid/wg25r/video_sql_v2/data/runtime/month")
 TRAIN = Path("/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443/month/train.json")
-MODEL = "z-ai/glm-5.3-flash"
-BASE_URL = "https://openrouter.ai/api/v1"
-API_KEY = dotenv_values(ROOT / ".env")["OPENROUTER_API_KEY"]
-PROVIDER = {"only": ["modal/fp8"], "allow_fallbacks": False, "require_parameters": True}
+MODEL = "zai-org/GLM-5.3-Flash"
+BASE_URL = "https://api.deepinfra.com/v1/openai"
+API_KEY = dotenv_values(ROOT / ".env")["DEEPINFRA_API_KEY"]
 SKILL_HEADER = "---\nname: video-memory-qa\ndescription: Retrieve and verify evidence to answer questions about long videos.\n---\n\n"
 
 
@@ -127,9 +126,6 @@ def make_harness(directory, skill_dir, semaphore, metrics):
         context_limit=314573, compaction_threshold=178000,
     )
     harness.context.model = LimitedChatCompletionsModel(harness.context.client, semaphore, metrics)
-    harness.context.model_settings = dataclasses.replace(
-        harness.context.model_settings, extra_body={"provider": PROVIDER},
-    )
     harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
     return harness
 
@@ -247,7 +243,6 @@ async def analyze(result, semaphore, metrics):
                                 model=MODEL, messages=messages,
                                 reasoning_effort="medium", store=False,
                                 response_format=SuccessReport,
-                                extra_body={"provider": PROVIDER},
                             )
                         body = raw.content
                         (directory / f"success-response-{attempt}.json").write_bytes(body)
@@ -359,7 +354,6 @@ async def main():
     wandb_run = wandb.init(entity="3dsmile", project="video-sql-v2", id=RUN.name,
                            name=RUN.name, resume="allow", dir=str(RUN),
                            config={"model": MODEL, "reasoning": "medium", "base_url": BASE_URL,
-                                   "provider": PROVIDER,
                                    "api": "chat.completions", "reasoning_replay": True,
                                    "client_concurrency": 256, "replace_tool": True,
                                    "rollouts_per_question": 5})
