@@ -51,7 +51,7 @@ elif role == "encoder":
                 "--mm-processor-kwargs", json.dumps({"min_pixels": 65536, "max_pixels": 414720}),
                 "--enable-request-id-headers", "--ec-transfer-config", json.dumps({"ec_connector": "ECExampleConnector", "ec_role": "ec_producer", "ec_connector_extra_config": {"shared_storage_path": "/epd_shared/cache"}})]
 elif role == "embedding":
-    command += ["--gpus", '"device=4"', "--shm-size=8g", "-p", "127.0.0.1:8014:8000"] + shared
+    command += ["--gpus", '"device=1"', "--shm-size=8g", "-p", "127.0.0.1:8014:8000"] + shared
     command += ["-v", "/raid/wg25r/video_sql_v2:/workspace/video_sql_v2:ro", IMAGE,
                 "Qwen/Qwen3-VL-Embedding-8B", "--served-model-name", "qwen3-vl-embedding-8b", "--runner", "pooling",
                 "--host", "0.0.0.0", "--port", "8000", "--gpu-memory-utilization", "0.45",

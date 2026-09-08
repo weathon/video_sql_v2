@@ -57,6 +57,7 @@ class RunMetrics:
         self.responses = deque()
         self.trace_lengths = []
         self.rollout_times = []
+        self.replacement_metrics = []
 
     def record_response(self, usage):
         now = time.monotonic()
@@ -76,9 +77,12 @@ class RunMetrics:
     def record_rollout(self, result):
         self.trace_lengths.append(result["trace_length"])
         self.rollout_times.append(result["rollout_time_seconds"])
+        self.replacement_metrics.append(result["replacement_metrics"])
         count = len(self.trace_lengths)
         values = {f"{self.phase}/completed_rollouts": count,
-                  f"{self.phase}/average_rollout_time_seconds": sum(self.rollout_times) / count}
+                  f"{self.phase}/average_rollout_time_seconds": sum(self.rollout_times) / count,
+                  f"{self.phase}/mean_total_context_saved_tokens": sum(r["total_context_saved_tokens"] for r in self.replacement_metrics) / count,
+                  f"{self.phase}/replace_tool_calls": sum(r["replace_tool_calls"] for r in self.replacement_metrics)}
         for key in result["trace_length"]:
             values[f"{self.phase}/trace/mean_{key}"] = sum(r[key] for r in self.trace_lengths) / count
         self.run.log(values)
@@ -171,11 +175,31 @@ async def rollout(question, rollout_index, skill_version, semaphore, metrics):
                           "media_files": sorted(str(p) for p in directory.rglob("media/*.jpg"))}
                 responses = []
                 tool_count = 0
+                replace_count = 0
                 for filename in result["trace_files"]:
                     artifact = json.loads(Path(filename).read_text())
                     if artifact["agent"]["name"] != "judge":
                         responses.extend(artifact["raw_responses"])
                         tool_count += len(artifact["tool_calls"])
+                        replace_count += sum(call["name"] == "replace_tool" for call in artifact["tool_calls"])
+                total_context_saved = 0
+                for path in sorted(directory.glob("*/replace-*.json")):
+                    measurement = json.loads(path.read_text())
+                    for side in ("before", "after"):
+                        if f"{side}_tokens" in measurement:
+                            continue
+                        print(f"count replacement tokens side={side} artifact={path}", flush=True)
+                        async with semaphore:
+                            token_count = await harness.context.client.responses.input_tokens.count(
+                                model=MODEL, input=measurement[side], reasoning=measurement["reasoning"],
+                            )
+                        measurement[f"{side}_tokens"] = token_count.input_tokens
+                        path.write_text(json.dumps(measurement, ensure_ascii=False) + "\n")
+                    total_context_saved += measurement["before_tokens"] - measurement["after_tokens"]
+                result["replacement_metrics"] = {
+                    "total_context_saved_tokens": total_context_saved,
+                    "replace_tool_calls": replace_count,
+                }
                 result["trace_length"] = {
                     "generated_tokens": sum(r["usage"]["output_tokens"] for r in responses),
                     "model_calls": len(responses), "tool_calls": tool_count,

@@ -16,6 +16,7 @@ import httpx2
 import numpy as np
 from agents import (
     Agent,
+    ItemHelpers,
     ModelSettings,
     OpenAIResponsesModel,
     RunConfig,
@@ -125,6 +126,7 @@ class HarnessContext:
     tool_counter: int = 0
     tool_calls: dict[int, dict[str, Any]] = field(default_factory=dict)
     tool_ids: dict[str, int] = field(default_factory=dict)
+    tool_outputs: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -340,6 +342,7 @@ async def run_stream(
                       "replacements": []}
             context.tool_calls[tool_id] = record
             context.tool_ids[item["call_id"]] = tool_id
+            context.tool_outputs[tool_id] = [call, item]
             context.tool_counter = max(context.tool_counter, tool_id)
             restored.append(record)
         for record in restored:
@@ -350,7 +353,7 @@ async def run_stream(
                     context.tool_calls[arguments["tool_id"]]["replacements"].append(arguments["replacement"])
 
     @function_tool(failure_error_function=tool_error_json)
-    async def replace_tool(tool_id: int, replacement: str) -> str:
+    async def replace_tool(tool_context: ToolContext, tool_id: int, replacement: str) -> str:
         """Replace any completed tool result in model context with your replacement text.
 
         Every tool call has an integer tool_id, numbered from 1 within this rollout
@@ -368,6 +371,16 @@ async def run_stream(
         """
         if tool_id not in context.tool_calls:
             raise ValueError(f"tool_id {tool_id} is not a completed tool call")
+        call, original = context.tool_outputs[tool_id]
+        replacements = context.tool_calls[tool_id]["replacements"]
+        prefix = json.dumps({"tool_id": tool_id}) + "\n"
+        before = {**original, "output": prefix + replacements[-1]} if replacements else original
+        after = {**original, "output": prefix + replacement}
+        (context.run_dir / f"replace-{tool_context.tool_call_id}.json").write_text(json.dumps({
+            "tool_id": tool_id, "replace_call_id": tool_context.tool_call_id,
+            "model": context.model.model, "reasoning": context.model_settings.reasoning,
+            "before": [call, before], "after": [call, after],
+        }, ensure_ascii=False) + "\n")
         context.tool_calls[tool_id]["replacements"].append(replacement)
         return json.dumps({"replaced_tool_id": tool_id})
 
@@ -385,8 +398,14 @@ async def run_stream(
             tool_calls.append(record)
             prefix = json.dumps({"tool_id": tool_id}) + "\n"
             if isinstance(output, str):
-                return prefix + output
-            return [ToolOutputText(text=prefix), *output]
+                numbered_output = prefix + output
+            else:
+                numbered_output = [ToolOutputText(text=prefix), *output]
+            context.tool_outputs[tool_id] = [
+                tool_context.tool_call.model_dump(mode="json", exclude_none=True),
+                ItemHelpers.tool_call_output_item(tool_context.tool_call, numbered_output),
+            ]
+            return numbered_output
 
         wrapped_tools.append(dataclasses.replace(tool, on_invoke_tool=invoke_tool))
     behavior = agent.tool_use_behavior

@@ -51,6 +51,13 @@ W&B also records `initial/average_rollout_time_seconds` and
 `evolved/average_rollout_time_seconds`: mean elapsed QA time per completed rollout,
 including request queueing, tools, nested agents, compaction and timed retry attempts,
 excluding judge and process downtime. Per-attempt durations are saved for resume.
+W&B records `initial/mean_total_context_saved_tokens` and the corresponding evolved
+metric: sum each rollout's replacement token differences, then average across completed
+rollouts. OpenAI input-token counting includes text and images; repeated replacements
+compare against the previous replacement, and negative savings remain negative.
+`initial/replace_tool_calls` and its evolved counterpart count all completed replace_tool
+invocations across completed rollouts, including returned errors and retry attempts,
+excluding judge. Counting runs after QA timing and saves each before/after count for resume.
 
 Generative calls no longer use the local PD, encoder, EPD proxy or cache-clearing
 endpoints. Embeddings retain `qwen3-vl-embedding-8b` to match the existing index.
