@@ -17,4 +17,12 @@
 
 本次四卡配置未通过提示词检查；异常并非只出现在 Responses 路径。关闭 custom all-reduce 未消除这些异常，但本次测试没有确定底层根因，也没有证明权重退化。后续 SQL、结构化输出、工具往返和图像测试未执行。
 
-完整启动命令、服务日志、请求及流式原始输出保存在 [runs/nvfp4-tp4-recheck-20260908](../runs/nvfp4-tp4-recheck-20260908/)。上述测试实际使用的命令保留在 `server-command-before-removing-disable-custom-all-reduce.json`；`server-command.json` 已按用户要求移除 `--disable-custom-all-reduce`，尚未按修改后的命令重新启动。
+完整启动命令、服务日志、请求及流式原始输出保存在 [runs/nvfp4-tp4-recheck-20260908](../runs/nvfp4-tp4-recheck-20260908/)。上述测试实际使用的命令保留在 `server-command-before-removing-disable-custom-all-reduce.json`；`server-command.json` 已按用户要求移除 `--disable-custom-all-reduce`。
+
+## 移除参数后的复测
+
+按修改后的同一四卡命令启动成功。实际启动日志记录 `disable_custom_all_reduce=False`，TP 通信后端为 `CUSTOM`、`SYMM_MEM`、`PYNCCL`。
+
+再次人工检查四条相同提示词的完整输出：Responses 的 OK 指令只产生 reasoning `T`，中文计算题只产生 `1 1 算式`；Chat Completions 的 OK 指令产生 `user: OK、APT：`，2 + 2 问题只复述 `What is 2 + 2?Answer in one sentence.`。四条均结束但没有最终答案，本次未观察到长循环，仍未通过回答检查。
+
+本轮命令、请求和原始输出保存在 [custom-all-reduce](../runs/nvfp4-tp4-recheck-20260908/custom-all-reduce/)。
