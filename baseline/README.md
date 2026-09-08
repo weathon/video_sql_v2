@@ -46,6 +46,10 @@ tokens (including reasoning), model/tool calls, mean input tokens and peak conte
 including retries and nested agents but excluding judge from trace length. Throughput is
 completion-accounted input/output tokens and responses per second over 60 seconds,
 including judge; input-token throughput includes cached tokens.
+W&B also records `initial/average_rollout_time_seconds` and
+`evolved/average_rollout_time_seconds`: mean elapsed QA time per completed rollout,
+including request queueing, tools, nested agents, compaction and timed retry attempts,
+excluding judge and process downtime. Per-attempt durations are saved for resume.
 
 Generative calls no longer use the local PD, encoder, EPD proxy or cache-clearing
 endpoints. Embeddings retain `qwen3-vl-embedding-8b` to match the existing index.

@@ -56,6 +56,7 @@ class RunMetrics:
         self.started = time.monotonic()
         self.responses = deque()
         self.trace_lengths = []
+        self.rollout_times = []
 
     def record_response(self, usage):
         now = time.monotonic()
@@ -74,8 +75,10 @@ class RunMetrics:
 
     def record_rollout(self, result):
         self.trace_lengths.append(result["trace_length"])
+        self.rollout_times.append(result["rollout_time_seconds"])
         count = len(self.trace_lengths)
-        values = {f"{self.phase}/completed_rollouts": count}
+        values = {f"{self.phase}/completed_rollouts": count,
+                  f"{self.phase}/average_rollout_time_seconds": sum(self.rollout_times) / count}
         for key in result["trace_length"]:
             values[f"{self.phase}/trace/mean_{key}"] = sum(r[key] for r in self.trace_lengths) / count
         self.run.log(values)
@@ -151,7 +154,13 @@ async def rollout(question, rollout_index, skill_version, semaphore, metrics):
                     if answer_path.exists():
                         answer = json.loads(answer_path.read_text())
                     else:
-                        session = await harness.answer(question["question"])
+                        started = time.monotonic()
+                        try:
+                            session = await harness.answer(question["question"])
+                        finally:
+                            (attempt_dir / "rollout-time.json").write_text(json.dumps({
+                                "seconds": time.monotonic() - started,
+                            }) + "\n")
                         if session.status != "answered" or session.answer is None:
                             raise InvalidTrace(f"QA ended without an answer: {session.status}")
                         answer = dataclasses.asdict(session)
@@ -160,6 +169,8 @@ async def rollout(question, rollout_index, skill_version, semaphore, metrics):
                 result = {**metadata, "attempt": attempt, "question_text": question["question"],
                           "reference_answer": question["answer"], "answer": answer["answer"],
                           "score": score, "success": score >= 4, "status": "answered",
+                          "rollout_time_seconds": sum(json.loads(p.read_text())["seconds"]
+                                                      for p in directory.glob("*/rollout-time.json")),
                           "trace_files": sorted(str(p) for p in directory.rglob("traces/*.json")),
                           "media_files": sorted(str(p) for p in directory.rglob("media/*.jpg"))}
                 responses = []
