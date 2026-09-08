@@ -11,10 +11,10 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-import httpx
 import weave
 import wandb
-from agents import Agent, OpenAIResponsesModel, StopAtTools, ToolOutputImage, function_tool, trace
+from agents import Agent, OpenAIChatCompletionsModel, StopAtTools, ToolOutputImage, function_tool, trace
+from dotenv import dotenv_values
 from pydantic import BaseModel, Field, ValidationError
 from third_party.trace2skill.tracing_bridge import init_weave
 
@@ -23,11 +23,13 @@ from src.val import judge_answer, retryable, write_error
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = ROOT / "runs/trace2skill-baseline-replace-tools"
+RUN = ROOT / "runs/trace2skill-baseline-deepinfra-glm-5.3-flash"
 UPSTREAM = ROOT / "third_party/trace2skill"
 RUNTIME = Path("/raid/wg25r/video_sql_v2/data/runtime/month")
 TRAIN = Path("/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443/month/train.json")
-MODEL = "Qwen/Qwen3.8-27B-FP8"
+MODEL = "zai-org/GLM-5.3-Flash"
+BASE_URL = "https://api.deepinfra.com/v1/openai"
+API_KEY = dotenv_values(ROOT / ".env")["DEEPINFRA_API_KEY"]
 SKILL_HEADER = "---\nname: video-memory-qa\ndescription: Retrieve and verify evidence to answer questions about long videos.\n---\n\n"
 
 
@@ -80,9 +82,13 @@ class RunMetrics:
         (RUN / f"{self.phase}-trace-metrics.json").write_text(json.dumps(values, indent=2) + "\n")
 
 
-class LimitedResponsesModel(OpenAIResponsesModel):
+class LimitedChatCompletionsModel(OpenAIChatCompletionsModel):
     def __init__(self, client, semaphore, metrics):
-        super().__init__(model=MODEL, openai_client=client)
+        super().__init__(
+            model=MODEL, openai_client=client,
+            should_replay_reasoning_content=lambda ctx: ctx.reasoning.origin_model == ctx.model,
+            strict_feature_validation=True,
+        )
         self.semaphore = semaphore
         self.metrics = metrics
 
@@ -112,11 +118,11 @@ def make_harness(directory, skill_dir, semaphore, metrics):
     harness = VideoSQLHarness(
         database=RUNTIME / "index.duckdb", embedding_index=RUNTIME / "embedding_index",
         media_map=RUNTIME / "media-map.json", skill_dir=skill_dir, run_dir=directory,
-        model_name=MODEL, api_key="local", base_url="http://127.0.0.1:8003/v1",
+        model_name=MODEL, api_key=API_KEY, base_url=BASE_URL,
         embedding_url="http://127.0.0.1:8014/v1", embedding_model="qwen3-vl-embedding-8b",
-        context_limit=314573, compaction_threshold=178000, reasoning_context=None,
+        context_limit=314573, compaction_threshold=178000,
     )
-    harness.context.model = LimitedResponsesModel(harness.context.client, semaphore, metrics)
+    harness.context.model = LimitedChatCompletionsModel(harness.context.client, semaphore, metrics)
     harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
     return harness
 
@@ -213,27 +219,31 @@ async def analyze(result, semaphore, metrics):
                 instructions = (UPSTREAM / "analysis/success_analysis_system_llm.txt").read_text()
                 instructions = instructions.replace("spreadsheet manipulation tasks", "video question answering tasks").replace("`input.xlsx`", "video evidence, memory database")
                 instructions += "\nReturn the Lean Solution Path and at most three Success Memory Items using the supplied JSON schema."
-                content = [{"type": "input_text", "text": json.dumps(bundle, ensure_ascii=False)}]
+                content = [{"type": "text", "text": json.dumps(bundle, ensure_ascii=False)}]
                 for filename in result["media_files"]:
-                    content.extend([{"type": "input_text", "text": filename},
-                                    {"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.b64encode(Path(filename).read_bytes()).decode(), "detail": "high"}])
-                messages = [{"role": "user", "content": content}]
+                    content.extend([{"type": "text", "text": filename},
+                                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(Path(filename).read_bytes()).decode()}}])
+                messages = [{"role": "system", "content": instructions}, {"role": "user", "content": content}]
                 for attempt in range(1, 4):
                     try:
+                        (directory / f"success-request-{attempt}.json").write_text(json.dumps(messages, ensure_ascii=False) + "\n")
                         async with semaphore:
-                            raw = await harness.context.client.responses.with_raw_response.parse(
-                                model=MODEL, instructions=instructions, input=messages,
-                                reasoning={"effort": "medium"}, store=False,
-                                text_format=SuccessReport,
+                            raw = await harness.context.client.chat.completions.with_raw_response.parse(
+                                model=MODEL, messages=messages,
+                                reasoning_effort="medium", store=False,
+                                response_format=SuccessReport,
                             )
                         body = raw.content
                         (directory / f"success-response-{attempt}.json").write_bytes(body)
-                        metrics.record_response(json.loads(body)["usage"])
-                        messages.extend(json.loads(body)["output"])
+                        payload = json.loads(body)
+                        metrics.record_response({"input_tokens": payload["usage"]["prompt_tokens"],
+                                                 "output_tokens": payload["usage"]["completion_tokens"]})
+                        messages.append(payload["choices"][0]["message"])
                         response = raw.parse()
-                        if response.status != "completed" or response.output_parsed is None:
+                        choice = response.choices[0]
+                        if choice.finish_reason != "stop" or choice.message.parsed is None:
                             raise RuntimeError(f"Incomplete success analysis: {response.model_dump_json()}")
-                        report = response.output_parsed
+                        report = choice.message.parsed
                         break
                     except asyncio.CancelledError:
                         raise
@@ -332,7 +342,8 @@ async def main():
     init_weave()
     wandb_run = wandb.init(entity="3dsmile", project="video-sql-v2", id=RUN.name,
                            name=RUN.name, resume="allow", dir=str(RUN),
-                           config={"model": MODEL, "reasoning": "medium", "max_num_seqs": 50,
+                           config={"model": MODEL, "reasoning": "medium", "base_url": BASE_URL,
+                                   "api": "chat.completions", "reasoning_replay": True,
                                    "client_concurrency": 256, "replace_tool": True,
                                    "rollouts_per_question": 5})
     (RUN / "wandb-run.json").write_text(json.dumps({"id": wandb_run.id, "url": wandb_run.url}, indent=2) + "\n")
@@ -371,13 +382,6 @@ async def main():
                    "mean_score_over_5": sum(r["score"] / 5 for r in results) / len(results),
                    "successes": sum(r["success"] for r in results)}
         (RUN / f"{version}-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
-            limits=httpx.Limits(max_connections=1000, max_keepalive_connections=256),
-        ) as proxy_client:
-            response = await proxy_client.post("http://127.0.0.1:8003/clear_encoder_cache")
-            response.raise_for_status()
-            (RUN / f"{version}-encoder-cache-clear.json").write_text(response.text + "\n")
         if version == "evolved":
             break
         analysis_jobs = iter(results)
@@ -393,13 +397,6 @@ async def main():
                 group.create_task(analysis_worker())
         records.sort(key=lambda r: r["instance_id"])
         (RUN / "combined-records.json").write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n")
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
-            limits=httpx.Limits(max_connections=1000, max_keepalive_connections=256),
-        ) as proxy_client:
-            response = await proxy_client.post("http://127.0.0.1:8003/clear_encoder_cache")
-            response.raise_for_status()
-            (RUN / "analysis-encoder-cache-clear.json").write_text(response.text + "\n")
         evolved = RUN / "skills/evolved"
         if not evolved.exists():
             weave.finish()

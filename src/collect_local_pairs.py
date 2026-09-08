@@ -105,7 +105,7 @@ def make_harness(attempt_dir, state, request_log, phase):
         run_dir=attempt_dir, model_name=MODEL, api_key="local",
         base_url=BASE_URL, embedding_url="http://127.0.0.1:8013/v1",
         embedding_model="qwen3-vl-embedding-8b", context_limit=262_144,
-        compaction_threshold=50_000, reasoning_context=None,
+        compaction_threshold=50_000,
     )
     harness.context.model = LocalResponsesModel(harness.context, state, request_log, phase)
     return harness

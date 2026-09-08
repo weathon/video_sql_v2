@@ -1,4 +1,4 @@
-"""Responses/structured-parse and flat-subskill bridge for pinned Trace2Skill."""
+"""Chat structured-parse and flat-subskill bridge for pinned Trace2Skill."""
 
 import dataclasses
 import json
@@ -17,6 +17,7 @@ import httpx2
 import weave
 import yaml
 from openai import DefaultHttpxClient, OpenAI
+from dotenv import dotenv_values
 from pydantic import BaseModel, ValidationError
 
 import skill_evolver.parallel_evolving_agent as parallel
@@ -25,7 +26,7 @@ from skill_evolver.skill_evolving_agent import SkillEvolver
 from tracing_bridge import init_weave
 
 
-MODEL = "Qwen/Qwen3.8-27B-FP8"
+MODEL = "zai-org/GLM-5.3-Flash"
 HEADER = "---\nname: video-memory-qa\ndescription: Retrieve and verify evidence to answer questions about long videos.\n---\n\n"
 BRIDGE_RULES = """
 Environment adaptation: SKILL.md is the automatically loaded ROOT-SKILL guide.
@@ -126,21 +127,23 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
         directory = self.calls / uuid.uuid4().hex
         directory.mkdir()
         (directory / "request.json").write_text(json.dumps({"instructions": instructions, "user_message": user_message, "model": MODEL, "reasoning": "medium", "tag": tag}, ensure_ascii=False, indent=2) + "\n")
-        messages = [{"role": "user", "content": user_message}]
+        messages = [{"role": "system", "content": instructions}, {"role": "user", "content": user_message}]
         continuations = format_fixes = 0
         while True:
-            raw = self.client.responses.with_raw_response.parse(
-                model=MODEL, instructions=instructions, input=messages,
-                reasoning={"effort": "medium"}, store=False, text_format=PatchResponse,
+            number = continuations + format_fixes
+            (directory / f"request-{number}.json").write_text(json.dumps(messages, ensure_ascii=False) + "\n")
+            raw = self.client.chat.completions.with_raw_response.parse(
+                model=MODEL, messages=messages,
+                reasoning_effort="medium", store=False, response_format=PatchResponse,
             )
             body = raw.content
-            number = continuations + format_fixes
             (directory / f"response-{number}.json").write_bytes(body)
             payload = json.loads(body)
-            # Preserve the actual reasoning items during native continuation/format repair.
-            messages.extend(payload["output"])
+            # Replay the returned assistant message, including reasoning_content,
+            # during the upstream continuation and format-repair opportunities.
+            messages.append(payload["choices"][0]["message"])
             try:
-                if payload["status"] == "incomplete":
+                if payload["choices"][0]["finish_reason"] == "length":
                     if continuations >= max_continuations:
                         raise RuntimeError(f"Trace2Skill continuation exhausted: {directory}")
                     continuations += 1
@@ -149,9 +152,10 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
                     conversation.append(("user", feedback))
                     continue
                 response = raw.parse()
-                if response.status != "completed" or response.output_parsed is None:
+                choice = response.choices[0]
+                if choice.finish_reason != "stop" or choice.message.parsed is None:
                     raise RuntimeError(f"Trace2Skill response did not complete: {directory}")
-                parsed = response.output_parsed
+                parsed = choice.message.parsed
                 for edit in parsed.edits:
                     if edit.file != "SKILL.md" and re.fullmatch(r"references/[a-z0-9]+(?:-[a-z0-9]+)*\.md", edit.file) is None:
                         raise ValueError(f"Invalid patch path: {edit.file}")
@@ -222,7 +226,8 @@ def evolve(run_directory):
         root += f"- [{source.stem}](references/{source.name})\n"
     (working / "SKILL.md").write_text(root)
     client = OpenAI(
-        api_key="local", base_url="http://127.0.0.1:8003/v1", max_retries=3,
+        api_key=dotenv_values(Path(__file__).resolve().parents[2] / ".env")["DEEPINFRA_API_KEY"],
+        base_url="https://api.deepinfra.com/v1/openai", max_retries=3,
         http_client=DefaultHttpxClient(
             timeout=httpx2.Timeout(connect=60, read=100000, write=100000, pool=100000),
             limits=httpx2.Limits(max_connections=1000, max_keepalive_connections=256),

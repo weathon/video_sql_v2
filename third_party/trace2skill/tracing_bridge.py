@@ -1,4 +1,4 @@
-"""Keep raw structured-parse Responses visible in the Weave API call spans."""
+"""Keep raw structured-parse Chat responses visible in the Weave API call spans."""
 
 import json
 
@@ -9,19 +9,19 @@ from weave.integrations.openai import openai_sdk
 from weave.integrations.openai_agents.openai_agents import WeaveTracingProcessor
 
 
-RESPONSE_OUTPUT_PROCESSOR = openai_sdk.responses_on_finish_post_processor
+CHAT_OUTPUT_PROCESSOR = openai_sdk.openai_on_finish_post_processor
 
 
 def response_output(value):
-    # The SDK raw-response wrapper intentionally defers structured validation. Weave's
-    # default Responses serializer calls model_dump(), which this wrapper does not have.
+    # Save raw output without triggering schema validation inside Weave. The caller
+    # retains the actual response and supplies validation errors to the model.
     if isinstance(value, LegacyAPIResponse):
         return json.loads(value.content)
-    return RESPONSE_OUTPUT_PROCESSOR(value)
+    return CHAT_OUTPUT_PROCESSOR(value)
 
 
 def init_weave():
-    openai_sdk.responses_on_finish_post_processor = response_output
+    openai_sdk.openai_on_finish_post_processor = response_output
     client = weave.init("3dsmile/video-sql-v2")
     set_trace_processors([WeaveTracingProcessor()])
     return client

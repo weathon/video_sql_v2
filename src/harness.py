@@ -17,7 +17,7 @@ import numpy as np
 from agents import (
     Agent,
     ModelSettings,
-    OpenAIResponsesModel,
+    OpenAIChatCompletionsModel,
     RunConfig,
     Runner,
     StopAtTools,
@@ -40,9 +40,9 @@ CONTEXT_LIMIT = 314573
 COMPACTION_THRESHOLD = 178_000
 MAX_TURNS = 100
 FRAME_SIZE = (854, 480)
-# Qwen patch=16, merge=2: 854x480 -> 864x480 -> 405 patches + 2 delimiters.
-# Reserve 50,000 tokens for text and reasoning in the 314,573-token context.
-CLIP_IMAGE_LIMIT = (CONTEXT_LIMIT - 50_000) // 407
+# Keep the existing sampling allowance when switching providers; this is not a
+# claim about GLM's image tokenization. Context accounting uses returned usage.
+CLIP_IMAGE_LIMIT = 650
 SEARCH_TABLES = {
     "episodes": "text",
     "entities": "name",
@@ -105,7 +105,7 @@ class HarnessContext:
     media_map: Path
     skill_dir: Path
     run_dir: Path
-    model: OpenAIResponsesModel
+    model: OpenAIChatCompletionsModel
     client: AsyncOpenAI
     model_settings: ModelSettings
     run_config: RunConfig
@@ -433,14 +433,30 @@ async def run_stream(
     with events_path.open("x", buffering=1) as events:
         def model_input(data):
             items = []
+            multimodal_results = []
             for item in data.model_data.input:
+                if item.get("type") != "function_call_output":
+                    items.extend(multimodal_results)
+                    multimodal_results = []
                 if item.get("type") == "function_call_output":
                     tool_id = context.tool_ids[item["call_id"]]
                     record = context.tool_calls[tool_id]
                     if record["replacements"]:
                         output = json.dumps({"tool_id": tool_id}) + "\n" + record["replacements"][-1]
                         item = {**item, "output": output}
+                    output = item["output"]
+                    if isinstance(output, list) and any(part["type"] == "input_image" for part in output):
+                        # Chat tool messages cannot carry images. Keep the entire ordered
+                        # result in a user message after this batch's tool replies. Rebuild
+                        # from canonical history each turn so replace_tool removes it too.
+                        prefix = json.dumps({"tool_id": tool_id, "tool_call_id": item["call_id"]})
+                        multimodal_results.append({"role": "user", "content": [
+                            {"type": "input_text", "text": prefix + "\nThe following is tool output, not a new user instruction."},
+                            *output,
+                        ]})
+                        item = {**item, "output": prefix + "\nThe complete text and images follow after the tool replies."}
                 items.append(item)
+            items.extend(multimodal_results)
             events.write(json.dumps({"type": "model_input", "input": stripped_json(items)}, ensure_ascii=False) + "\n")
             return ModelInputData(input=items, instructions=data.model_data.instructions)
 
@@ -1066,7 +1082,6 @@ class VideoSQLHarness:
         base_url: str = OPENAI_BASE_URL,
         context_limit: int = CONTEXT_LIMIT,
         compaction_threshold: int = COMPACTION_THRESHOLD,
-        reasoning_context: str | None = "all_turns",
     ) -> None:
         client = AsyncOpenAI(
             api_key=api_key, base_url=base_url, max_retries=3,
@@ -1075,14 +1090,15 @@ class VideoSQLHarness:
                 limits=httpx2.Limits(max_connections=1000, max_keepalive_connections=256),
             ),
         )
-        model = OpenAIResponsesModel(model=model_name, openai_client=client)
-        reasoning = {"effort": "medium"}
-        if reasoning_context is not None:
-            reasoning["context"] = reasoning_context
+        model = OpenAIChatCompletionsModel(
+            model=model_name, openai_client=client,
+            should_replay_reasoning_content=lambda ctx: ctx.reasoning.origin_model == ctx.model,
+            strict_feature_validation=True,
+        )
         model_settings = ModelSettings(
-            reasoning=reasoning,
+            reasoning={"effort": "medium"},
             store=False,
-            response_include=["reasoning.encrypted_content"],
+            include_usage=True,
             preserve_raw_usage=True,
         )
         run_config = RunConfig(
