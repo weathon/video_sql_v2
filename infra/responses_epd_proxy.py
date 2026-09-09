@@ -8,7 +8,10 @@ from pathlib import Path
 import aiohttp
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
+from vllm.entrypoints.openai.responses.utils import construct_input_messages, construct_tool_dicts
 
 
 app = FastAPI()
@@ -110,6 +113,27 @@ async def responses(request: Request):
     finally:
         if not streaming:
             app.state.active_requests -= 1
+
+
+@app.post("/v1/responses/input_tokens")
+async def input_tokens(request: Request):
+    native = ResponsesRequest.model_validate(await request.json())
+    messages = construct_input_messages(request_instructions=native.instructions, request_input=native.input)
+    chat_kwargs = native.build_chat_params(None, "auto").chat_template_kwargs
+    payload = {
+        "model": native.model, "messages": messages,
+        "tools": construct_tool_dicts(native.tools, native.tool_choice),
+        "chat_template_kwargs": chat_kwargs,
+        "add_generation_prompt": chat_kwargs["add_generation_prompt"],
+        "continue_final_message": chat_kwargs["continue_final_message"],
+    }
+    # vLLM applies the same model tokenizer, template and multimodal processor.
+    # /tokenize skips the encoder cache and runs no model generation.
+    async with session.post(f"{app.state.pd_url}/tokenize", json=jsonable_encoder(payload)) as response:
+        body = await response.json()
+        if response.status >= 400:
+            raise HTTPException(status_code=response.status, detail=body)
+    return {"object": "response.input_tokens", "input_tokens": body["count"]}
 
 
 def delete_shared_encoder_cache() -> dict:

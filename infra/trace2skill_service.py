@@ -7,16 +7,20 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = ROOT / "runs/trace2skill-baseline-replace-tools"
-MODEL = "Qwen/Qwen3.8-27B-FP8"
-IMAGE = "video-sql-trace2skill:fp8"
-NETWORK = "video-sql-trace2skill"
-VOLUME = "video-sql-trace2skill-ec"
+RUN = ROOT / "runs/trace2skill-baseline-nvfp4-day-week-seed0"
+MODEL = "Inferact/Qwen3.8-Flash-Next-NVFP4"
+IMAGE = "video-sql-trace2skill:nvfp4-padding-fix"
+NETWORK = "video-sql-trace2skill-nvfp4"
+VOLUME = "video-sql-trace2skill-nvfp4-ec"
 role = sys.argv[1]
-name = "trace2skill-" + role
+name = "trace2skill-nvfp4-" + role
 RUN.mkdir(parents=True, exist_ok=True)
 command = ["docker", "run", "--init", "--name", name, "--network", NETWORK]
-shared = ["-e", "HF_HOME=/hf_cache", "-v", "/raid/huggingface:/hf_cache", "-v", VOLUME + ":/epd_shared/cache"]
+shared = ["-e", "HF_HOME=/hf_cache", "-e", "HF_HUB_OFFLINE=1",
+          "-v", "/raid/huggingface:/hf_cache:ro", "-v", VOLUME + ":/epd_shared/cache",
+          "-e", "VLLM_CACHE_ROOT=/compile_cache/vllm", "-e", "TRITON_CACHE_DIR=/compile_cache/triton",
+          "-e", "FLASHINFER_WORKSPACE_BASE=/compile_cache/flashinfer",
+          "-v", f"/tmp/trace2skill-nvfp4-{role}-cache:/compile_cache"]
 if role in ("profile", "pd"):
     available_memory = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines() if line.startswith("MemAvailable:"))) * 1024
     cpu_bytes_per_rank = available_memory // 8
@@ -34,11 +38,11 @@ if role in ("profile", "pd"):
                 "--max-num-batched-tokens", "32768", "--gpu-memory-utilization", "0.90",
                 "--kv-cache-dtype", "auto", "--enable-prefix-caching", "--enable-chunked-prefill",
                 "--mamba-cache-mode", "align", "--async-scheduling", "--attention-backend", "FLASHINFER",
-                "--enable-flashinfer-autotune", "--mm-processor-cache-gb", "4",
+                "--no-enable-flashinfer-autotune", "--mm-processor-cache-gb", "4",
                 "--mm-processor-kwargs", json.dumps({"min_pixels": 65536, "max_pixels": 414720}),
                 "--limit-mm-per-prompt", json.dumps({"image": 650, "video": 0}),
                 "--tensor-parallel-size", "4", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder",
-                "--reasoning-parser", "qwen3", "--speculative-config", json.dumps({"method": "mtp", "num_speculative_tokens": 1}),
+                "--reasoning-parser", "qwen3", "--speculative-config", json.dumps({"method": "mtp", "num_speculative_tokens": 3}),
                 "--kv-transfer-config", json.dumps({"kv_connector": "SimpleCPUOffloadConnector", "kv_role": "kv_both", "kv_connector_extra_config": {"cpu_bytes_to_use_per_rank": cpu_bytes_per_rank, "lazy_offload": False}}),
                 "--ec-transfer-config", json.dumps({"ec_connector": "ECExampleConnector", "ec_role": "ec_consumer", "ec_connector_extra_config": {"shared_storage_path": "/epd_shared/cache"}}),
                 "--default-chat-template-kwargs", json.dumps({"enable_thinking": True, "preserve_thinking": True})]
@@ -51,7 +55,7 @@ elif role == "encoder":
                 "--mm-processor-kwargs", json.dumps({"min_pixels": 65536, "max_pixels": 414720}),
                 "--enable-request-id-headers", "--ec-transfer-config", json.dumps({"ec_connector": "ECExampleConnector", "ec_role": "ec_producer", "ec_connector_extra_config": {"shared_storage_path": "/epd_shared/cache"}})]
 elif role == "embedding":
-    command += ["--gpus", '"device=1"', "--shm-size=8g", "-p", "127.0.0.1:8014:8000"] + shared
+    command += ["--gpus", '"device=5"', "--shm-size=8g", "-p", "127.0.0.1:8014:8000"] + shared
     command += ["-v", "/raid/wg25r/video_sql_v2:/workspace/video_sql_v2:ro", IMAGE,
                 "Qwen/Qwen3-VL-Embedding-8B", "--served-model-name", "qwen3-vl-embedding-8b", "--runner", "pooling",
                 "--host", "0.0.0.0", "--port", "8000", "--gpu-memory-utilization", "0.45",
@@ -62,7 +66,7 @@ elif role == "proxy":
     command += ["-p", "127.0.0.1:8003:8000", "-v", str(ROOT / "infra") + ":/video_sql_infra:ro",
                 "-v", VOLUME + ":/epd_shared/cache", "--entrypoint", "python3", IMAGE,
                 "/video_sql_infra/responses_epd_proxy.py", "--host", "0.0.0.0", "--port", "8000",
-                "--encoder-url", "http://trace2skill-encoder:8000", "--pd-url", "http://trace2skill-pd:8000", "--cache-dir", "/epd_shared/cache"]
+                "--encoder-url", "http://trace2skill-nvfp4-encoder:8000", "--pd-url", "http://trace2skill-nvfp4-pd:8000", "--cache-dir", "/epd_shared/cache"]
 else:
     raise ValueError(f"Unknown service: {role}")
 (RUN / f"{role}-command.json").write_text(json.dumps(command, indent=2) + "\n")
