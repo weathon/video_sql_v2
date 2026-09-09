@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import copy
 import dataclasses
 import io
 import json
@@ -8,6 +9,7 @@ import re
 import subprocess
 import threading
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -40,6 +42,7 @@ from src.normalize import normalize_text
 
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
+REQUEST_TRACE = ContextVar("request_trace")
 CONTEXT_LIMIT = 314573
 COMPACTION_THRESHOLD = 178_000
 MAX_TURNS = 100
@@ -121,6 +124,10 @@ class HarnessContext:
     compactions: int = 0
     base_instructions: str = ""
     response_states: dict[str, Any] = field(default_factory=dict)
+    response_usage: dict[str, Any] = field(default_factory=dict)
+    path_responses: list[dict[str, Any]] = field(default_factory=list)
+    path_histories: list[dict[str, Any]] = field(default_factory=list)
+    expected_prefix: dict[str, Any] | None = None
     vectors: dict[str, np.ndarray] = field(init=False)
     row_ids: dict[str, np.ndarray] = field(init=False)
     sources: list[dict[str, Any]] = field(init=False)
@@ -301,6 +308,8 @@ def save_trace(
         )
         if response.response_id in context.response_states:
             raw_responses[-1]["prefix_state"] = context.response_states[response.response_id]
+        if response.response_id in context.response_usage:
+            raw_responses[-1]["api_usage"] = context.response_usage[response.response_id]
     payload = {
         **header,
         "events_file": events_path.name,
@@ -313,6 +322,12 @@ def save_trace(
         "is_complete": result.is_complete,
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    if header["agent"]["name"] not in ("judge", "clip-qa"):
+        context.path_histories.append({
+            "file": str(path), "agent": header["agent"],
+            "history": payload["history"], "tool_calls": payload["tool_calls"],
+            "error": payload["error"],
+        })
     return str(path)
 
 
@@ -463,7 +478,45 @@ async def run_stream(
                         output = json.dumps({"tool_id": tool_id}) + "\n" + record["replacements"][-1]
                         item = {**item, "output": output}
                 items.append(item)
-            events.write(json.dumps({"type": "model_input", "input": stripped_json(items)}, ensure_ascii=False) + "\n")
+            request = {"agent": agent.name}
+            if agent.name == "memory-retrieval":
+                # Persist the exact caller-visible image bytes used by this request.
+                # Recipes remain available for analysis and replacement counting.
+                for item in items:
+                    if item.get("type") != "function_call_output" or not isinstance(item["output"], list):
+                        continue
+                    for index, part in enumerate(item["output"]):
+                        if part["type"] == "input_image":
+                            filename = json.loads(item["output"][index - 1]["text"])["filename"]
+                            (context.run_dir / "media" / Path(filename).with_suffix(".jpg")).write_bytes(
+                                base64.b64decode(part["image_url"].split(",", 1)[1]))
+                notes = context.run_dir / "agent_notes.jsonl"
+                snapshot = {
+                    "input": stripped_json(items), "agent": header["agent"],
+                    "base_instructions": context.base_instructions,
+                    "compactions": context.compactions,
+                    "tool_counter": context.tool_counter,
+                    "tool_calls": stripped_json(context.tool_calls),
+                    "tool_ids": dict(context.tool_ids),
+                    "tool_outputs": stripped_json(context.tool_outputs),
+                    "notes": notes.read_text() if notes.exists() else None,
+                    "media_files": sorted(str(p) for p in (context.run_dir / "media").iterdir()),
+                    "path_responses": copy.deepcopy(context.path_responses),
+                    "prior_histories": copy.deepcopy(context.path_histories),
+                }
+                if context.expected_prefix is not None:
+                    expected = context.expected_prefix
+                    if snapshot["input"] != expected["input"] or snapshot["agent"] != expected["agent"]:
+                        raise RuntimeError("Restored branch differs from the original model request")
+                    for key in ("base_instructions", "compactions", "tool_counter", "tool_calls", "tool_ids", "tool_outputs", "notes"):
+                        if snapshot[key] != expected[key]:
+                            raise RuntimeError(f"Restored branch state differs: {key}")
+                    events.write(json.dumps({"type": "prefix_verified", "input": snapshot["input"]}, ensure_ascii=False) + "\n")
+                    context.expected_prefix = None
+                request["snapshot"] = snapshot
+            REQUEST_TRACE.set(request)
+            events.write(json.dumps({"type": "model_input", "instructions": data.model_data.instructions,
+                                     "input": stripped_json(items)}, ensure_ascii=False) + "\n")
             return ModelInputData(input=items, instructions=data.model_data.instructions)
 
         events.write(json.dumps({
@@ -1152,6 +1205,31 @@ class VideoSQLHarness:
             compaction_threshold=compaction_threshold,
         )
         self.answer_tools, self.catalog = make_tools(self.context)
+
+    async def restore_prefix(self, snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+        context = self.context
+        context.tool_counter = snapshot["tool_counter"]
+        context.tool_calls = {int(key): value for key, value in copy.deepcopy(snapshot["tool_calls"]).items()}
+        context.tool_ids = dict(snapshot["tool_ids"])
+        context.tool_outputs = {int(key): value for key, value in copy.deepcopy(snapshot["tool_outputs"]).items()}
+        context.path_responses = copy.deepcopy(snapshot["path_responses"])
+        context.path_histories = copy.deepcopy(snapshot["prior_histories"])
+        if snapshot["notes"] is not None:
+            (context.run_dir / "agent_notes.jsonl").write_text(snapshot["notes"])
+        for filename in snapshot["media_files"]:
+            source = Path(filename)
+            (context.run_dir / "media" / source.name).write_bytes(source.read_bytes())
+        items = copy.deepcopy(snapshot["input"])
+        for item in items:
+            if item.get("type") != "function_call_output" or not isinstance(item["output"], list):
+                continue
+            for index, part in enumerate(item["output"]):
+                if part["type"] == "input_image":
+                    filename = json.loads(item["output"][index - 1]["text"])["filename"]
+                    jpeg = context.run_dir / "media" / Path(filename).with_suffix(".jpg")
+                    part["image_url"] = "data:image/jpeg;base64," + base64.b64encode(jpeg.read_bytes()).decode()
+        context.expected_prefix = snapshot
+        return items
 
     async def answer(
         self,
