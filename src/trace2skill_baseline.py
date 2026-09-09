@@ -366,22 +366,19 @@ async def analyze(result, semaphore, metrics):
     # clip_qa is a fixed tool: analyze its caller-visible inputs and results,
     # without exposing the visual agent's internal trajectory or sampled frames.
     histories = []
-    trace_files = []
     media_files = set()
-    for filename in result["trace_files"]:
-        artifact = json.loads(Path(filename).read_text())
-        if artifact["agent"]["name"] in ("judge", "clip-qa"):
-            continue
-        trace_files.append(filename)
+    trajectory = json.loads(Path(result["trajectory_file"]).read_text())
+    media_dir = Path(result["trajectory_file"]).parent / "media"
+    for artifact in trajectory["histories"]:
         for item in artifact["history"]:
             if item.get("type") != "function_call_output" or not isinstance(item["output"], list):
                 continue
             for index, part in enumerate(item["output"]):
                 if part["type"] == "input_image":
                     frame = json.loads(item["output"][index - 1]["text"])
-                    media_files.add(str(Path(filename).parent.parent / "media" / frame["filename"]))
+                    media_files.add(str(media_dir / frame["filename"]))
         # Analysis reads summaries; encrypted state remains in the replay artifacts.
-        histories.append({"file": filename, "agent": artifact["agent"],
+        histories.append({"file": artifact["file"], "agent": artifact["agent"],
                           "history": [
                               {key: value for key, value in item.items() if key != "encrypted_content"}
                               if item.get("type") == "reasoning" else item
@@ -390,7 +387,7 @@ async def analyze(result, semaphore, metrics):
                           "tool_calls": [{k: v for k, v in call.items() if k != "original_output"}
                                          for call in artifact["tool_calls"]],
                           "error": artifact["error"]})
-    result = {**result, "trace_files": trace_files, "media_files": sorted(media_files)}
+    result = {**result, "trace_files": [str(directory / "analysis_input.json")], "media_files": sorted(media_files)}
     bundle = {"question": result["question_text"], "answer": result["answer"],
               "score": result["score"], "histories": histories}
     (directory / "analysis_input.json").write_text(json.dumps(bundle, ensure_ascii=False, indent=2) + "\n")
@@ -422,7 +419,7 @@ async def analyze(result, semaphore, metrics):
                         body = raw.content
                         (directory / f"success-response-{attempt}.json").write_bytes(body)
                         payload = json.loads(body)
-                        metrics.record_response(payload["usage"])
+                        metrics.record_response(payload)
                         messages.extend(payload["output"])
                         response = raw.parse()
                         if response.status != "completed" or response.output_parsed is None:
@@ -532,111 +529,153 @@ async def analyze(result, semaphore, metrics):
     items = [{"type": kind, "number": i, **item.model_dump()} for kind, group in groups.items() for i, item in enumerate(group, 1)]
     record = {"record_source": "success" if result["success"] else "error",
               "instance_id": f"{result['timeline']}-{result['question']}-rollout-{result['rollout']}",
-              "source_file": str(directory / "analysis_input.json"), "items": items}
+              "source_file": str(directory / "analysis_input.json"), "items": items,
+              "parent_rollout": result["parent_rollout"],
+              "tree_file": str(Path(result["directory"]).parent / "tree.json")}
     output_path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
     print(f"analysis {record['instance_id']} {record['record_source']}", flush=True)
     return record
 
 
+def summarize(phase, questions, results, rollouts):
+    present = {(r["timeline"], int(r["question"]), r["rollout"]) for r in results}
+    expected = [(q["timeline"], q["index"], index) for q in questions for index in range(rollouts)]
+    if not results:
+        raise RuntimeError(f"No scored rollouts in {phase}")
+    summary = {
+        "requested_rollouts": len(expected), "completed_rollouts": len(results),
+        "missing_rollouts": [key for key in expected if key not in present],
+        "mean_score": sum(r["score"] for r in results) / len(results),
+        "score_ge_4_fraction": sum(r["score"] >= 4 for r in results) / len(results),
+        "cost_per_rollout_usd": sum(r["cost_usd"] for r in results) / len(results),
+    }
+    (RUN / f"{phase}-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    return summary
+
+
 async def main():
     RUN.mkdir(parents=True, exist_ok=True)
     init_weave()
+    config = {
+        "model": MODEL, "reasoning": "high", "reasoning_summary": "auto", "base_url": BASE_URL,
+        "api": "responses", "reasoning_replay": True, "client_concurrency": 128, "replace_tool": True,
+        "collection": {"split": "test", "timelines": ["day", "week"], "questions_per_timeline": 200,
+                       "root_rollouts": 1, "branch_rollouts": 4, "branch_before": "model_tool_decision"},
+        "evaluation": {"timeline": "month", "split": "val", "questions": 100, "rollouts": 1,
+                       "arms": ["initial", "evolved"]},
+        "seed": 0,
+    }
     wandb_run = wandb.init(entity="3dsmile", project="video-sql-v2", id=RUN.name,
-                           name=RUN.name, resume="allow", dir=str(RUN),
-                           config={"model": MODEL, "reasoning": "high", "reasoning_summary": "auto", "base_url": BASE_URL,
-                                   "api": "responses", "reasoning_replay": True,
-                                   "client_concurrency": 256, "replace_tool": True,
-                                   "split": "test", "timelines": ["day", "week"], "questions_per_timeline": 100, "seed": 0,
-                                   "rollouts_per_question": 5})
+                           name=RUN.name, resume="allow", dir=str(RUN), config=config)
     (RUN / "wandb-run.json").write_text(json.dumps({"id": wandb_run.id, "url": wandb_run.url}, indent=2) + "\n")
-    initial = RUN / "skills/initial"
-    if not initial.exists():
-        shutil.copytree(ROOT / "skills/initial", initial)
-    # Refuse a changed seed on resume; each source file, including the root guide, is byte-identical.
-    for source in (ROOT / "skills/initial").glob("*.md"):
-        if (initial / source.name).read_bytes() != source.read_bytes():
-            raise RuntimeError(f"Initial skill changed: {source.name}")
-    selection = RUN / "questions.json"
-    if selection.exists():
-        questions = json.loads(selection.read_text())
-    else:
-        questions = []
-        for timeline in ("day", "week"):
-            subset = random.Random(0).sample(json.loads((DATASET / timeline / "test.json").read_text()), 100)
-            questions.extend({**question, "timeline": timeline} for question in subset)
-        selection.write_text(json.dumps(questions, ensure_ascii=False, indent=2) + "\n")
-    semaphore = asyncio.Semaphore(256)
-    # A separate scheduling bound avoids loading thousands of simultaneous harness contexts.
-    for version in ("initial", "evolved"):
-        metrics = RunMetrics(wandb_run, version)
-        jobs = iter((question, index) for question in questions for index in range(5))
-        results = []
-        skipped = 0
-
-        async def collect_worker():
-            nonlocal skipped
-            for question, index in jobs:
-                saved = RUN / version / question["timeline"] / f"question-{question['index']}" / f"rollout-{index:02d}" / "result.json"
-                if saved.exists():
-                    results.append(json.loads(saved.read_text()))
-                    metrics.record_rollout(results[-1])
-                    continue
-                with weave.attributes({"run": RUN.name, "timeline": question["timeline"], "question": str(question["index"]), "rollout": index, "skill_version": version}):
-                    result = await rollout(question, index, version, semaphore, metrics)
-                    if result is None:
-                        skipped += 1
-                        continue
-                    results.append(result)
-                    metrics.record_rollout(result)
-
-        async with asyncio.TaskGroup() as group:
-            for _ in range(256):
-                group.create_task(collect_worker())
-        results.sort(key=lambda r: (r["timeline"], int(r["question"]), r["rollout"]))
-        summary = {"questions": len(questions), "rollouts": len(results), "skipped_rollouts": skipped,
-                   "mean_score_over_5": sum(r["score"] / 5 for r in results) / len(results),
-                   "successes": sum(r["success"] for r in results)}
-        (RUN / f"{version}-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-        if version == "evolved":
-            break
+    try:
+        initial = RUN / "skills/initial"
+        if not initial.exists():
+            shutil.copytree(ROOT / "skills/initial", initial)
+        for source in (ROOT / "skills/initial").glob("*.md"):
+            if (initial / source.name).read_bytes() != source.read_bytes():
+                raise RuntimeError(f"Initial skill changed: {source.name}")
+        selection = RUN / "questions.json"
+        if selection.exists():
+            questions = json.loads(selection.read_text())
+        else:
+            questions = [
+                {**question, "timeline": timeline}
+                for timeline in ("day", "week")
+                for question in json.loads((DATASET / timeline / "test.json").read_text())
+            ]
+            selection.write_text(json.dumps(questions, ensure_ascii=False, indent=2) + "\n")
+        month_selection = RUN / "month-questions.json"
+        if month_selection.exists():
+            month_questions = json.loads(month_selection.read_text())
+        else:
+            month_questions = [
+                {**question, "timeline": "month"} for question in
+                random.Random(0).sample(json.loads((DATASET / "month/val.json").read_text()), 100)
+            ]
+            month_selection.write_text(json.dumps(month_questions, ensure_ascii=False, indent=2) + "\n")
+        semaphore = RequestSlots(wandb_run)
+        metrics = RunMetrics(wandb_run, "collection", RUN)
+        results = await collect_trees(questions, semaphore, metrics)
+        summarize("collection", questions, results, 5)
         analysis_jobs = iter(results)
-        metrics = RunMetrics(wandb_run, "analysis")
+        metrics = RunMetrics(wandb_run, "analysis", RUN)
         records = []
-        analysis_skipped = 0
+        analysis_skipped = []
 
         async def analysis_worker():
-            nonlocal analysis_skipped
             for result in analysis_jobs:
                 record = await analyze(result, semaphore, metrics)
                 if record is None:
-                    analysis_skipped += 1
-                    continue
-                records.append(record)
+                    analysis_skipped.append((result["timeline"], result["question"], result["rollout"]))
+                else:
+                    records.append(record)
 
         async with asyncio.TaskGroup() as group:
-            for _ in range(256):
+            for _ in range(128):
                 group.create_task(analysis_worker())
         records.sort(key=lambda r: r["instance_id"])
-        summary["analysis_skipped_rollouts"] = analysis_skipped
-        (RUN / f"{version}-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        (RUN / "analysis-skipped.json").write_text(json.dumps(analysis_skipped, indent=2) + "\n")
         (RUN / "combined-records.json").write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n")
         evolved = RUN / "skills/evolved"
         if not evolved.exists():
             weave.finish()
+            wandb_run.finish()
             with (RUN / "evolution.log").open("a") as log:
                 process = await asyncio.create_subprocess_exec(
                     sys.executable, str(UPSTREAM / "baseline_evolve.py"), str(RUN),
                     cwd=UPSTREAM, stdout=log, stderr=asyncio.subprocess.STDOUT,
                 )
-                status = await process.wait()
+                try:
+                    status = await process.wait()
+                except asyncio.CancelledError:
+                    process.terminate()
+                    await process.wait()
+                    raise
             if status != 0:
                 raise RuntimeError(f"Trace2Skill evolution exited {status}; see {RUN / 'evolution.log'}")
             init_weave()
-    comparison = {version: json.loads((RUN / f"{version}-summary.json").read_text()) for version in ("initial", "evolved")}
-    (RUN / "comparison.json").write_text(json.dumps(comparison, indent=2) + "\n")
-    weave.finish()
-    wandb_run.finish()
-    print("TRACE2SKILL BASELINE COMPLETE " + json.dumps(comparison), flush=True)
+            wandb_run = wandb.init(entity="3dsmile", project="video-sql-v2", id=RUN.name,
+                                   name=RUN.name, resume="must", dir=str(RUN))
+            semaphore.run = wandb_run
+        evaluation = {}
+        for version in ("initial", "evolved"):
+            phase = f"month-{version}"
+            metrics = RunMetrics(wandb_run, phase, RUN)
+            evaluation[version] = await evaluate_month(month_questions, version, semaphore, metrics)
+            summarize(phase, month_questions, evaluation[version], 1)
+        indexed = {version: {r["question"]: r for r in values} for version, values in evaluation.items()}
+        paired = sorted(set(indexed["initial"]) & set(indexed["evolved"]), key=int)
+        if not paired:
+            raise RuntimeError("Month evaluation has no complete pairs")
+        comparison = {
+            "requested_questions": len(month_questions), "paired_questions": len(paired),
+            "missing_pairs": [q["index"] for q in month_questions if str(q["index"]) not in paired],
+            "arms": {
+                version: {
+                    "mean_score": sum(indexed[version][q]["score"] for q in paired) / len(paired),
+                    "score_ge_4_fraction": sum(indexed[version][q]["score"] >= 4 for q in paired) / len(paired),
+                } for version in ("initial", "evolved")
+            },
+            "questions": [
+                {"question_index": int(q), **{
+                    version: {"answer": indexed[version][q]["answer"], "score": indexed[version][q]["score"],
+                              "result_file": str(Path(indexed[version][q]["directory"]) / "result.json")}
+                    for version in ("initial", "evolved")
+                }} for q in paired
+            ],
+        }
+        comparison["delta"] = {
+            metric: comparison["arms"]["evolved"][metric] - comparison["arms"]["initial"][metric]
+            for metric in ("mean_score", "score_ge_4_fraction")
+        }
+        (RUN / "comparison.json").write_text(json.dumps(comparison, ensure_ascii=False, indent=2) + "\n")
+        wandb_run.log({f"comparison/delta_{key}": value for key, value in comparison["delta"].items()})
+        print("TRACE2SKILL COMPLETE " + json.dumps({"paired_questions": len(paired),
+              "arms": comparison["arms"], "delta": comparison["delta"]}), flush=True)
+    finally:
+        weave.finish()
+        wandb_run.finish()
 
 
 if __name__ == "__main__":
