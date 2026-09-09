@@ -2,7 +2,7 @@
 
 The current baseline starts fresh with NVFP4 and nontraining day/week subsets.
 It does not reuse Luna rollouts. The new formal run has not started;
-review authorization remains unresolved. See [the current handoff](../notes/TRACE2SKILL_NVFP4_HANDOFF.md)
+reviewers are authorized to read REVIEW.md. See [the current handoff](../notes/TRACE2SKILL_NVFP4_HANDOFF.md)
 for verified model traces, configuration, service state and remaining work.
 
 This worktree implements the approved baseline, independently of the project's skill trainer.
@@ -36,6 +36,10 @@ programmatic application and three-round verification. The bridge preserves thos
 stages while requiring SDK Responses structured-parse output and rejecting silent fallback.
 The upstream spreadsheet failure-analysis prompt is adapted in error_analysis_qa.txt
 to evidence search, minimal answer correction and the original 0–5 QA judge.
+Both analysis branches treat clip_qa as a fixed, opaque tool: only its caller-visible
+arguments, returned answer and evidence images enter analysis. Internal clip-qa traces
+and unreturned sampled/cropped frames are excluded from analysis inputs and read tools.
+Failure analysis may still call clip_qa to validate a correction using its returned result.
 
 All generative model calls use `Inferact/Qwen3.8-Flash-Next-NVFP4` through
 `http://127.0.0.1:8003/v1` Responses with `reasoning={"effort":"medium"}`.
@@ -53,7 +57,8 @@ Multimodal tool results remain in native Responses function_call_output items,
 retaining tool IDs and ordered text/images; canonical histories retain the original results.
 JPEGs are generated in memory from source videos using frame JSON recipes containing
 the video path, exact PTS, time base and crop; the harness writes neither PNG nor JPG files.
-Analysis and replacement token counting regenerate images from those recipes.
+Analysis regenerates only caller-visible evidence images from those recipes;
+replacement token counting reconstructs the images in each measured tool result.
 Each tool result exposes an integer tool_id. replace_tool(tool_id, replacement) changes
 the model's context while preserving original outputs and replacement calls in the trace
 for Trace2Skill analysis. Its description recommends replacing the latest result for KV

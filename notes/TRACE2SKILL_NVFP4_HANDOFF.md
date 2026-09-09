@@ -38,7 +38,7 @@
 
 W&B 保留平均 trace 长度、输入/输出 token 与请求吞吐、average rollout time、mean total context saved、replace_tool 调用次数；统计口径见 [Luna 历史指标说明](TRACE2SKILL_LUNA_HANDOFF.md#wandbweave-和本地证据)。Weave 和本地 trace metadata 增加 timeline。
 
-图像已改为从源视频动态生成：`media/frame-*.json` 保存视频路径、整数 PTS、time base 和 crop；采样通过内存中的 PNG 流解码，主 agent 证据、成功分析、失败分析 `read_frame` 和 replacement 计量均通过取图记录生成内存中的 JPEG，不再保存 PNG/JPG 文件。PyAV 依赖已加入并锁定。一次真实 `sample_frames` 返回的 240 帧与旧 PNG 生成的 JPEG 全部逐字节一致，首、中、末帧动态重取也一致，输出仅包含取图记录和 ffmpeg 命令/日志；记录在 `/tmp/video-sql-source-frame-check/verification.json`。
+图像已改为从源视频动态生成：`media/frame-*.json` 保存视频路径、整数 PTS、time base 和 crop；采样通过内存中的 PNG 流解码，主 agent 证据、成功分析、失败分析 `read_frame` 和 replacement 计量均通过取图记录生成内存中的 JPEG，不再保存 PNG/JPG 文件。分析仅重建调用方收到的证据帧，不读取 video QA 内部未返回的采样或裁剪帧。PyAV 依赖已加入并锁定。一次真实 `sample_frames` 返回的 240 帧与旧 PNG 生成的 JPEG 全部逐字节一致，首、中、末帧动态重取也一致，输出仅包含取图记录和 ffmpeg 命令/日志；记录在 `/tmp/video-sql-source-frame-check/verification.json`。
 
 两个 runs 中的 889,065 份旧帧 JSON 已补齐源视频路径，保留原有 PTS、time base、crop 和其他字段。已逐份核对迁移后的路径；day、week、month、裁剪及归档轨迹的五份真实记录重建结果均与原图处理结果逐字节一致，PNG 删除后又重取了裁剪帧并确认一致。记录在 `/tmp/video-sql-png-migration-verified.json`、`/tmp/video-sql-migrated-frame-replay.json` 和 `/tmp/video-sql-post-cleanup-frame-replay.json`。独立 diff review 已完成。
 
@@ -52,6 +52,8 @@ Docker root 创建的文件通过仅挂载这两个 runs 目录、无网络的�
 
 用户已明确允许审查者读取 `REVIEW.md`。新的独立子 agent 已完成 `3f2f0730..f3ef7bb6` 的相关源码、配置、依赖和文档 diff review；Claude CLI 也完成全仓库审查，未触及 usage limit，报告位于 `/tmp/trace2skill-nvfp4-full-claude-review.json`。
 
-两轮审查均指出成功分析将整条 rollout 的全部图片一次发送，可能超过本地服务单请求 650 张上限。已核对旧成功样本 `question-86/rollout-02`：score=5，共 995 份媒体记录，完成尝试包含 647 份，其余来自归档尝试。已询问用户是否将成功分析改为通过 `read_trace`/`read_frame` 按需查看，并使用 `replace_tool` 清理冗余上下文，保留全部原始证据；尚待决定，代码未作此修改。Claude 对跨尝试汇总 trace、媒体和耗时的意见未采用，因为既定指标与分析保留重试过程；吞吐继续采用已记录的完成请求计量口径。
+两轮审查指出原成功分析将整条 rollout 的全部图片一次发送，可能超过本地服务单请求 650 张上限。用户随后明确：analysis 不进入 video QA 内部，只看 video QA 的结果，将其作为静态工具。代码已据此修改：成功和失败分析均排除 `clip-qa` 内部 trace，保留调用参数、返回答案和证据帧；分析图片列表从调用方工具结果提取，失败分析的 `read_trace`/`read_frame` 也只允许读取这一范围。失败分析仍可调用固定的 `clip_qa` 验证修正，只使用其返回结果。完整原始轨迹与帧记录继续留存，W&B 指标仍计入重试和子 agent。
 
-没有运行 syntax checks。修复成功分析后按仓库流程审查改动，再继续正式运行；从正式 trace 检查真实工具输入输出、图像、多轮 reasoning、offload、Weave 父子关系，以及是否出现循环。
+已人工核对旧 Luna 成功样本 `question-86/rollout-02`：共 995 份帧记录，但 `clip_qa` 实际只返回 8 张证据图；分析保留这 8 张、工具参数和完整返回答案，排除三个视觉内部 trace。记录在 `/tmp/trace2skill-opaque-videoqa-evidence-audit.json`。本次边界修改已提交并交给新的独立子 agent 审查。
+
+没有运行 syntax checks。完成本次改动的审查后继续正式运行；从正式 trace 检查真实工具输入输出、图像、多轮 reasoning、offload、Weave 父子关系，以及是否出现循环。
