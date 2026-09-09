@@ -7,6 +7,7 @@
 - 本地支持快照：`60c84b62`（`Snapshot: Trace2Skill baseline with local vLLM NVFP4 support`）。包含最后的 max-num-seqs=20、MTP 2 配置；该配置没有恢复正式 rollout。
 - 本次 rollout 和 PD、encoder、embedding、proxy 均已停止，四个容器已手动删除。
 - 本地 vLLM/EPD Dockerfile、启动器、显存分析、NVFP4 padding 补丁和 Responses/token-count proxy 已移除。历史 INFRA、研究材料和 NVFP4 记录保留用于追溯，不是当前启动说明。
+- 原方法的本地专用 `src/collect_local_pairs.py` 也已移除；历史 Luna API 采集入口 `src/collect_fixed_prefix.py` 保留，但 embedding URL 同样改为 `.env` 的 `EMBEDDING_URL`，不再硬编码本地端口。Trace2Skill 不调用该历史采集入口。
 - API 接入尚待用户说明。本次没有发送模型请求，也没有启动新 run。
 
 ## 保留的 API 路径

@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_RUN = ROOT / "runs/training_free_luna_seed0_7510e535"
 RUN_DIR = ROOT / "runs/luna_fixed_prefix_seed0"
 MODEL = "gpt-5.6-luna"
+EMBEDDING_URL = dotenv_values(ROOT / ".env")["EMBEDDING_URL"]
 ATTEMPTS = 3
 RETRIEVAL_TOOLS = {"semantic_search", "run_sql", "sql_qa", "clip_qa"}
 
@@ -120,7 +121,7 @@ async def collect_branch(branch, api_key, state, request_log, wandb_run):
                     skill_dir=ROOT / "skills/initial",
                     run_dir=attempt_dir,
                     model_name=MODEL, api_key=api_key,
-                    embedding_url="http://127.0.0.1:8013/v1",
+                    embedding_url=EMBEDDING_URL,
                     embedding_model="qwen3-vl-embedding-8b",
                 )
                 harness.context.model = CollectionResponsesModel(
@@ -169,7 +170,7 @@ async def collect_branch(branch, api_key, state, request_log, wandb_run):
                 media_map=runtime / "media-map.json",
                 skill_dir=ROOT / "skills/initial", run_dir=attempt_dir,
                 model_name=MODEL, api_key=api_key,
-                embedding_url="http://127.0.0.1:8013/v1",
+                embedding_url=EMBEDDING_URL,
                 embedding_model="qwen3-vl-embedding-8b",
             )
             harness.context.model = CollectionResponsesModel(
@@ -318,7 +319,7 @@ async def main_async():
             "positive_score_min": 4, "negative_score_below": 3,
             "reasoning": {"effort": "medium", "context": "all_turns"},
             "reasoning_item_id_policy": "preserve", "branches": len(branches),
-            "embedding_url": "http://127.0.0.1:8013/v1",
+            "embedding_url": EMBEDDING_URL,
             "embedding_model": "qwen3-vl-embedding-8b",
             "git_hash": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
             "wandb_id": generate_id(),
