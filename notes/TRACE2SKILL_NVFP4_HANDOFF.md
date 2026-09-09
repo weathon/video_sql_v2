@@ -1,6 +1,6 @@
 # NVFP4 + Trace2Skill：day/week 新实验
 
-工作目录为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。本次从头生成轨迹，不复用 Luna rollout，也不使用 training split。新实验已启动，正在生成 initial rollout；前台日志为新 run 目录中的 `formal-01.log`。
+工作目录为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。本次从头生成轨迹，不复用 Luna rollout，也不使用 training split。用户已要求停止本地运行，等待其指定 API 接入方式。`formal-01.log` 对应的 rollout 进程已停止，结果与恢复记录保留。启动脚本已改为 max-num-seqs=20、MTP 2，但尚未用该配置恢复 rollout；随后本次 PD、proxy、encoder、embedding 均已停止并手动删除容器。日志保留在新 run 目录，其中最后一次 PD/proxy 启动为 `pd-launch3.log`、`proxy-launch3.log`。
 
 ## 数据与方法
 
@@ -58,4 +58,4 @@ Docker root 创建的文件通过仅挂载这两个 runs 目录、无网络的�
 
 Claude 提出的失败分析可见 reference answer 的意见未采用：已核对上游 `analysis/error_analysis_system.txt`，其失败分析明确读取 ground-truth solution，并用 `evaluate_output` 验证最小修正；禁止在学习报告中提及 gold 的要求也同时存在。当前 QA 桥接保留这一分析方式，答题 agent 仍不接收 reference answer。
 
-没有运行 syntax checks。审查已完成，继续正式运行；从正式 trace 检查真实工具输入输出、图像、多轮 reasoning、offload、Weave 父子关系，以及是否出现循环。
+没有运行 syntax checks。审查已完成；当前暂停，等待用户指定 API 配置后继续。
