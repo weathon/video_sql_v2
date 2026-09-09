@@ -3,6 +3,7 @@ name = "video-sql-v2"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "av>=18.1.0",
     "diskcache>=5.6.3",
     "duckdb",
     "httpx",
