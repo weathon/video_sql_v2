@@ -4,6 +4,7 @@ import asyncio
 import base64
 import copy
 import dataclasses
+import heapq
 import itertools
 import json
 import random
@@ -12,6 +13,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from contextvars import ContextVar
 
 import weave
 import wandb
@@ -34,6 +36,7 @@ BASE_URL = OPENAI_BASE_URL
 API_KEY = dotenv_values(ROOT / ".env")["PERSONAL_OPENAI_KEY"]
 EMBEDDING_URL = dotenv_values(ROOT / ".env")["EMBEDDING_URL"]
 SKILL_HEADER = "---\nname: video-memory-qa\ndescription: Retrieve and verify evidence to answer questions about long videos.\n---\n\n"
+REQUEST_PRIORITY = ContextVar("request_priority", default=2)
 
 
 class MemoryItem(BaseModel):
@@ -54,20 +57,34 @@ class FailureReport(BaseModel):
 
 class RequestSlots:
     def __init__(self, run):
-        self.semaphore = asyncio.Semaphore(128)
+        self.condition = asyncio.Condition()
+        self.waiters = []
+        self.order = itertools.count()
         self.run = run
         self.active = 0
         self.peak = 0
 
     async def __aenter__(self):
-        await self.semaphore.acquire()
-        self.active += 1
-        self.peak = max(self.peak, self.active)
+        ticket = (REQUEST_PRIORITY.get(), next(self.order))
+        async with self.condition:
+            heapq.heappush(self.waiters, ticket)
+            try:
+                await self.condition.wait_for(lambda: self.active < 128 and self.waiters[0] == ticket)
+            except asyncio.CancelledError:
+                self.waiters.remove(ticket)
+                heapq.heapify(self.waiters)
+                self.condition.notify_all()
+                raise
+            heapq.heappop(self.waiters)
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            self.condition.notify_all()
         self.run.log({"client/active_requests": self.active, "client/peak_requests": self.peak})
 
     async def __aexit__(self, *exc):
-        self.active -= 1
-        self.semaphore.release()
+        async with self.condition:
+            self.active -= 1
+            self.condition.notify_all()
 
 
 class LimitedResponsesModel(OpenAIResponsesModel):
@@ -81,12 +98,15 @@ class LimitedResponsesModel(OpenAIResponsesModel):
         request = REQUEST_TRACE.get()
         async with self.semaphore:
             async for event in super().stream_response(*args, **kwargs):
-                if event.type == "response.completed":
+                if event.type in ("response.completed", "response.incomplete", "response.failed"):
                     response = event.response
+                    if response.usage is None:
+                        raise RuntimeError(f"Cannot account for response without usage: {response.id} {event.type}")
                     recorded = {"response_id": response.id, "agent": request["agent"],
-                                "usage": response.usage.model_dump(), "service_tier": response.service_tier}
+                                "usage": response.usage.model_dump(), "service_tier": response.service_tier,
+                                "status": event.type}
                     self.context.response_usage[response.id] = recorded
-                    if request["agent"] != "judge":
+                    if request["agent"] != "judge" and event.type == "response.completed":
                         self.context.path_responses.append(recorded)
                     if "snapshot" in request:
                         self.context.response_states[response.id] = request["snapshot"]
@@ -121,6 +141,7 @@ def make_harness(directory, skill_dir, semaphore, metrics, timeline):
 
 @weave.op(postprocess_inputs=lambda x: {k: v for k, v in x.items() if k not in ("semaphore", "metrics")})
 async def rollout(question, node, phase, skill_version, semaphore, metrics):
+    REQUEST_PRIORITY.set(0 if node["parent"] is not None else 2)
     directory = RUN / phase / question["timeline"] / f"question-{question['index']}" / f"rollout-{node['index']:02d}"
     directory.mkdir(parents=True, exist_ok=True)
     saved_answer = directory / "answer.json"
@@ -195,6 +216,7 @@ async def rollout(question, node, phase, skill_version, semaphore, metrics):
 
 @weave.op(postprocess_inputs=lambda x: {k: v for k, v in x.items() if k not in ("semaphore", "metrics")})
 async def score_rollout(answer, semaphore, metrics):
+    REQUEST_PRIORITY.set(1)
     directory = Path(answer["directory"])
     result_path = directory / "result.json"
     if result_path.exists():
@@ -220,8 +242,8 @@ async def score_rollout(answer, semaphore, metrics):
         replacement_call_ids = set()
         for filename in trace_files:
             artifact = json.loads(Path(filename).read_text())
-            for response in artifact["raw_responses"]:
-                billable[response["response_id"]] = response["api_usage"]
+            for response in artifact["api_usage"]:
+                billable[response["response_id"]] = response
             if artifact["agent"]["name"] != "judge":
                 replacement_call_ids.update(call["call_id"] for call in artifact["tool_calls"] if call["name"] == "replace_tool")
         total_context_saved = 0
@@ -264,8 +286,6 @@ async def score_rollout(answer, semaphore, metrics):
 
 
 async def collect_trees(questions, semaphore, metrics):
-    jobs = asyncio.PriorityQueue()
-    order = itertools.count()
     trees = {}
     results = []
     for question in questions:
@@ -279,57 +299,46 @@ async def collect_trees(questions, semaphore, metrics):
                     "nodes": [{"index": 0, "parent": None, "expanded": False}]}
             tree_file.write_text(json.dumps(tree, indent=2) + "\n")
         trees[key] = (tree_file, tree)
-        for node in tree["nodes"]:
-            jobs.put_nowait((2 if node["parent"] is None else 0, next(order), "qa", question, node))
 
-    async def worker():
-        while True:
-            _, _, kind, question, node = await jobs.get()
-            try:
-                if kind == "score":
-                    result = await score_rollout(node, semaphore, metrics)
-                    if result is not None:
-                        results.append(result)
-                        metrics.record_rollout(result)
+    async def run_node(question, node):
+        answer = await rollout(question, node, "collection", "initial", semaphore, metrics)
+        tree_file, tree = trees[(question["timeline"], question["index"])]
+        if answer is None:
+            node["skipped"] = True
+            node["expanded"] = True
+            tree_file.write_text(json.dumps(tree, indent=2) + "\n")
+            return
+        if not node["expanded"]:
+            candidates = []
+            for filename in answer["trace_files"]:
+                artifact = json.loads(Path(filename).read_text())
+                if artifact["agent"]["name"] != "memory-retrieval":
                     continue
-                answer = await rollout(question, node, "collection", "initial", semaphore, metrics)
-                tree_file, tree = trees[(question["timeline"], question["index"])]
-                if answer is None:
-                    node["skipped"] = True
-                    node["expanded"] = True
-                    tree_file.write_text(json.dumps(tree, indent=2) + "\n")
-                    continue
-                if not node["expanded"]:
-                    candidates = []
-                    for filename in answer["trace_files"]:
-                        artifact = json.loads(Path(filename).read_text())
-                        if artifact["agent"]["name"] != "memory-retrieval":
-                            continue
-                        for index, response in enumerate(artifact["raw_responses"]):
-                            calls = [item for item in response["output"] if item["type"] == "function_call"]
-                            if calls and all(call["name"] not in ("submit_answer", "agent_raise") for call in calls):
-                                candidates.append((filename, index))
-                    randomizer = random.Random(f"0:{question['timeline']}:{question['index']}:{node['index']}")
-                    selected = randomizer.sample(candidates, min(5 - len(tree["nodes"]), len(candidates)))
-                    for filename, response_index in selected:
-                        child = {"index": len(tree["nodes"]), "parent": node["index"], "expanded": False,
-                                 "source_trace": filename, "response_index": response_index}
-                        tree["nodes"].append(child)
-                        jobs.put_nowait((0, next(order), "qa", question, child))
-                    node["expanded"] = True
-                    tree_file.write_text(json.dumps(tree, indent=2) + "\n")
-                jobs.put_nowait((1, next(order), "score", question, answer))
-            finally:
-                jobs.task_done()
+                for index, response in enumerate(artifact["raw_responses"]):
+                    calls = [item for item in response["output"] if item["type"] == "function_call"]
+                    if calls and all(call["name"] not in ("submit_answer", "agent_raise") for call in calls):
+                        candidates.append((filename, index))
+            randomizer = random.Random(f"0:{question['timeline']}:{question['index']}:{node['index']}")
+            selected = randomizer.sample(candidates, min(5 - len(tree["nodes"]), len(candidates)))
+            for filename, response_index in selected:
+                child = {"index": len(tree["nodes"]), "parent": node["index"], "expanded": False,
+                         "source_trace": filename, "response_index": response_index}
+                tree["nodes"].append(child)
+                group.create_task(run_node(question, child))
+            node["expanded"] = True
+            tree_file.write_text(json.dumps(tree, indent=2) + "\n")
+        if len(tree["nodes"]) < 5 and all(n["expanded"] for n in tree["nodes"]) and not any("skipped" in n for n in tree["nodes"]):
+            raise RuntimeError(f"No unused nonterminal tool points remain before four branches: {tree_file}")
+        result = await score_rollout(answer, semaphore, metrics)
+        if result is not None:
+            results.append(result)
+            metrics.record_rollout(result)
 
     async with asyncio.TaskGroup() as group:
-        workers = [group.create_task(worker()) for _ in range(128)]
-        await jobs.join()
-        for task in workers:
-            task.cancel()
-    for tree_file, tree in trees.values():
-        if len(tree["nodes"]) < 5 and not any("skipped" in node for node in tree["nodes"]):
-            raise RuntimeError(f"No unused nonterminal tool points remain before four branches: {tree_file}")
+        for question in questions:
+            tree = trees[(question["timeline"], question["index"])][1]
+            for node in list(tree["nodes"]):
+                group.create_task(run_node(question, node))
     return sorted(results, key=lambda r: (r["timeline"], int(r["question"]), r["rollout"]))
 
 

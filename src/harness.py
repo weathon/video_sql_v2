@@ -317,6 +317,7 @@ def save_trace(
         "input": stripped_json(result.input),
         "history": stripped_json(result.to_input_list()),
         "raw_responses": raw_responses,
+        "api_usage": list(context.response_usage.values()),
         "tool_calls": stripped_json(tool_calls),
         "final_output": stripped_json(result.final_output),
         "is_complete": result.is_complete,
