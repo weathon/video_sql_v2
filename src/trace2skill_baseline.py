@@ -100,17 +100,19 @@ class LimitedResponsesModel(OpenAIResponsesModel):
             async for event in super().stream_response(*args, **kwargs):
                 if event.type in ("response.completed", "response.incomplete", "response.failed"):
                     response = event.response
-                    if response.usage is None:
-                        raise RuntimeError(f"Cannot account for response without usage: {response.id} {event.type}")
                     recorded = {"response_id": response.id, "agent": request["agent"],
-                                "usage": response.usage.model_dump(), "service_tier": response.service_tier,
+                                "usage": None if response.usage is None else response.usage.model_dump(),
+                                "service_tier": response.service_tier,
                                 "status": event.type}
                     self.context.response_usage[response.id] = recorded
                     if request["agent"] != "judge" and event.type == "response.completed":
                         self.context.path_responses.append(recorded)
                     if "snapshot" in request:
                         self.context.response_states[response.id] = request["snapshot"]
-                    self.metrics.record_response(recorded)
+                    if response.usage is None:
+                        print(f"UNPRICED response={response.id} status={event.type}; preserve SDK failure retry", flush=True)
+                    else:
+                        self.metrics.record_response(recorded)
                 yield event
 
 

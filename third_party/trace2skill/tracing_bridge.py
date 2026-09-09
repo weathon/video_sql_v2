@@ -17,6 +17,8 @@ RESPONSES_OUTPUT_PROCESSOR = openai_sdk.responses_on_finish_post_processor
 
 def response_cost(response):
     usage = response["usage"]
+    if usage is None:
+        raise RuntimeError(f"Cannot report complete rollout cost: response {response['response_id']} has no usage")
     inputs = usage["input_tokens"]
     cached = usage["input_tokens_details"]["cached_tokens"]
     written = usage["input_tokens_details"]["cache_write_tokens"]
