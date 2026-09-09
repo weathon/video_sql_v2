@@ -5,12 +5,14 @@ import io
 import json
 import math
 import re
+import subprocess
 import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+import av
 import duckdb
 import httpx
 import httpx2
@@ -550,26 +552,41 @@ async def run_one_call(
     return str(result.final_output)
 
 
-def frame_jpeg_bytes(recipe_path: Path) -> bytes:
-    frame = json.loads(recipe_path.read_text())
-    left, top, right, bottom = frame["crop"]
-    with Image.open(recipe_path.parent / frame["original_path"]) as original:
-        width, height = original.size
-        cropped = original.convert("RGB").crop((
-            math.floor(width * left / 1000),
-            math.floor(height * top / 1000),
-            math.ceil(width * right / 1000),
-            math.ceil(height * bottom / 1000),
-        ))
-        rendered = ImageOps.contain(cropped, FRAME_SIZE)
-        output = io.BytesIO()
-        rendered.save(output, format="JPEG", quality=90)
+def image_jpeg_bytes(original: Image.Image, crop: tuple[int, int, int, int]) -> bytes:
+    left, top, right, bottom = crop
+    width, height = original.size
+    cropped = original.convert("RGB").crop((
+        math.floor(width * left / 1000),
+        math.floor(height * top / 1000),
+        math.ceil(width * right / 1000),
+        math.ceil(height * bottom / 1000),
+    ))
+    rendered = ImageOps.contain(cropped, FRAME_SIZE)
+    output = io.BytesIO()
+    rendered.save(output, format="JPEG", quality=90)
     return output.getvalue()
 
 
-def render_frame(frame: dict[str, Any]) -> list[ToolOutputText | ToolOutputImage]:
+def frame_jpeg_bytes(frame: dict[str, Any]) -> bytes:
+    numerator, denominator = frame["time_base"]
+    command = [
+        "ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-copyts", "-start_at_zero",
+        "-ss", f"{frame['pts'] * numerator / denominator:.9f}", "-noaccurate_seek",
+        "-threads", "1", "-i", frame["video_path"], "-map", "0:v:0",
+        "-vf", f"settb={numerator}/{denominator},select='eq(pts,{frame['pts']})'",
+        "-filter_threads", "1", "-fps_mode", "passthrough", "-frames:v", "1",
+        "-threads", "1", "-f", "image2pipe", "-c:v", "png", "pipe:1",
+    ]
+    print(f"read_frame video={frame['video_path']} pts={frame['pts']} time_base={frame['time_base']}", flush=True)
+    process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if process.returncode != 0 or not process.stdout:
+        raise RuntimeError(f"Frame decode failed: {command}; exit={process.returncode}; {process.stderr.decode(errors='replace')}")
+    with Image.open(io.BytesIO(process.stdout)) as original:
+        return image_jpeg_bytes(original, frame["crop"])
+
+
+def render_frame(frame: dict[str, Any], jpeg_bytes: bytes) -> list[ToolOutputText | ToolOutputImage]:
     recipe = {key: value for key, value in frame.items() if key != "recipe_path"}
-    recipe["original_path"] = frame["original_path"].relative_to(frame["recipe_path"].parent)
     frame["recipe_path"].write_text(
         json.dumps(stripped_json(recipe), ensure_ascii=False, indent=2) + "\n"
     )
@@ -582,7 +599,7 @@ def render_frame(frame: dict[str, Any]) -> list[ToolOutputText | ToolOutputImage
         })),
         ToolOutputImage(
             image_url="data:image/jpeg;base64,"
-            + base64.b64encode(frame_jpeg_bytes(frame["recipe_path"])).decode(),
+            + base64.b64encode(jpeg_bytes).decode(),
             detail="high",
         ),
     ]
@@ -596,7 +613,7 @@ async def sample_frames(
     crop: tuple[int, int, int, int],
     call_id: str,
     remaining_images: int,
-) -> list[dict[str, Any]]:
+) -> list[tuple[dict[str, Any], bytes]]:
     if not context.sources[0]["timeline_start_s"] <= start_s < end_s <= context.sources[-1]["timeline_end_s"]:
         raise ValueError("sample interval extends beyond available source media")
     if not math.isfinite(fps) or fps <= 0:
@@ -614,7 +631,6 @@ async def sample_frames(
             continue
         local_start = overlap_start - source["timeline_start_s"]
         local_end = overlap_end - source["timeline_start_s"]
-        pattern = sample_dir / f"source-{source_index:06d}-%08d.png"
         # select keeps the source PTS; fps would replace it with a synthetic clock.
         video_filter = (
             f"trim=start={local_start:.6f}:end={local_end:.6f},"
@@ -631,7 +647,7 @@ async def sample_frames(
             "-filter_threads", "1", "-fps_mode", "passthrough",
             # Decode one extra frame to detect excess; never return a partial sample.
             "-frames:v", str(remaining_images - len(frames) + 1),
-            "-threads", "1", str(pattern),
+            "-threads", "1", "-f", "image2pipe", "-c:v", "png", "pipe:1",
         ]
         log_path = sample_dir / f"ffmpeg-{source_index:06d}.log"
         (sample_dir / f"ffmpeg-{source_index:06d}.json").write_text(
@@ -644,39 +660,43 @@ async def sample_frames(
         )
         with log_path.open("wb") as log:
             process = await asyncio.create_subprocess_exec(
-                *command, stdout=asyncio.subprocess.DEVNULL, stderr=log,
+                *command, stdout=asyncio.subprocess.PIPE, stderr=log,
             )
-            await process.wait()
+            png_bytes, _ = await process.communicate()
         if process.returncode != 0:
             print(f"ffmpeg exit={process.returncode} log={log_path}", flush=True)
             raise RuntimeError(f"ffmpeg exit={process.returncode}; see {log_path.name}")
-        source_frames = sorted(sample_dir.glob(f"source-{source_index:06d}-*.png"))
-        if len(frames) + len(source_frames) > remaining_images:
+        log_text = log_path.read_text()
+        time_base_match = re.search(r"config in time_base: (\d+)/(\d+)", log_text)
+        timestamps = re.findall(r"\bn:\s*(\d+)\s+pts:\s*(-?\d+)\s+pts_time:", log_text)
+        if len(frames) + len(timestamps) > remaining_images:
             raise ValueError(
                 f"sample exceeds clip image limit; remaining_images={remaining_images}. "
                 "Request a shorter interval or a lower fps."
             )
-        log_text = log_path.read_text()
-        time_base_match = re.search(r"config in time_base: (\d+)/(\d+)", log_text)
-        timestamps = re.findall(r"\bn:\s*(\d+)\s+pts:\s*(-?\d+)\s+pts_time:", log_text)
-        if time_base_match is None or len(timestamps) != len(source_frames):
-            raise RuntimeError(f"ffmpeg frame/PTS mismatch; see {log_path.name}")
+        if time_base_match is None:
+            raise RuntimeError(f"ffmpeg did not report a time base; see {log_path.name}")
         time_base_num, time_base_den = map(int, time_base_match.groups())
-        for frame_index, (frame_path, (sequence, pts)) in enumerate(zip(source_frames, timestamps)):
-            if int(sequence) != frame_index:
-                raise RuntimeError(f"ffmpeg frame sequence mismatch; see {log_path.name}")
-            time_s = source["timeline_start_s"] + int(pts) * time_base_num / time_base_den
-            frame_id = uuid.uuid4().hex
-            frames.append({
-                "frame_id": frame_id,
-                "time_s": time_s,
-                "pts": int(pts),
-                "time_base": [time_base_num, time_base_den],
-                "source_timeline_start_s": source["timeline_start_s"],
-                "original_path": frame_path,
-                "recipe_path": media_root / f"frame-{frame_id}.json",
-                "crop": crop,
-            })
+
+        def decode_sample():
+            sampled = []
+            with av.open(io.BytesIO(png_bytes), format="image2pipe", options={"video_codec": "png"}) as container:
+                for index, (decoded, (sequence, pts)) in enumerate(zip(container.decode(video=0), timestamps, strict=True)):
+                    if int(sequence) != index:
+                        raise RuntimeError(f"ffmpeg frame sequence mismatch; see {log_path.name}")
+                    frame_id = uuid.uuid4().hex
+                    frame = {
+                        "frame_id": frame_id,
+                        "time_s": source["timeline_start_s"] + int(pts) * time_base_num / time_base_den,
+                        "pts": int(pts), "time_base": [time_base_num, time_base_den],
+                        "source_timeline_start_s": source["timeline_start_s"],
+                        "video_path": source["path"],
+                        "recipe_path": media_root / f"frame-{frame_id}.json", "crop": crop,
+                    }
+                    sampled.append((frame, image_jpeg_bytes(decoded.to_image(), crop)))
+            return sampled
+
+        frames.extend(await asyncio.to_thread(decode_sample))
     if not frames:
         raise RuntimeError("ffmpeg returned no frames")
     return frames
@@ -907,9 +927,9 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                     "remaining_images": CLIP_IMAGE_LIMIT - count,
                     "captions": captions,
                 }, ensure_ascii=False))]
-                for frame in new_frames:
-                    outputs.extend(await asyncio.to_thread(render_frame, frame))
-                frames.update({frame["frame_id"]: frame for frame in new_frames})
+                for frame, jpeg_bytes in new_frames:
+                    outputs.extend(await asyncio.to_thread(render_frame, frame, jpeg_bytes))
+                frames.update({frame["frame_id"]: frame for frame, _ in new_frames})
                 return outputs
 
         @function_tool(failure_error_function=tool_error_json)
@@ -920,7 +940,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             crop_right: int,
             crop_bottom: int,
         ) -> list[Any]:
-            """Crop a sampled frame using its saved original resolution.
+            """Crop a sampled frame reloaded from its source video at the recorded PTS.
 
             Coordinates always refer to the original full frame, even when frame_id
             names an earlier crop. Units are 0-1000; full frame is 0,0,1000,1000.
@@ -944,11 +964,11 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                     "parent_frame_id": frame_id,
                     "frame_id": new_id,
                     "time_s": original["time_s"],
-                    "original_path": original["original_path"],
                     "recipe_path": context.run_dir / "media" / f"frame-{new_id}.json",
                     "crop": (crop_left, crop_top, crop_right, crop_bottom),
                 }
-                outputs = await asyncio.to_thread(render_frame, frame)
+                jpeg_bytes = await asyncio.to_thread(frame_jpeg_bytes, frame)
+                outputs = await asyncio.to_thread(render_frame, frame, jpeg_bytes)
                 count = len(frames) + 1
                 outputs.append(ToolOutputText(text=json.dumps({
                     "images_used": count,
@@ -1057,7 +1077,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                 outputs.append(
                     ToolOutputImage(
                         image_url="data:image/jpeg;base64,"
-                        + base64.b64encode(await asyncio.to_thread(frame_jpeg_bytes, frame["recipe_path"])).decode(),
+                        + base64.b64encode(await asyncio.to_thread(frame_jpeg_bytes, frame)).decode(),
                         detail="high",
                     )
                 )
