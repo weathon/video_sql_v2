@@ -26,3 +26,13 @@
 再次人工检查四条相同提示词的完整输出：Responses 的 OK 指令只产生 reasoning `T`，中文计算题只产生 `1 1 算式`；Chat Completions 的 OK 指令产生 `user: OK、APT：`，2 + 2 问题只复述 `What is 2 + 2?Answer in one sentence.`。四条均结束但没有最终答案，本次未观察到长循环，仍未通过回答检查。
 
 本轮命令、请求和原始输出保存在 [custom-all-reduce](../runs/nvfp4-tp4-recheck-20260908/custom-all-reduce/)。
+
+## TP4 expert padding 修复后的复测
+
+关闭 MTP 后，同一 OK 提示仍产生超过一万字符的无意义数字，未给出最终答案。检查实际权重发现，TP4 将 MoE intermediate size 640 分为每卡 160，而 FlashInfer TRTLLM 内核需要 padding 到 192。旧版 `align_fp4_moe_weights_for_fi` 将 gate/up 两半连续复制到新张量，未在两半之间分别补零；weight scale 存在同样问题。
+
+移植 [vLLM PR #53896](https://github.com/vllm-project/vllm/pull/53896)（合并提交 `e126687a9a828d513c01a07cd69f025f27d63280`）的两处复制逻辑，构建镜像 `video-sql-trace2skill:nvfp4-padding-fix`。实际 checkpoint 的 layer 0 / expert 0 / rank 0 检查中，修复前第二半位置有 203,732 个不同字节、第一半 padding 有 40,696 个非零值；修复后均为 0，第二半 scale 也保持一致。
+
+保持 NVFP4、TP4、MTP 3、medium reasoning、thinking/preserve_thinking、CPU KV offload，并保持 custom all-reduce 开启。人工阅读四个原始提示词的完整响应后，确认均有连贯 reasoning 和正确最终答案：两个 OK、2 + 2 = 4、7 × 24 − 39 = 129。SDK structured parse 返回 red=12、blue=8、total=20；真实 multiply 工具输入 137 和 29、返回 3973，下一轮 reasoning 和答案使用了该结果。真实 day 视频帧及 read_frame 工具往返均识别出右上角 “Barry” 和前景角色的长棍。图像请求需要显式 `detail=high`，harness 已包含该字段。
+
+原始请求、响应、帧及启动参数保存在 [padding-fixed-mtp3](../runs/nvfp4-tp4-recheck-20260908/padding-fixed-mtp3/)。这些短请求没有出现循环；长 rollout 是否仍出现循环，需要在新的 Trace2Skill 实验中观察。
