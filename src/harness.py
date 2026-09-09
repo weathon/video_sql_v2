@@ -550,9 +550,10 @@ async def run_one_call(
     return str(result.final_output)
 
 
-def frame_jpeg_bytes(frame: dict[str, Any]) -> bytes:
+def frame_jpeg_bytes(recipe_path: Path) -> bytes:
+    frame = json.loads(recipe_path.read_text())
     left, top, right, bottom = frame["crop"]
-    with Image.open(frame["original_path"]) as original:
+    with Image.open(recipe_path.parent / frame["original_path"]) as original:
         width, height = original.size
         cropped = original.convert("RGB").crop((
             math.floor(width * left / 1000),
@@ -567,8 +568,10 @@ def frame_jpeg_bytes(frame: dict[str, Any]) -> bytes:
 
 
 def render_frame(frame: dict[str, Any]) -> list[ToolOutputText | ToolOutputImage]:
+    recipe = {key: value for key, value in frame.items() if key != "recipe_path"}
+    recipe["original_path"] = frame["original_path"].relative_to(frame["recipe_path"].parent)
     frame["recipe_path"].write_text(
-        json.dumps(stripped_json(frame), ensure_ascii=False, indent=2) + "\n"
+        json.dumps(stripped_json(recipe), ensure_ascii=False, indent=2) + "\n"
     )
     return [
         ToolOutputText(text=json.dumps({
@@ -580,7 +583,7 @@ def render_frame(frame: dict[str, Any]) -> list[ToolOutputText | ToolOutputImage
         })),
         ToolOutputImage(
             image_url="data:image/jpeg;base64,"
-            + base64.b64encode(frame_jpeg_bytes(frame)).decode(),
+            + base64.b64encode(frame_jpeg_bytes(frame["recipe_path"])).decode(),
             detail="high",
         ),
     ]
@@ -1056,7 +1059,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                 outputs.append(
                     ToolOutputImage(
                         image_url="data:image/jpeg;base64,"
-                        + base64.b64encode(await asyncio.to_thread(frame_jpeg_bytes, frame)).decode(),
+                        + base64.b64encode(await asyncio.to_thread(frame_jpeg_bytes, frame["recipe_path"])).decode(),
                         detail="high",
                     )
                 )

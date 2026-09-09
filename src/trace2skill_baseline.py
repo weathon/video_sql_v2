@@ -205,8 +205,9 @@ async def rollout(question, rollout_index, skill_version, semaphore, metrics):
                         if isinstance(output, list):
                             for index, part in enumerate(output):
                                 if part["type"] == "input_image":
-                                    recipe = Path(json.loads(output[index - 1]["text"])["frame_recipe"])
-                                    image_bytes = await asyncio.to_thread(frame_jpeg_bytes, json.loads(recipe.read_text()))
+                                    recipe_name = Path(json.loads(output[index - 1]["text"])["frame_recipe"]).name
+                                    recipe = path.parent / "media" / recipe_name
+                                    image_bytes = await asyncio.to_thread(frame_jpeg_bytes, recipe)
                                     part["image_url"] = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
                         async with semaphore:
                             token_count = await harness.context.client.responses.input_tokens.count(
@@ -290,7 +291,7 @@ async def analyze(result, semaphore, metrics):
                 instructions += "\nReturn the Lean Solution Path and at most three Success Memory Items using the supplied JSON schema."
                 content = [{"type": "input_text", "text": json.dumps(bundle, ensure_ascii=False)}]
                 for filename in result["media_files"]:
-                    image_bytes = await asyncio.to_thread(frame_jpeg_bytes, json.loads(Path(filename).read_text()))
+                    image_bytes = await asyncio.to_thread(frame_jpeg_bytes, Path(filename))
                     content.extend([{"type": "input_text", "text": filename},
                                     {"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode(), "detail": "high"}])
                 messages = [{"role": "user", "content": content}]
@@ -375,7 +376,7 @@ async def analyze(result, semaphore, metrics):
                     if file not in result["media_files"]:
                         raise ValueError("Choose a file from media_files in the task input")
                     recipe = json.loads(Path(file).read_text())
-                    image_bytes = await asyncio.to_thread(frame_jpeg_bytes, recipe)
+                    image_bytes = await asyncio.to_thread(frame_jpeg_bytes, Path(file))
                     return [ToolOutputText(text=json.dumps({"frame_id": recipe["frame_id"], "frame_recipe": file})),
                             ToolOutputImage(image_url="data:image/jpeg;base64," + base64.b64encode(image_bytes).decode(), detail="high")]
 
