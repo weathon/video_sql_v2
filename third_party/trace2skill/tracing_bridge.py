@@ -13,6 +13,7 @@ from weave.integrations.openai_agents.openai_agents import WeaveTracingProcessor
 
 
 RESPONSES_OUTPUT_PROCESSOR = openai_sdk.responses_on_finish_post_processor
+USE_STREAM_ACCUMULATOR = openai_sdk.should_use_accumulator
 
 
 def response_cost(response):
@@ -99,8 +100,15 @@ def response_output(value):
     return RESPONSES_OUTPUT_PROCESSOR(value)
 
 
+def use_stream_accumulator(inputs):
+    # The SDK's raw streaming response must retain its asynchronous close method.
+    return (USE_STREAM_ACCUMULATOR(inputs)
+            and inputs.get("extra_headers", {}).get("X-Stainless-Raw-Response") != "stream")
+
+
 def init_weave():
     openai_sdk.responses_on_finish_post_processor = response_output
+    openai_sdk.should_use_accumulator = use_stream_accumulator
     client = weave.init("3dsmile/video-sql-v2")
     set_trace_processors([WeaveTracingProcessor()])
     return client
