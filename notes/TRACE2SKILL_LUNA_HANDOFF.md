@@ -1,5 +1,7 @@
 # Luna + Trace2Skill baseline：暂停与恢复交接
 
+以下为 Luna 阶段的历史交接快照，恢复命令不再对应当前入口。当前入口已切换到新的 NVFP4 day/week 实验，不复用 Luna 轨迹；见 [TRACE2SKILL_NVFP4_HANDOFF.md](TRACE2SKILL_NVFP4_HANDOFF.md)。
+
 ## 当前状态
 
 用户已明确：耗尽重试次数时跳过当前样本。代码已按此修改并在正式运行中验证；最新一轮使用同一 `PERSONAL_OPENAI_KEY`，因 API 明确返回余额耗尽而暂停，等待充值后恢复。

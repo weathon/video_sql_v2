@@ -1,10 +1,10 @@
 # 问答 Harness 与 Trace2Skill baseline
 
-当前 worktree 为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。Luna baseline 已在正式运行中验证重试耗尽后跳过当前样本，现保存 314 条完成结果和 53 条跳过记录；最新一轮因 API 明确返回余额耗尽而暂停。当前配置、旧数据核对、指标和恢复步骤见新文档 [TRACE2SKILL_LUNA_HANDOFF.md](TRACE2SKILL_LUNA_HANDOFF.md)。
+当前 worktree 为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。当前 baseline 已切换到修复 TP4 padding 的 NVFP4 模型，从 day/week 非 training split 各抽 100 题重新采集；不复用 Luna 轨迹。新实验尚未启动，配置和阻塞见 [TRACE2SKILL_NVFP4_HANDOFF.md](TRACE2SKILL_NVFP4_HANDOFF.md)；旧 Luna 记录保留在 [TRACE2SKILL_LUNA_HANDOFF.md](TRACE2SKILL_LUNA_HANDOFF.md)。
 
 这个 harness 使用静态检索技能回答长视频问题。主 agent 在预先构建的 DuckDB 记忆库和 embedding 索引中定位线索，按需调用视觉 agent 检查源视频，再提交开放式答案。评估入口为每道题运行多个独立 rollout，并用 judge 评分。
 
-问答期间 skills 只读，不进行 reflection 或技能更新。当前 baseline 的技能学习由 `src.trace2skill_baseline` 在采集完成后交给上游 Trace2Skill Combined 执行，再冻结技能做训练集复评。主检索、视觉问答、SQL 问答、judge 和技能分析均使用 OpenAI 官方 Responses API；embedding 使用独立的 Qwen3-VL-Embedding-8B 服务。
+问答期间 skills 只读，不进行 reflection 或技能更新。当前 baseline 的技能学习由 `src.trace2skill_baseline` 在采集完成后交给上游 Trace2Skill Combined 执行，再冻结技能做同一子集复评。主检索、视觉问答、SQL 问答、judge 和技能分析均使用本地 NVFP4 Responses API；embedding 使用独立的 Qwen3-VL-Embedding-8B 服务。
 
 ## 1. 架构与代码入口
 
@@ -32,7 +32,7 @@ flowchart TD
 | --- | --- |
 | [src/harness.py](../src/harness.py) | Agent 配置、检索工具、视频采样与裁剪、证据引用、compaction、trace 保存 |
 | [src/val.py](../src/val.py) | CLI、批次调度、rollout/judge 重试、结果恢复、评分、W&B/Weave |
-| [src/trace2skill_baseline.py](../src/trace2skill_baseline.py) | 当前 baseline：266 道 month 训练题 × 5 条 rollout、Combined 分析、一次 evolution、冻结技能后的同集复评 |
+| [src/trace2skill_baseline.py](../src/trace2skill_baseline.py) | 当前 baseline：day/week 各 100 题 × 5 条 rollout、Combined 分析、一次 evolution、冻结技能后的同集复评 |
 | [third_party/trace2skill/baseline_evolve.py](../third_party/trace2skill/baseline_evolve.py) | 固定版本上游 Trace2Skill 的目录、Responses structured-parse 和 evolution 桥接 |
 | [src/normalize.py](../src/normalize.py) | 输入文本归一化 |
 | [src/prepare_runtime.py](../src/prepare_runtime.py) | 从已有总库与索引导出按 timeline 隔离的运行数据 |
@@ -57,11 +57,11 @@ PERSONAL_OPENAI_KEY=YOUR_OPENAI_API_KEY
 
 这里使用 `dotenv_values` 直接读取文件；仅在 shell 中 export 同名变量不能替代该文件。密钥不写入 run 配置或本地 trace。
 
-主检索、视觉、SQL 问答和 judge 共享以下设置：
+以下为 `src.val` 和 `VideoSQLHarness` 的 Luna 默认设置；当前 NVFP4 baseline 在入口中覆盖模型、endpoint 和 reasoning，见 [新实验配置](TRACE2SKILL_NVFP4_HANDOFF.md#模型与服务)。
 
 | 配置 | 值或行为 |
 | --- | --- |
-| API endpoint | 当前 baseline 使用 `https://api.openai.com/v1` |
+| API endpoint | Luna 默认使用 `https://api.openai.com/v1` |
 | 默认模型 | `gpt-5.6-luna` |
 | SDK | OpenAI Agents SDK 的 `OpenAIResponsesModel` |
 | Reasoning | `effort=high`、`summary=auto` |
