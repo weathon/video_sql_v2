@@ -235,8 +235,8 @@ def evolve(run_directory):
     client = OpenAI(
         api_key=dotenv_values(Path(__file__).resolve().parents[2] / ".env")["PERSONAL_OPENAI_KEY"],
         base_url="https://api.openai.com/v1", max_retries=3,
+        timeout=httpx2.Timeout(connect=60, read=900, write=900, pool=900),
         http_client=DefaultHttpxClient(
-            timeout=httpx2.Timeout(connect=60, read=100000, write=100000, pool=100000),
             limits=httpx2.Limits(max_connections=1000, max_keepalive_connections=256),
         ),
     )
