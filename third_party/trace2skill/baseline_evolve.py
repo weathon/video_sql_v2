@@ -15,6 +15,7 @@ from typing import Literal
 
 import httpx2
 import weave
+import wandb
 import yaml
 from openai import DefaultHttpxClient, OpenAI
 from dotenv import dotenv_values
@@ -23,7 +24,7 @@ from pydantic import BaseModel, ValidationError
 import skill_evolver.parallel_evolving_agent as parallel
 from skill_evolver.parallel_success_evolving_agent import CombinedParallelSkillEvolver
 from skill_evolver.skill_evolving_agent import SkillEvolver
-from tracing_bridge import init_weave
+from tracing_bridge import RunMetrics, init_weave
 
 
 MODEL = "gpt-5.6-luna"
@@ -100,8 +101,9 @@ class BridgeSkillEvolver(SkillEvolver):
 
 
 class BaselineEvolver(CombinedParallelSkillEvolver):
-    def __init__(self, run, client, **kwargs):
+    def __init__(self, run, client, metrics, **kwargs):
         super().__init__(client=client, **kwargs)
+        self.metrics = metrics
         self._evolver = BridgeSkillEvolver(client=client, skill_dir=self.skill_dir, max_references=6)
         self.calls = run / "evolution/llm"
         self.calls.mkdir(parents=True, exist_ok=True)
@@ -140,6 +142,7 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
             body = raw.content
             (directory / f"response-{number}.json").write_bytes(body)
             payload = json.loads(body)
+            self.metrics.record_response(payload)
             # Preserve every output item, including encrypted reasoning, summaries
             # and assistant phase, through continuation and format repair.
             messages.extend(payload["output"])
@@ -216,6 +219,9 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
 @weave.op(name="trace2skill.evolution")
 def evolve(run_directory):
     run = Path(run_directory)
+    wandb_run = wandb.init(entity="3dsmile", project="video-sql-v2", id=run.name,
+                           name=run.name, resume="must", dir=str(run))
+    metrics = RunMetrics(wandb_run, "evolution", run)
     working = run / "evolution" / f"skill-{uuid.uuid4().hex}"
     (working / "references").mkdir(parents=True)
     initial = run / "skills/initial"
@@ -234,8 +240,8 @@ def evolve(run_directory):
         ),
     )
     try:
-        evolver = BaselineEvolver(run, client, skill_dir=working, output_dir=run / "evolution",
-                                 parse_failure_dir=run / "evolution/parse_failures", max_workers=256,
+        evolver = BaselineEvolver(run, client, metrics, skill_dir=working, output_dir=run / "evolution",
+                                 parse_failure_dir=run / "evolution/parse_failures", max_workers=128,
                                  max_references=6, skip_translation=False, patch_pipeline="json")
         records = json.loads((run / "combined-records.json").read_text())
         summary = evolver.run(records)
@@ -243,6 +249,10 @@ def evolve(run_directory):
         if not valid or summary["final_patch"] is None:
             raise RuntimeError(f"Evolution did not produce a valid skill: {message}")
         state = evolver.read_skill_state()
+        for name, content in state.items():
+            target = run / "distilled-skill" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
         export = working / "harness"
         export.mkdir()
         root = re.sub(r"^---\n.*?\n---\n\n?", "", state["SKILL.md"], count=1, flags=re.DOTALL)
@@ -255,6 +265,7 @@ def evolve(run_directory):
         print(f"EVOLUTION COMPLETE {message}", flush=True)
     finally:
         client.close()
+        wandb_run.finish()
 
 
 if __name__ == "__main__":

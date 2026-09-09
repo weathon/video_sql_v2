@@ -1,6 +1,6 @@
 # Trace2Skill API 接入交接
 
-工作目录 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。用户要求先提交保留本地支持的快照，再清理本地兼容；之后由另一位 agent 根据用户给出的 API 说明继续。
+工作目录 `/raid/wg25r/video_sql_trace2skill`，分支 `codex/trace2skill-baseline`。用户要求先提交保留本地支持的快照，再清理本地兼容；之后由另一位 agent 根据用户给出的 API 说明继续。
 
 ## 当前状态
 
