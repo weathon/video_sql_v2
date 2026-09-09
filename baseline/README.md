@@ -1,8 +1,8 @@
 # QA harness + Trace2Skill baseline
 
 The current baseline starts fresh with NVFP4 and nontraining day/week subsets.
-It does not reuse Luna rollouts. The new formal run has not started; disk space and
-review authorization remain unresolved. See [the current handoff](../notes/TRACE2SKILL_NVFP4_HANDOFF.md)
+It does not reuse Luna rollouts. The new formal run has not started;
+review authorization remains unresolved. See [the current handoff](../notes/TRACE2SKILL_NVFP4_HANDOFF.md)
 for verified model traces, configuration, service state and remaining work.
 
 This worktree implements the approved baseline, independently of the project's skill trainer.
