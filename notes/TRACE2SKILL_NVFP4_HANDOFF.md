@@ -1,6 +1,6 @@
 # NVFP4 + Trace2Skill：day/week 新实验
 
-工作目录为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。本次从头生成轨迹，不复用 Luna rollout，也不使用 training split。代码已切换；新实验尚未正式启动。
+工作目录为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。本次从头生成轨迹，不复用 Luna rollout，也不使用 training split。新实验已启动，正在生成 initial rollout；前台日志为新 run 目录中的 `formal-01.log`。
 
 ## 数据与方法
 
@@ -30,7 +30,7 @@
 
 模型 processor 的 patch size 16、merge size 2，因此单图最多 405 个视觉 token，加两个边界 token 为 407；`floor((314573−50000)/407)=650`，现有累计图像额度无需改变。
 
-新服务使用独立的 `video-sql-trace2skill-nvfp4` 网络、`video-sql-trace2skill-nvfp4-ec` encoder-cache volume 和 `trace2skill-nvfp4-*` 容器。网络和 tmpfs volume 已创建。各角色通过 `.venv/bin/python -u infra/trace2skill_service.py <encoder|embedding|pd|proxy>` 在独立前台 exec 启动，不能使用 Docker `--rm`。本次 encoder、embedding 和 TP4 PD 均完成启动；PD 实际参数为 max-num-seqs=50、medium reasoning 对应的 thinking/preserve_thinking、MTP 3 和 CPU offload，每 rank 分配 256581838336 字节 CPU KV 预算。proxy 和正式 rollout 尚未启动，没有发送预检请求。等待下述成功分析输入方式的决定期间，三个服务已停止，退出码均为 0，并已手动删除容器；日志、命令和 `service-stop.json` 保留在新 run 目录。恢复前仍需检查实际 GPU 资源，并在正式 trace 中验证 EPD 往返。
+新服务使用独立的 `video-sql-trace2skill-nvfp4` 网络、`video-sql-trace2skill-nvfp4-ec` encoder-cache volume 和 `trace2skill-nvfp4-*` 容器。各角色通过 `.venv/bin/python -u infra/trace2skill_service.py <encoder|embedding|pd|proxy>` 在独立前台 exec 启动，不能使用 Docker `--rm`。等待分析边界决定时，第一轮服务已停止并手动删除容器，记录保存在 `service-stop.json`。边界修改审查完成后，encoder、embedding、TP4 PD 和 proxy 已重新启动，日志分别为 `encoder-launch2.log`、`embedding-launch2.log`、`pd-launch2.log`、`proxy-launch2.log`。PD 实际参数为 max-num-seqs=50、thinking/preserve_thinking、MTP 3 和 CPU offload，每 rank 分配 256674663936 字节 CPU KV 预算；原生启动报告 GPU KV 容量为 7,407,246 tokens、满长并发 23.55。未发送预检请求，正式 rollout 的真实图像请求已完成 EPD 往返，日志已有 external prefix cache 命中。
 
 ## 输出、指标和恢复
 
