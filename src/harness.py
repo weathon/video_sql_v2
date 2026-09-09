@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import dataclasses
+import io
 import json
 import math
 import re
@@ -379,7 +380,7 @@ async def run_stream(
         (context.run_dir / f"replace-{tool_context.tool_call_id}.json").write_text(json.dumps({
             "tool_id": tool_id, "replace_call_id": tool_context.tool_call_id,
             "model": context.model.model, "reasoning": stripped_json(context.model_settings.reasoning),
-            "before": [call, before], "after": [call, after],
+            "before": stripped_json([call, before]), "after": stripped_json([call, after]),
         }, ensure_ascii=False) + "\n")
         context.tool_calls[tool_id]["replacements"].append(replacement)
         return json.dumps({"replaced_tool_id": tool_id})
@@ -549,7 +550,7 @@ async def run_one_call(
     return str(result.final_output)
 
 
-def render_frame(frame: dict[str, Any]) -> list[ToolOutputText | ToolOutputImage]:
+def frame_jpeg_bytes(frame: dict[str, Any]) -> bytes:
     left, top, right, bottom = frame["crop"]
     with Image.open(frame["original_path"]) as original:
         width, height = original.size
@@ -560,20 +561,26 @@ def render_frame(frame: dict[str, Any]) -> list[ToolOutputText | ToolOutputImage
             math.ceil(height * bottom / 1000),
         ))
         rendered = ImageOps.contain(cropped, FRAME_SIZE)
-        rendered.save(frame["image_path"], quality=90)
-    frame["image_path"].with_suffix(".json").write_text(
+        output = io.BytesIO()
+        rendered.save(output, format="JPEG", quality=90)
+    return output.getvalue()
+
+
+def render_frame(frame: dict[str, Any]) -> list[ToolOutputText | ToolOutputImage]:
+    frame["recipe_path"].write_text(
         json.dumps(stripped_json(frame), ensure_ascii=False, indent=2) + "\n"
     )
     return [
         ToolOutputText(text=json.dumps({
             "frame_id": frame["frame_id"],
             "time_s": frame["time_s"],
-            "filename": frame["image_path"].name,
+            "filename": frame["recipe_path"].name,
+            "frame_recipe": str(frame["recipe_path"]),
             "crop": frame["crop"],
         })),
         ToolOutputImage(
             image_url="data:image/jpeg;base64,"
-            + base64.b64encode(frame["image_path"].read_bytes()).decode(),
+            + base64.b64encode(frame_jpeg_bytes(frame)).decode(),
             detail="high",
         ),
     ]
@@ -665,7 +672,7 @@ async def sample_frames(
                 "time_base": [time_base_num, time_base_den],
                 "source_timeline_start_s": source["timeline_start_s"],
                 "original_path": frame_path,
-                "image_path": media_root / f"frame-{frame_id}.jpg",
+                "recipe_path": media_root / f"frame-{frame_id}.json",
                 "crop": crop,
             })
     if not frames:
@@ -936,7 +943,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                     "frame_id": new_id,
                     "time_s": original["time_s"],
                     "original_path": original["original_path"],
-                    "image_path": context.run_dir / "media" / f"frame-{new_id}.jpg",
+                    "recipe_path": context.run_dir / "media" / f"frame-{new_id}.json",
                     "crop": (crop_left, crop_top, crop_right, crop_bottom),
                 }
                 outputs = await asyncio.to_thread(render_frame, frame)
@@ -1037,19 +1044,19 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         if submission.status == "answered":
             for frame_id in submission.evidence_frame_ids:
                 frame = frames[frame_id]
-                evidence = frame["image_path"]
                 outputs.append(
                     ToolOutputText(text=json.dumps({
                         "frame_id": frame_id,
                         "evidence_time_s": frame["time_s"],
-                        "filename": evidence.name,
+                        "filename": frame["recipe_path"].name,
+                        "frame_recipe": str(frame["recipe_path"]),
                         "crop": frame["crop"],
                     }))
                 )
                 outputs.append(
                     ToolOutputImage(
                         image_url="data:image/jpeg;base64,"
-                        + base64.b64encode(evidence.read_bytes()).decode(),
+                        + base64.b64encode(await asyncio.to_thread(frame_jpeg_bytes, frame)).decode(),
                         detail="high",
                     )
                 )

@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import copy
 import dataclasses
 import json
 import random
@@ -14,11 +15,11 @@ from pathlib import Path
 
 import weave
 import wandb
-from agents import Agent, ModelSettings, OpenAIResponsesModel, StopAtTools, ToolOutputImage, function_tool, trace
+from agents import Agent, ModelSettings, OpenAIResponsesModel, StopAtTools, ToolOutputImage, ToolOutputText, function_tool, trace
 from pydantic import BaseModel, Field, ValidationError
 from third_party.trace2skill.tracing_bridge import init_weave
 
-from src.harness import InvalidTrace, VideoSQLHarness, run_stream, tool_error_json
+from src.harness import InvalidTrace, VideoSQLHarness, frame_jpeg_bytes, run_stream, stripped_json, tool_error_json
 from src.val import JudgeAttemptsExhausted, judge_answer, retryable, write_error
 
 
@@ -178,7 +179,7 @@ async def rollout(question, rollout_index, skill_version, semaphore, metrics):
                           "rollout_time_seconds": sum(json.loads(p.read_text())["seconds"]
                                                       for p in directory.glob("*/rollout-time.json")),
                           "trace_files": sorted(str(p) for p in directory.rglob("traces/*.json")),
-                          "media_files": sorted(str(p) for p in directory.rglob("media/*.jpg"))}
+                          "media_files": sorted(str(p) for p in directory.rglob("media/frame-*.json"))}
                 responses = []
                 tool_count = 0
                 replace_count = 0
@@ -199,10 +200,18 @@ async def rollout(question, rollout_index, skill_version, semaphore, metrics):
                         if f"{side}_tokens" in measurement:
                             continue
                         print(f"count replacement tokens side={side} artifact={path}", flush=True)
+                        items = copy.deepcopy(measurement[side])
+                        output = items[1]["output"]
+                        if isinstance(output, list):
+                            for index, part in enumerate(output):
+                                if part["type"] == "input_image":
+                                    recipe = Path(json.loads(output[index - 1]["text"])["frame_recipe"])
+                                    image_bytes = await asyncio.to_thread(frame_jpeg_bytes, json.loads(recipe.read_text()))
+                                    part["image_url"] = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
                         async with semaphore:
                             token_count = await harness.context.client.responses.input_tokens.count(
                                 model=MODEL,
-                                input=[{"role": "user", "content": question["question"]}, *measurement[side]],
+                                input=[{"role": "user", "content": question["question"]}, *items],
                                 reasoning=measurement["reasoning"],
                             )
                         measurement[f"{side}_tokens"] = token_count.input_tokens
@@ -235,7 +244,7 @@ async def rollout(question, rollout_index, skill_version, semaphore, metrics):
     (directory / "skipped.json").write_text(json.dumps({
         **metadata, "status": "skipped", "reason": "qa_or_judge_attempts_exhausted",
         "trace_files": sorted(str(p) for p in directory.rglob("traces/*.json")),
-        "media_files": sorted(str(p) for p in directory.rglob("media/*.jpg")),
+        "media_files": sorted(str(p) for p in directory.rglob("media/frame-*.json")),
     }, indent=2) + "\n")
     print(f"SKIP QA/judge attempts exhausted: {directory}", flush=True)
     return None
@@ -281,12 +290,13 @@ async def analyze(result, semaphore, metrics):
                 instructions += "\nReturn the Lean Solution Path and at most three Success Memory Items using the supplied JSON schema."
                 content = [{"type": "input_text", "text": json.dumps(bundle, ensure_ascii=False)}]
                 for filename in result["media_files"]:
+                    image_bytes = await asyncio.to_thread(frame_jpeg_bytes, json.loads(Path(filename).read_text()))
                     content.extend([{"type": "input_text", "text": filename},
-                                    {"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.b64encode(Path(filename).read_bytes()).decode(), "detail": "high"}])
+                                    {"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode(), "detail": "high"}])
                 messages = [{"role": "user", "content": content}]
                 for attempt in range(1, 4):
                     try:
-                        (directory / f"success-request-{attempt}.json").write_text(json.dumps(messages, ensure_ascii=False) + "\n")
+                        (directory / f"success-request-{attempt}.json").write_text(json.dumps(stripped_json(messages), ensure_ascii=False) + "\n")
                         async with semaphore:
                             raw = await harness.context.client.responses.with_raw_response.parse(
                                 model=MODEL, instructions=instructions, input=messages,
@@ -360,11 +370,14 @@ async def analyze(result, semaphore, metrics):
                     return report.model_dump_json()
 
                 @function_tool(failure_error_function=tool_error_json)
-                async def read_frame(file: str) -> list[ToolOutputImage]:
-                    """Inspect an original rollout frame from media_files, including its actual pixels."""
+                async def read_frame(file: str) -> list[ToolOutputText | ToolOutputImage]:
+                    """Load a frame recipe from media_files and dynamically render its original rollout image."""
                     if file not in result["media_files"]:
                         raise ValueError("Choose a file from media_files in the task input")
-                    return [ToolOutputImage(image_url="data:image/jpeg;base64," + base64.b64encode(Path(file).read_bytes()).decode(), detail="high")]
+                    recipe = json.loads(Path(file).read_text())
+                    image_bytes = await asyncio.to_thread(frame_jpeg_bytes, recipe)
+                    return [ToolOutputText(text=json.dumps({"frame_id": recipe["frame_id"], "frame_recipe": file})),
+                            ToolOutputImage(image_url="data:image/jpeg;base64," + base64.b64encode(image_bytes).decode(), detail="high")]
 
                 instructions = (ROOT / "baseline/error_analysis_qa.txt").read_text()
                 agent = Agent(
