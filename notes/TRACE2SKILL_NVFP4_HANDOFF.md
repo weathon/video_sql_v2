@@ -38,12 +38,16 @@
 
 W&B 保留平均 trace 长度、输入/输出 token 与请求吞吐、average rollout time、mean total context saved、replace_tool 调用次数；统计口径见 [Luna 历史指标说明](TRACE2SKILL_LUNA_HANDOFF.md#wandbweave-和本地证据)。Weave 和本地 trace metadata 增加 timeline。
 
-JPEG 已改为动态生成：保存原始 PNG、crop 和 `media/frame-*.json` 取图记录；主 agent 证据、成功分析、失败分析 `read_frame` 和 replacement 计量均通过取图记录生成内存中的 JPEG，不再保存 JPG 文件。原始 PNG 路径相对于 JSON 文件，归档 attempt 后仍可解析。已从一张真实帧的记录生成 853×480、96,053 字节 JPEG，与清理前的文件逐字节一致，检查记录在 `/tmp/video-sql-jpeg-dynamic-result.json`。本次改动尚待独立 diff review。
+图像已改为从源视频动态生成：`media/frame-*.json` 保存视频路径、整数 PTS、time base 和 crop；采样通过内存中的 PNG 流解码，主 agent 证据、成功分析、失败分析 `read_frame` 和 replacement 计量均通过取图记录生成内存中的 JPEG，不再保存 PNG/JPG 文件。PyAV 依赖已加入并锁定。一次真实 `sample_frames` 返回的 240 帧与旧 PNG 生成的 JPEG 全部逐字节一致，首、中、末帧动态重取也一致，输出仅包含取图记录和 ffmpeg 命令/日志；记录在 `/tmp/video-sql-source-frame-check/verification.json`。
+
+两个 runs 中的 889,065 份旧帧 JSON 已补齐源视频路径，保留原有 PTS、time base、crop 和其他字段。已逐份核对迁移后的路径；day、week、month、裁剪及归档轨迹的五份真实记录重建结果均与原图处理结果逐字节一致，PNG 删除后又重取了裁剪帧并确认一致。记录在 `/tmp/video-sql-png-migration-verified.json`、`/tmp/video-sql-migrated-frame-replay.json` 和 `/tmp/video-sql-post-cleanup-frame-replay.json`。本次改动尚待独立 diff review。
 
 Replacement 计量仍走 SDK `responses.input_tokens.count`，由本地 proxy 使用 vLLM 原生 Responses 转换函数及 `/tokenize` 完成。before/after 均加上相同的实际题目文本，以满足 Qwen chat template；公共部分在差值中抵消。真实文本工具往返的计数为 403，图像工具往返为 778，均与同一请求实际生成返回的 input_tokens 一致；检查记录在 `/tmp/trace2skill-nvfp4-token-count-check.json`。尚未验证完整 baseline 内的 replacement 路径。
 
-## 当前阻塞
+## 清理与审查状态
 
-用户明确授权清理 `/raid/wg25r/video_sql_2/runs` 与 `/raid/wg25r/video_sql_v2/runs` 下全部 JPEG。普通用户可写部分已删除；Docker root 创建的文件通过只挂载这两个目录、无网络的清理容器删除。两个目录复查均剩余 0 个 `.jpg/.jpeg`，磁盘可用空间约 93 GiB；清理容器退出码 0，已手动删除。记录在 `/tmp/video-sql-jpeg-cleanup-docker.log` 和 `/tmp/video-sql-jpeg-cleanup-verified.json`。PNG、JSON、trace 和源视频保留；是否进一步清理 PNG、改为直接从源视频动态取帧，仍待用户确认。
+用户明确授权清理 `/raid/wg25r/video_sql_2/runs` 与 `/raid/wg25r/video_sql_v2/runs` 下全部 JPEG，随后同意 PNG 改为从源视频动态重建并清理。JPEG 已清理；此次再删除 926,127 个 PNG，释放约 835.6 GiB 已分配空间。两个目录复查均剩余 0 个 `.png/.jpg/.jpeg`，889,065 份帧 JSON、ffmpeg 命令/日志、trace 和源视频保留。未生成独立帧 JSON 的旧 PNG 也已核对其 ffmpeg 命令和源视频，仍可按保存的采样命令重建。检查时 `/raid` 可用约 1.16 TiB。
+
+Docker root 创建的文件通过仅挂载这两个 runs 目录、无网络的容器处理；迁移与清理容器均退出 0 并已手动删除。记录在 `/tmp/video-sql-jpeg-cleanup-verified.json`、`/tmp/video-sql-png-reconstruction-audit.json`、`/tmp/video-sql-png-cleanup-docker.log` 和 `/tmp/video-sql-png-cleanup-verified.json`。原仓库源代码未修改。
 
 本次接入改动的独立 diff review 尚未完成：自动审批将审查子 agent 误判为主 agent，拒绝其读取 `REVIEW.md`；已请求明确授权。正式运行前仍需完成 diff review 和仓库要求的 Claude CLI 全量审查。没有运行 syntax checks。之后从正式 trace 检查真实工具输入输出、图像、多轮 reasoning、offload、Weave 父子关系，以及是否出现循环。
