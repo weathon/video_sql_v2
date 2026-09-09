@@ -128,7 +128,7 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
             return response_text, conversation + [("assistant", response_text)]
         directory = self.calls / uuid.uuid4().hex
         directory.mkdir()
-        (directory / "request.json").write_text(json.dumps({"instructions": instructions, "user_message": user_message, "model": MODEL, "reasoning": {"effort": "high", "summary": "auto"}, "tag": tag}, ensure_ascii=False, indent=2) + "\n")
+        (directory / "request.json").write_text(json.dumps({"instructions": instructions, "user_message": user_message, "model": MODEL, "service_tier": "flex", "reasoning": {"effort": "high", "summary": "auto"}, "tag": tag}, ensure_ascii=False, indent=2) + "\n")
         messages = [{"role": "user", "content": user_message}]
         continuations = format_fixes = 0
         while True:
@@ -136,6 +136,7 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
             (directory / f"request-{number}.json").write_text(json.dumps(messages, ensure_ascii=False) + "\n")
             raw = self.client.responses.with_raw_response.parse(
                 model=MODEL, instructions=instructions, input=messages,
+                service_tier="flex",
                 reasoning={"effort": "high", "summary": "auto"}, store=False,
                 include=["reasoning.encrypted_content"], text_format=PatchResponse,
             )

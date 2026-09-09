@@ -137,6 +137,7 @@ def make_harness(directory, skill_dir, semaphore, metrics, timeline):
         embedding_url=EMBEDDING_URL, embedding_model="qwen3-vl-embedding-8b",
     )
     harness.context.model = LimitedResponsesModel(harness.context, semaphore, metrics)
+    harness.context.model_settings.extra_args = {"service_tier": "flex"}
     harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
     return harness
 
@@ -175,6 +176,10 @@ async def rollout(question, node, phase, skill_version, semaphore, metrics):
                     snapshot = parent["raw_responses"][node["response_index"]]["prefix_state"]
                     (attempt_dir / "prefix.json").write_text(json.dumps(snapshot, ensure_ascii=False) + "\n")
                     restored = await harness.restore_prefix(snapshot)
+                    # Only the user-authorized service tier may differ from an old prefix.
+                    harness.context.expected_prefix = copy.deepcopy(snapshot)
+                    prefix_settings = harness.context.expected_prefix["agent"]["model_settings"]
+                    prefix_settings["extra_args"] = {**(prefix_settings["extra_args"] or {}), "service_tier": "flex"}
                     session = await harness.answer(
                         question["question"], input_items=restored,
                         instructions=snapshot["agent"]["instructions"],
@@ -423,6 +428,7 @@ async def analyze(result, semaphore, metrics):
                         async with semaphore:
                             raw = await harness.context.client.responses.with_raw_response.parse(
                                 model=MODEL, instructions=instructions, input=messages,
+                                service_tier="flex",
                                 reasoning={"effort": "high", "summary": "auto"}, store=False,
                                 include=["reasoning.encrypted_content"],
                                 text_format=SuccessReport,
@@ -569,7 +575,7 @@ async def main():
     init_weave()
     config = {
         "model": MODEL, "reasoning": "high", "reasoning_summary": "auto", "base_url": BASE_URL,
-        "api": "responses", "reasoning_replay": True, "client_concurrency": 128, "replace_tool": True,
+        "api": "responses", "service_tier": "flex", "reasoning_replay": True, "client_concurrency": 128, "replace_tool": True,
         "collection": {"split": "test", "timelines": ["day", "week"], "questions_per_timeline": 200,
                        "root_rollouts": 1, "branch_rollouts": 4, "branch_before": "model_tool_decision"},
         "evaluation": {"timeline": "month", "split": "val", "questions": 100, "rollouts": 1,
