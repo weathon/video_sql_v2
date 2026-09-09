@@ -261,13 +261,23 @@ async def analyze(result, semaphore, metrics):
     if (directory / "skipped.json").exists():
         print(f"SKIP saved exhausted analysis: {directory}", flush=True)
         return None
-    # Canonical histories contain every model/tool input and returned value. Raw events,
-    # usage, duplicate API representations and images remain in the original artifacts.
+    # clip_qa is a fixed tool: analyze its caller-visible inputs and results,
+    # without exposing the visual agent's internal trajectory or sampled frames.
     histories = []
+    trace_files = []
+    media_files = set()
     for filename in result["trace_files"]:
         artifact = json.loads(Path(filename).read_text())
-        if artifact["agent"]["name"] == "judge":
+        if artifact["agent"]["name"] in ("judge", "clip-qa"):
             continue
+        trace_files.append(filename)
+        for item in artifact["history"]:
+            if item.get("type") != "function_call_output" or not isinstance(item["output"], list):
+                continue
+            for index, part in enumerate(item["output"]):
+                if part["type"] == "input_image":
+                    frame = json.loads(item["output"][index - 1]["text"])
+                    media_files.add(str(Path(filename).parent.parent / "media" / frame["filename"]))
         # Analysis reads summaries; encrypted state remains in the replay artifacts.
         histories.append({"file": filename, "agent": artifact["agent"],
                           "history": [
@@ -278,6 +288,7 @@ async def analyze(result, semaphore, metrics):
                           "tool_calls": [{k: v for k, v in call.items() if k != "original_output"}
                                          for call in artifact["tool_calls"]],
                           "error": artifact["error"]})
+    result = {**result, "trace_files": trace_files, "media_files": sorted(media_files)}
     bundle = {"question": result["question_text"], "answer": result["answer"],
               "score": result["score"], "histories": histories}
     (directory / "analysis_input.json").write_text(json.dumps(bundle, ensure_ascii=False, indent=2) + "\n")
@@ -288,6 +299,7 @@ async def analyze(result, semaphore, metrics):
             if result["success"]:
                 instructions = (UPSTREAM / "analysis/success_analysis_system_llm.txt").read_text()
                 instructions = instructions.replace("spreadsheet manipulation tasks", "video question answering tasks").replace("`input.xlsx`", "video evidence, memory database")
+                instructions += "\nTreat clip_qa as a fixed, opaque tool. Analyze its caller's decisions and use of returned answers and evidence; do not analyze or learn the visual agent's internal reasoning, sampling or cropping. Images are limited to evidence returned to the caller."
                 instructions += "\nReturn the Lean Solution Path and at most three Success Memory Items using the supplied JSON schema."
                 content = [{"type": "input_text", "text": json.dumps(bundle, ensure_ascii=False)}]
                 for filename in result["media_files"]:
@@ -372,7 +384,7 @@ async def analyze(result, semaphore, metrics):
 
                 @function_tool(failure_error_function=tool_error_json)
                 async def read_frame(file: str) -> list[ToolOutputText | ToolOutputImage]:
-                    """Load a frame recipe from media_files and dynamically render its original rollout image."""
+                    """Read a caller-visible evidence frame listed in media_files; internal video QA samples are not exposed."""
                     if file not in result["media_files"]:
                         raise ValueError("Choose a file from media_files in the task input")
                     recipe = json.loads(Path(file).read_text())
