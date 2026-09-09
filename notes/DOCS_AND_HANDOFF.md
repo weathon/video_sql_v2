@@ -191,7 +191,7 @@ SQL 连接只读，禁用外部访问和未签名扩展。语句开头只接受 
 `sample_video(sample_start_s, sample_end_s, fps, include_captions, crop_left, crop_top, crop_right, crop_bottom)`：
 
 - 采样区间必须位于本次 clip_qa 内，fps 必须有限且大于零。
-- 返回独立帧图像，每帧附 `frame_id, time_s, filename, crop`。
+- 返回独立帧图像，每帧附 `frame_id, time_s, filename, crop`；filename 指向对应的 JSON 取图记录。
 - 返回本次 `frame_count`、累计 `images_used` 和 `remaining_images`。
 - 开启 captions 时，附带与采样区间重叠的 30 秒级 episodes 全文；这些是记忆库描述，不是临时运行 ASR。
 
@@ -205,7 +205,7 @@ SQL 连接只读，禁用外部访问和未签名扩展。语句开头只接受 
 完整画面：left=0, top=0, right=1000, bottom=1000
 ```
 
-模型收到的图像为保持比例、最大 854×480 的 JPEG，quality=90、detail=high；原始 PNG 单独保存。缩放上限作用于每一帧或裁剪图。
+模型收到的图像为保持比例、最大 854×480 的 JPEG，quality=90、detail=high；JPEG 只在内存中生成，不写 JPG 文件。原始 PNG 与 JSON 取图记录保存，后续根据原始 PNG 和 crop 动态生成相同 JPEG。缩放上限作用于每一帧或裁剪图。
 
 `add_clip_note(note)` 和 `read_clip_notes()` 保存与读取该 clip 的文字笔记。
 
@@ -225,7 +225,7 @@ time_s = source.timeline_start_s + pts × time_base_num / time_base_den
 - `answered` 必须至少引用一个本 clip 已返回的 frame ID。
 - 任何引用都必须属于本 clip；无效提交作为工具错误返回，允许模型纠正。
 
-主 agent 收到 `status, answer, evidence_times_s`；answered 结果还包含对应证据图及其 frame ID、文件名和 crop。证据时间由帧记录派生，图片直接读取已经发送给视觉 agent 的 JPEG，不按时间重新 seek。模型可见的图像元数据不包含宿主机路径，完整路径留在本地媒体记录。
+主 agent 收到 `status, answer, evidence_times_s`；answered 结果还包含对应证据图及其 frame ID、JSON 记录文件名和 crop。证据时间由帧记录派生，图片根据相同取图记录在内存中重建，不按时间重新 seek。模型可见的图像元数据不包含宿主机路径。
 
 ### 累计图片额度
 
@@ -364,7 +364,6 @@ SDK 请求重试和评估层重试是两层独立机制。评估层最多执行 
                 │   ├── judge-attempt-<N>-segment-<N>.json
                 │   └── <各阶段对应的 events JSONL 与 compaction traces>
                 └── media/
-                    ├── frame-<id>.jpg
                     ├── frame-<id>.json
                     └── sample-<clip-id>-<request-id>/
                         ├── source-<source-index>-<frame-number>.png
@@ -379,10 +378,10 @@ SDK 请求重试和评估层重试是两层独立机制。评估层最多执行 
 - **根目录 result.json**：全部批次结束后写入 `rollouts, score_sum, accuracy`。
 - **segment JSON**：agent 指令、模型设置、工具 schema、初始输入、完整 SDK 历史、raw responses、usage、request/response IDs、最终输出、异常信息及对应 events 文件名。
 - **events JSONL**：从 run_start 开始逐行保存 SDK 流事件、工具调用与返回；异常前已收到的事件也会留下，适合查看中途停止的执行。
-- **frame JSON**：frame ID、逻辑时间、PTS、time base、source timeline 起点、原始 PNG 路径、发送的 JPEG 路径和 crop；裁剪记录还含 parent_frame_id。
+- **frame JSON**：frame ID、逻辑时间、PTS、time base、source timeline 起点、相对于 JSON 所在目录的原始 PNG 路径和 crop；裁剪记录还含 parent_frame_id。由 `frame_jpeg_bytes(recipe_path)` 动态生成 JPEG。
 - **ffmpeg 文件**：确切命令参数、stderr/showinfo 和原始分辨率图像，可追溯帧选择与时间计算。
 
-JSON 中的 data:image base64 替换为 `<base64-image-removed>`，实际图像保存在 media 中；完整 trace 由文本记录与媒体共同组成。正常历史中的 encrypted reasoning 不删除。结果目录应连同媒体一起保留；仅复制 segment JSON 无法还原图像证据。
+JSON 中的 data:image base64 替换为 `<base64-image-removed>`；media 保存原始 PNG 和取图记录，JPEG 按需生成。Replacement 计量也根据相邻图片说明中的 JSON 文件名重建图像，不在计量文件中重复保存 JPEG base64。正常历史中的 encrypted reasoning 不删除。结果目录应连同原始 PNG 与取图记录一起保留；仅复制 segment JSON 无法还原图像证据。
 
 独立 `src.val` 的 W&B 记录 `val/rollout_score`、题目与 rollout 编号，以及每批 `val/batch`、`val/accuracy`、`val/completed_rollouts`，批次和最终里程碑追加到工作目录的 `AGENT_STDOUT.txt`。当前 baseline 另记录平均 trace 长度、请求吞吐、平均 rollout 时长、每条 rollout 累计 replacement 节省 token 的均值及 replacement 调用次数；精确 metric 名称和口径见 [新交接文档](TRACE2SKILL_LUNA_HANDOFF.md)。
 

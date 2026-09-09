@@ -38,10 +38,12 @@
 
 W&B 保留平均 trace 长度、输入/输出 token 与请求吞吐、average rollout time、mean total context saved、replace_tool 调用次数；统计口径见 [Luna 历史指标说明](TRACE2SKILL_LUNA_HANDOFF.md#wandbweave-和本地证据)。Weave 和本地 trace metadata 增加 timeline。
 
+JPEG 已改为动态生成：保存原始 PNG、crop 和 `media/frame-*.json` 取图记录；主 agent 证据、成功分析、失败分析 `read_frame` 和 replacement 计量均通过取图记录生成内存中的 JPEG，不再保存 JPG 文件。原始 PNG 路径相对于 JSON 文件，归档 attempt 后仍可解析。已从一张真实帧的记录生成 853×480、96,053 字节 JPEG，与清理前的文件逐字节一致，检查记录在 `/tmp/video-sql-jpeg-dynamic-result.json`。本次改动尚待独立 diff review。
+
 Replacement 计量仍走 SDK `responses.input_tokens.count`，由本地 proxy 使用 vLLM 原生 Responses 转换函数及 `/tokenize` 完成。before/after 均加上相同的实际题目文本，以满足 Qwen chat template；公共部分在差值中抵消。真实文本工具往返的计数为 403，图像工具往返为 778，均与同一请求实际生成返回的 input_tokens 一致；检查记录在 `/tmp/trace2skill-nvfp4-token-count-check.json`。尚未验证完整 baseline 内的 replacement 路径。
 
 ## 当前阻塞
 
-`/raid` 已接近满盘，最近检查只剩约 39 MB；正式轨迹和媒体不能开始写入。等待用户指定有足够空间的输出位置，或明确指定可清理的旧目录；没有删除旧产物，也没有迁移正式输出。
+用户明确授权清理 `/raid/wg25r/video_sql_2/runs` 与 `/raid/wg25r/video_sql_v2/runs` 下全部 JPEG。普通用户可写部分已删除；Docker root 创建的文件通过只挂载这两个目录、无网络的清理容器删除。两个目录复查均剩余 0 个 `.jpg/.jpeg`，磁盘可用空间约 93 GiB；清理容器退出码 0，已手动删除。记录在 `/tmp/video-sql-jpeg-cleanup-docker.log` 和 `/tmp/video-sql-jpeg-cleanup-verified.json`。PNG、JSON、trace 和源视频保留；是否进一步清理 PNG、改为直接从源视频动态取帧，仍待用户确认。
 
 本次接入改动的独立 diff review 尚未完成：自动审批将审查子 agent 误判为主 agent，拒绝其读取 `REVIEW.md`；已请求明确授权。正式运行前仍需完成 diff review 和仓库要求的 Claude CLI 全量审查。没有运行 syntax checks。之后从正式 trace 检查真实工具输入输出、图像、多轮 reasoning、offload、Weave 父子关系，以及是否出现循环。

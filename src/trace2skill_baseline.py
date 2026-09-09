@@ -205,7 +205,7 @@ async def rollout(question, rollout_index, skill_version, semaphore, metrics):
                         if isinstance(output, list):
                             for index, part in enumerate(output):
                                 if part["type"] == "input_image":
-                                    recipe_name = Path(json.loads(output[index - 1]["text"])["frame_recipe"]).name
+                                    recipe_name = json.loads(output[index - 1]["text"])["filename"]
                                     recipe = path.parent / "media" / recipe_name
                                     image_bytes = await asyncio.to_thread(frame_jpeg_bytes, recipe)
                                     part["image_url"] = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
@@ -377,7 +377,7 @@ async def analyze(result, semaphore, metrics):
                         raise ValueError("Choose a file from media_files in the task input")
                     recipe = json.loads(Path(file).read_text())
                     image_bytes = await asyncio.to_thread(frame_jpeg_bytes, Path(file))
-                    return [ToolOutputText(text=json.dumps({"frame_id": recipe["frame_id"], "frame_recipe": file})),
+                    return [ToolOutputText(text=json.dumps({"frame_id": recipe["frame_id"], "filename": Path(file).name})),
                             ToolOutputImage(image_url="data:image/jpeg;base64," + base64.b64encode(image_bytes).decode(), detail="high")]
 
                 instructions = (ROOT / "baseline/error_analysis_qa.txt").read_text()

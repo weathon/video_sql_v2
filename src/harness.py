@@ -578,7 +578,6 @@ def render_frame(frame: dict[str, Any]) -> list[ToolOutputText | ToolOutputImage
             "frame_id": frame["frame_id"],
             "time_s": frame["time_s"],
             "filename": frame["recipe_path"].name,
-            "frame_recipe": str(frame["recipe_path"]),
             "crop": frame["crop"],
         })),
         ToolOutputImage(
@@ -1052,7 +1051,6 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                         "frame_id": frame_id,
                         "evidence_time_s": frame["time_s"],
                         "filename": frame["recipe_path"].name,
-                        "frame_recipe": str(frame["recipe_path"]),
                         "crop": frame["crop"],
                     }))
                 )
