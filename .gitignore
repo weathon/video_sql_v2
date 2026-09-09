@@ -23,7 +23,11 @@ media/
 runs/
 formal_runs/
 analysis/luna_seed0/leaf/
+analysis/luna_seed0/pilot/*.json
 vis/dist/
+AGENT_STDOUT.txt
+notes/*.stderr
 infra_test/*_checkpoints/
 infra/curl_sgl*.err
 infra/bench_*.json
+.analysis/
