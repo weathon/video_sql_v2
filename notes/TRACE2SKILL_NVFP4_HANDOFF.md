@@ -30,7 +30,7 @@
 
 模型 processor 的 patch size 16、merge size 2，因此单图最多 405 个视觉 token，加两个边界 token 为 407；`floor((314573−50000)/407)=650`，现有累计图像额度无需改变。
 
-新服务使用独立的 `video-sql-trace2skill-nvfp4` 网络、`video-sql-trace2skill-nvfp4-ec` encoder-cache volume 和 `trace2skill-nvfp4-*` 容器。正式运行前需要创建该网络与 tmpfs volume，并检查实际 GPU 资源。各角色通过 `.venv/bin/python -u infra/trace2skill_service.py <encoder|embedding|pd|proxy>` 在独立前台 exec 启动，不能使用 Docker `--rm`。新的 EPD 组合尚未启动验证。
+新服务使用独立的 `video-sql-trace2skill-nvfp4` 网络、`video-sql-trace2skill-nvfp4-ec` encoder-cache volume 和 `trace2skill-nvfp4-*` 容器。网络和 tmpfs volume 已创建。各角色通过 `.venv/bin/python -u infra/trace2skill_service.py <encoder|embedding|pd|proxy>` 在独立前台 exec 启动，不能使用 Docker `--rm`。本次 encoder、embedding 和 TP4 PD 均完成启动；PD 实际参数为 max-num-seqs=50、medium reasoning 对应的 thinking/preserve_thinking、MTP 3 和 CPU offload，每 rank 分配 256581838336 字节 CPU KV 预算。proxy 和正式 rollout 尚未启动，没有发送预检请求。等待下述成功分析输入方式的决定期间，三个服务已停止，退出码均为 0，并已手动删除容器；日志、命令和 `service-stop.json` 保留在新 run 目录。恢复前仍需检查实际 GPU 资源，并在正式 trace 中验证 EPD 往返。
 
 ## 输出、指标和恢复
 
@@ -40,7 +40,7 @@ W&B 保留平均 trace 长度、输入/输出 token 与请求吞吐、average ro
 
 图像已改为从源视频动态生成：`media/frame-*.json` 保存视频路径、整数 PTS、time base 和 crop；采样通过内存中的 PNG 流解码，主 agent 证据、成功分析、失败分析 `read_frame` 和 replacement 计量均通过取图记录生成内存中的 JPEG，不再保存 PNG/JPG 文件。PyAV 依赖已加入并锁定。一次真实 `sample_frames` 返回的 240 帧与旧 PNG 生成的 JPEG 全部逐字节一致，首、中、末帧动态重取也一致，输出仅包含取图记录和 ffmpeg 命令/日志；记录在 `/tmp/video-sql-source-frame-check/verification.json`。
 
-两个 runs 中的 889,065 份旧帧 JSON 已补齐源视频路径，保留原有 PTS、time base、crop 和其他字段。已逐份核对迁移后的路径；day、week、month、裁剪及归档轨迹的五份真实记录重建结果均与原图处理结果逐字节一致，PNG 删除后又重取了裁剪帧并确认一致。记录在 `/tmp/video-sql-png-migration-verified.json`、`/tmp/video-sql-migrated-frame-replay.json` 和 `/tmp/video-sql-post-cleanup-frame-replay.json`。本次改动尚待独立 diff review。
+两个 runs 中的 889,065 份旧帧 JSON 已补齐源视频路径，保留原有 PTS、time base、crop 和其他字段。已逐份核对迁移后的路径；day、week、month、裁剪及归档轨迹的五份真实记录重建结果均与原图处理结果逐字节一致，PNG 删除后又重取了裁剪帧并确认一致。记录在 `/tmp/video-sql-png-migration-verified.json`、`/tmp/video-sql-migrated-frame-replay.json` 和 `/tmp/video-sql-post-cleanup-frame-replay.json`。独立 diff review 已完成。
 
 Replacement 计量仍走 SDK `responses.input_tokens.count`，由本地 proxy 使用 vLLM 原生 Responses 转换函数及 `/tokenize` 完成。before/after 均加上相同的实际题目文本，以满足 Qwen chat template；公共部分在差值中抵消。真实文本工具往返的计数为 403，图像工具往返为 778，均与同一请求实际生成返回的 input_tokens 一致；检查记录在 `/tmp/trace2skill-nvfp4-token-count-check.json`。尚未验证完整 baseline 内的 replacement 路径。
 
@@ -50,4 +50,8 @@ Replacement 计量仍走 SDK `responses.input_tokens.count`，由本地 proxy �
 
 Docker root 创建的文件通过仅挂载这两个 runs 目录、无网络的容器处理；迁移与清理容器均退出 0 并已手动删除。记录在 `/tmp/video-sql-jpeg-cleanup-verified.json`、`/tmp/video-sql-png-reconstruction-audit.json`、`/tmp/video-sql-png-cleanup-docker.log` 和 `/tmp/video-sql-png-cleanup-verified.json`。原仓库源代码未修改。
 
-本次接入改动的独立 diff review 尚未完成：自动审批将审查子 agent 误判为主 agent，拒绝其读取 `REVIEW.md`；已请求明确授权。正式运行前仍需完成 diff review 和仓库要求的 Claude CLI 全量审查。没有运行 syntax checks。之后从正式 trace 检查真实工具输入输出、图像、多轮 reasoning、offload、Weave 父子关系，以及是否出现循环。
+用户已明确允许审查者读取 `REVIEW.md`。新的独立子 agent 已完成 `3f2f0730..f3ef7bb6` 的相关源码、配置、依赖和文档 diff review；Claude CLI 也完成全仓库审查，未触及 usage limit，报告位于 `/tmp/trace2skill-nvfp4-full-claude-review.json`。
+
+两轮审查均指出成功分析将整条 rollout 的全部图片一次发送，可能超过本地服务单请求 650 张上限。已核对旧成功样本 `question-86/rollout-02`：score=5，共 995 份媒体记录，完成尝试包含 647 份，其余来自归档尝试。已询问用户是否将成功分析改为通过 `read_trace`/`read_frame` 按需查看，并使用 `replace_tool` 清理冗余上下文，保留全部原始证据；尚待决定，代码未作此修改。Claude 对跨尝试汇总 trace、媒体和耗时的意见未采用，因为既定指标与分析保留重试过程；吞吐继续采用已记录的完成请求计量口径。
+
+没有运行 syntax checks。修复成功分析后按仓库流程审查改动，再继续正式运行；从正式 trace 检查真实工具输入输出、图像、多轮 reasoning、offload、Weave 父子关系，以及是否出现循环。
