@@ -51,9 +51,9 @@ Weave uses the Agents SDK processor and rollout roots, with local traces retaine
 Streaming requests include usage and preserve the provider's raw usage payload.
 Multimodal tool results remain in native Responses function_call_output items,
 retaining tool IDs and ordered text/images; canonical histories retain the original results.
-JPEGs are generated in memory from saved frame JSON recipes and original PNGs;
-the harness no longer writes JPG files. Analysis and replacement token counting
-regenerate images from those recipes, with PNG paths relative to the recipe directory.
+JPEGs are generated in memory from source videos using frame JSON recipes containing
+the video path, exact PTS, time base and crop; the harness writes neither PNG nor JPG files.
+Analysis and replacement token counting regenerate images from those recipes.
 Each tool result exposes an integer tool_id. replace_tool(tool_id, replacement) changes
 the model's context while preserving original outputs and replacement calls in the trace
 for Trace2Skill analysis. Its description recommends replacing the latest result for KV

@@ -195,7 +195,7 @@ SQL 连接只读，禁用外部访问和未签名扩展。语句开头只接受 
 - 返回本次 `frame_count`、累计 `images_used` 和 `remaining_images`。
 - 开启 captions 时，附带与采样区间重叠的 30 秒级 episodes 全文；这些是记忆库描述，不是临时运行 ASR。
 
-`crop_frame(frame_id, crop_left, crop_top, crop_right, crop_bottom)` 从已返回帧的原始分辨率 PNG 裁剪，生成新 frame ID，保留源帧时间并记录 `parent_frame_id`。即使传入的是先前裁剪图的 ID，坐标也仍相对于原始完整画面。
+`crop_frame(frame_id, crop_left, crop_top, crop_right, crop_bottom)` 根据已返回帧的源视频、整数 PTS 和 time base 重取原始分辨率画面并裁剪，生成新 frame ID，保留源帧时间并记录 `parent_frame_id`。即使传入的是先前裁剪图的 ID，坐标也仍相对于原始完整画面。
 
 所有 crop 坐标使用 0–1000 单位：
 
@@ -205,7 +205,7 @@ SQL 连接只读，禁用外部访问和未签名扩展。语句开头只接受 
 完整画面：left=0, top=0, right=1000, bottom=1000
 ```
 
-模型收到的图像为保持比例、最大 854×480 的 JPEG，quality=90、detail=high；JPEG 只在内存中生成，不写 JPG 文件。原始 PNG 与 JSON 取图记录保存，后续根据原始 PNG 和 crop 动态生成相同 JPEG。缩放上限作用于每一帧或裁剪图。
+模型收到的图像为保持比例、最大 854×480 的 JPEG，quality=90、detail=high；PNG 解码流与 JPEG 只在内存中生成，不写 PNG/JPG 文件。保存 JSON 取图记录，后续根据源视频、整数 PTS、time base 和 crop 动态生成相同 JPEG。缩放上限作用于每一帧或裁剪图。
 
 `add_clip_note(note)` 和 `read_clip_notes()` 保存与读取该 clip 的文字笔记。
 
@@ -225,13 +225,13 @@ time_s = source.timeline_start_s + pts × time_base_num / time_base_den
 - `answered` 必须至少引用一个本 clip 已返回的 frame ID。
 - 任何引用都必须属于本 clip；无效提交作为工具错误返回，允许模型纠正。
 
-主 agent 收到 `status, answer, evidence_times_s`；answered 结果还包含对应证据图及其 frame ID、JSON 记录文件名和 crop。证据时间由帧记录派生，图片根据相同取图记录在内存中重建，不按时间重新 seek。模型可见的图像元数据不包含宿主机路径。
+主 agent 收到 `status, answer, evidence_times_s`；answered 结果还包含对应证据图及其 frame ID、JSON 记录文件名和 crop。证据时间由帧记录派生，图片根据相同取图记录从源视频中按整数 PTS 精确选择并在内存中重建。模型可见的图像元数据不包含宿主机路径。
 
 ### 累计图片额度
 
 每个 clip_qa 最多累计返回 **650 张图片**，没有 30 张限制。采样和裁剪共用额度与异步锁，并行请求也串行检查和更新计数。重复调用工具重新发送图像会消耗新额度；SDK 重放已有历史不重新计数，`replace_tool` 不返还累计采样额度。这是保留的 harness 额度，不是 Luna 的模型容量声明。
 
-超额请求整体返回错误和剩余额度，不部分返回、不自动降低 fps 或缩短区间。额度在整次图片工具返回准备成功后更新；被拒绝请求可能已经在磁盘留下解码产物，但不会将其作为部分成功结果交给模型。
+超额请求整体返回错误和剩余额度，不部分返回、不自动降低 fps 或缩短区间。额度在整次图片工具返回准备成功后更新；被拒绝请求可能已经在磁盘留下 ffmpeg 命令和日志，但不会将图像作为部分成功结果交给模型。
 
 视觉 agent 不做 compaction。图片额度控制图片输入的增长，不能保证任意长文本和 reasoning 都不会触及上下文上限；工具或 API 错误会显式记录。
 
@@ -366,7 +366,6 @@ SDK 请求重试和评估层重试是两层独立机制。评估层最多执行 
                 └── media/
                     ├── frame-<id>.json
                     └── sample-<clip-id>-<request-id>/
-                        ├── source-<source-index>-<frame-number>.png
                         ├── ffmpeg-<source-index>.json
                         └── ffmpeg-<source-index>.log
 ```
@@ -378,10 +377,10 @@ SDK 请求重试和评估层重试是两层独立机制。评估层最多执行 
 - **根目录 result.json**：全部批次结束后写入 `rollouts, score_sum, accuracy`。
 - **segment JSON**：agent 指令、模型设置、工具 schema、初始输入、完整 SDK 历史、raw responses、usage、request/response IDs、最终输出、异常信息及对应 events 文件名。
 - **events JSONL**：从 run_start 开始逐行保存 SDK 流事件、工具调用与返回；异常前已收到的事件也会留下，适合查看中途停止的执行。
-- **frame JSON**：frame ID、逻辑时间、PTS、time base、source timeline 起点、相对于 JSON 所在目录的原始 PNG 路径和 crop；裁剪记录还含 parent_frame_id。由 `frame_jpeg_bytes(recipe_path)` 动态生成 JPEG。
-- **ffmpeg 文件**：确切命令参数、stderr/showinfo 和原始分辨率图像，可追溯帧选择与时间计算。
+- **frame JSON**：frame ID、逻辑时间、PTS、time base、source timeline 起点、源视频路径和 crop；裁剪记录还含 parent_frame_id。由 `frame_jpeg_bytes(frame)` 动态生成 JPEG。
+- **ffmpeg 文件**：确切命令参数和 stderr/showinfo，可追溯帧选择与时间计算。
 
-JSON 中的 data:image base64 替换为 `<base64-image-removed>`；media 保存原始 PNG 和取图记录，JPEG 按需生成。Replacement 计量也根据相邻图片说明中的 JSON 文件名重建图像，不在计量文件中重复保存 JPEG base64。正常历史中的 encrypted reasoning 不删除。结果目录应连同原始 PNG 与取图记录一起保留；仅复制 segment JSON 无法还原图像证据。
+JSON 中的 data:image base64 替换为 `<base64-image-removed>`；media 保存取图记录，JPEG 从源视频按需生成。Replacement 计量也根据相邻图片说明中的 JSON 文件名重建图像，不在计量文件中重复保存 JPEG base64。正常历史中的 encrypted reasoning 不删除。结果目录应连同取图记录保留，且源视频必须可访问；仅复制 segment JSON 无法还原图像证据。
 
 独立 `src.val` 的 W&B 记录 `val/rollout_score`、题目与 rollout 编号，以及每批 `val/batch`、`val/accuracy`、`val/completed_rollouts`，批次和最终里程碑追加到工作目录的 `AGENT_STDOUT.txt`。当前 baseline 另记录平均 trace 长度、请求吞吐、平均 rollout 时长、每条 rollout 累计 replacement 节省 token 的均值及 replacement 调用次数；精确 metric 名称和口径见 [新交接文档](TRACE2SKILL_LUNA_HANDOFF.md)。
 
