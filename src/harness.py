@@ -1219,6 +1219,8 @@ class VideoSQLHarness:
             (context.run_dir / "agent_notes.jsonl").write_text(snapshot["notes"])
         for filename in snapshot["media_files"]:
             source = Path(filename)
+            if source.is_dir():  # sample_video scratch directories are not replay media.
+                continue
             (context.run_dir / "media" / source.name).write_bytes(source.read_bytes())
         items = copy.deepcopy(snapshot["input"])
         for item in items:
