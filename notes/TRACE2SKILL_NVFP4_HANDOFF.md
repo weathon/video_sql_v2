@@ -54,6 +54,8 @@ Docker root 创建的文件通过仅挂载这两个 runs 目录、无网络的�
 
 两轮审查指出原成功分析将整条 rollout 的全部图片一次发送，可能超过本地服务单请求 650 张上限。用户随后明确：analysis 不进入 video QA 内部，只看 video QA 的结果，将其作为静态工具。代码已据此修改：成功和失败分析均排除 `clip-qa` 内部 trace，保留调用参数、返回答案和证据帧；分析图片列表从调用方工具结果提取，失败分析的 `read_trace`/`read_frame` 也只允许读取这一范围。失败分析仍可调用固定的 `clip_qa` 验证修正，只使用其返回结果。完整原始轨迹与帧记录继续留存，W&B 指标仍计入重试和子 agent。
 
-已人工核对旧 Luna 成功样本 `question-86/rollout-02`：共 995 份帧记录，但 `clip_qa` 实际只返回 8 张证据图；分析保留这 8 张、工具参数和完整返回答案，排除三个视觉内部 trace。记录在 `/tmp/trace2skill-opaque-videoqa-evidence-audit.json`。本次边界修改已提交并交给新的独立子 agent 审查。
+已人工核对旧 Luna 成功样本 `question-86/rollout-02`：共 995 份帧记录，但 `clip_qa` 实际只返回 8 张证据图；分析保留这 8 张、工具参数和完整返回答案，排除三个视觉内部 trace。记录在 `/tmp/trace2skill-opaque-videoqa-evidence-audit.json`。本次边界修改 `71d791bb` 的独立 diff review 已完成，无阻塞项；随后 Claude CLI 已完成新边界下的全仓库审查，报告在 `/tmp/trace2skill-opaque-videoqa-full-claude-review.json`。
 
-没有运行 syntax checks。完成本次改动的审查后继续正式运行；从正式 trace 检查真实工具输入输出、图像、多轮 reasoning、offload、Weave 父子关系，以及是否出现循环。
+Claude 提出的失败分析可见 reference answer 的意见未采用：已核对上游 `analysis/error_analysis_system.txt`，其失败分析明确读取 ground-truth solution，并用 `evaluate_output` 验证最小修正；禁止在学习报告中提及 gold 的要求也同时存在。当前 QA 桥接保留这一分析方式，答题 agent 仍不接收 reference answer。
+
+没有运行 syntax checks。审查已完成，继续正式运行；从正式 trace 检查真实工具输入输出、图像、多轮 reasoning、offload、Weave 父子关系，以及是否出现循环。
