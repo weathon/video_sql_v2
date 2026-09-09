@@ -4,13 +4,13 @@ import asyncio
 import base64
 import copy
 import dataclasses
+import itertools
 import json
 import random
 import shutil
 import sys
 import time
 import uuid
-from collections import deque
 from pathlib import Path
 
 import weave
@@ -18,14 +18,14 @@ import wandb
 from agents import Agent, OpenAIResponsesModel, StopAtTools, ToolOutputImage, ToolOutputText, function_tool, trace
 from dotenv import dotenv_values
 from pydantic import BaseModel, Field, ValidationError
-from third_party.trace2skill.tracing_bridge import init_weave
+from third_party.trace2skill.tracing_bridge import RunMetrics, init_weave, response_cost
 
-from src.harness import OPENAI_BASE_URL, InvalidTrace, VideoSQLHarness, frame_jpeg_bytes, run_stream, stripped_json, tool_error_json
+from src.harness import OPENAI_BASE_URL, REQUEST_TRACE, InvalidTrace, VideoSQLHarness, frame_jpeg_bytes, run_stream, stripped_json, tool_error_json
 from src.val import JudgeAttemptsExhausted, judge_answer, retryable, write_error
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = ROOT / "runs/trace2skill-baseline-api-day-week-seed0"
+RUN = ROOT / "runs/luna-day-week-tree-month-val-seed0"
 UPSTREAM = ROOT / "third_party/trace2skill"
 RUNTIME = Path("/raid/wg25r/video_sql_v2/data/runtime")
 DATASET = Path("/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443")
@@ -52,58 +52,45 @@ class FailureReport(BaseModel):
     failure_memory: list[MemoryItem] = Field(max_length=3)
 
 
-class RunMetrics:
-    def __init__(self, run, phase):
+class RequestSlots:
+    def __init__(self, run):
+        self.semaphore = asyncio.Semaphore(128)
         self.run = run
-        self.phase = phase
-        self.started = time.monotonic()
-        self.responses = deque()
-        self.trace_lengths = []
-        self.rollout_times = []
-        self.replacement_metrics = []
+        self.active = 0
+        self.peak = 0
 
-    def record_response(self, usage):
-        now = time.monotonic()
-        self.responses.append((now, usage["input_tokens"], usage["output_tokens"]))
-        while self.responses[0][0] < now - 60:
-            self.responses.popleft()
-        elapsed = min(now - self.started, 60)
-        # Completion-accounted throughput over the last 60 seconds, including nested
-        # agents, retries and judge; input counts include tokens served from cache.
-        self.run.log({
-            f"{self.phase}/throughput/input_tokens_per_s": sum(r[1] for r in self.responses) / elapsed,
-            f"{self.phase}/throughput/output_tokens_per_s": sum(r[2] for r in self.responses) / elapsed,
-            f"{self.phase}/throughput/responses_per_s": len(self.responses) / elapsed,
-            f"{self.phase}/request_context_tokens": usage["input_tokens"] + usage["output_tokens"],
-        })
+    async def __aenter__(self):
+        await self.semaphore.acquire()
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        self.run.log({"client/active_requests": self.active, "client/peak_requests": self.peak})
 
-    def record_rollout(self, result):
-        self.trace_lengths.append(result["trace_length"])
-        self.rollout_times.append(result["rollout_time_seconds"])
-        self.replacement_metrics.append(result["replacement_metrics"])
-        count = len(self.trace_lengths)
-        values = {f"{self.phase}/completed_rollouts": count,
-                  f"{self.phase}/average_rollout_time_seconds": sum(self.rollout_times) / count,
-                  f"{self.phase}/mean_total_context_saved_tokens": sum(r["total_context_saved_tokens"] for r in self.replacement_metrics) / count,
-                  f"{self.phase}/replace_tool_calls": sum(r["replace_tool_calls"] for r in self.replacement_metrics)}
-        for key in result["trace_length"]:
-            values[f"{self.phase}/trace/mean_{key}"] = sum(r[key] for r in self.trace_lengths) / count
-        self.run.log(values)
-        (RUN / f"{self.phase}-trace-metrics.json").write_text(json.dumps(values, indent=2) + "\n")
+    async def __aexit__(self, *exc):
+        self.active -= 1
+        self.semaphore.release()
 
 
 class LimitedResponsesModel(OpenAIResponsesModel):
-    def __init__(self, client, semaphore, metrics):
-        super().__init__(model=MODEL, openai_client=client)
+    def __init__(self, context, semaphore, metrics):
+        super().__init__(model=MODEL, openai_client=context.client)
+        self.context = context
         self.semaphore = semaphore
         self.metrics = metrics
 
     async def stream_response(self, *args, **kwargs):
-        # Acquire per model request, so nested agents and judges share the same 256 slots.
+        request = REQUEST_TRACE.get()
         async with self.semaphore:
             async for event in super().stream_response(*args, **kwargs):
                 if event.type == "response.completed":
-                    self.metrics.record_response(event.response.usage.model_dump())
+                    response = event.response
+                    recorded = {"response_id": response.id, "agent": request["agent"],
+                                "usage": response.usage.model_dump(), "service_tier": response.service_tier}
+                    self.context.response_usage[response.id] = recorded
+                    if request["agent"] != "judge":
+                        self.context.path_responses.append(recorded)
+                    if "snapshot" in request:
+                        self.context.response_states[response.id] = request["snapshot"]
+                    self.metrics.record_response(recorded)
                 yield event
 
 
@@ -127,126 +114,243 @@ def make_harness(directory, skill_dir, semaphore, metrics, timeline):
         model_name=MODEL, api_key=API_KEY, base_url=BASE_URL,
         embedding_url=EMBEDDING_URL, embedding_model="qwen3-vl-embedding-8b",
     )
-    harness.context.model = LimitedResponsesModel(harness.context.client, semaphore, metrics)
+    harness.context.model = LimitedResponsesModel(harness.context, semaphore, metrics)
     harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
     return harness
 
 
 @weave.op(postprocess_inputs=lambda x: {k: v for k, v in x.items() if k not in ("semaphore", "metrics")})
-async def rollout(question, rollout_index, skill_version, semaphore, metrics):
-    directory = RUN / skill_version / question["timeline"] / f"question-{question['index']}" / f"rollout-{rollout_index:02d}"
+async def rollout(question, node, phase, skill_version, semaphore, metrics):
+    directory = RUN / phase / question["timeline"] / f"question-{question['index']}" / f"rollout-{node['index']:02d}"
     directory.mkdir(parents=True, exist_ok=True)
+    saved_answer = directory / "answer.json"
+    if saved_answer.exists():
+        return json.loads(saved_answer.read_text())
+    if (directory / "skipped.json").exists():
+        print(f"SKIP saved exhausted rollout: {directory}", flush=True)
+        return None
+    metadata = {"run": RUN.name, "timeline": question["timeline"], "question": str(question["index"]),
+                "rollout": node["index"], "skill_version": skill_version, "phase": phase,
+                "parent_rollout": node["parent"]}
+    for attempt in range(1, 4):
+        attempt_dir = directory / f"attempt-{attempt}"
+        if (attempt_dir / "error.json").exists():
+            continue
+        if attempt_dir.exists():
+            attempt_dir.rename(directory / f"interrupted-{attempt}-{uuid.uuid4().hex}")
+        harness = make_harness(attempt_dir, RUN / "skills" / skill_version, semaphore, metrics, question["timeline"])
+        harness.context.model_settings.extra_body = {
+            "prompt_cache_key": f"{RUN.name}:{phase}:{question['timeline']}:{question['index']}"
+        }
+        started = time.monotonic()
+        try:
+            with weave.attributes({**metadata, "attempt": attempt}), trace("Trace2Skill QA rollout", metadata=metadata):
+                if node["parent"] is None:
+                    session = await harness.answer(question["question"])
+                else:
+                    parent = json.loads(Path(node["source_trace"]).read_text())
+                    snapshot = parent["raw_responses"][node["response_index"]]["prefix_state"]
+                    (attempt_dir / "prefix.json").write_text(json.dumps(snapshot, ensure_ascii=False) + "\n")
+                    restored = await harness.restore_prefix(snapshot)
+                    session = await harness.answer(
+                        question["question"], input_items=restored,
+                        instructions=snapshot["agent"]["instructions"],
+                        base_instructions=snapshot["base_instructions"], compactions=snapshot["compactions"],
+                    )
+                if session.status != "answered" or session.answer is None:
+                    raise InvalidTrace(f"QA ended without an answer: {session.status}")
+            path_responses = harness.context.path_responses
+            trajectory = attempt_dir / "trajectory.json"
+            trajectory.write_text(json.dumps({"histories": harness.context.path_histories}, ensure_ascii=False, indent=2) + "\n")
+            answer = {
+                **metadata, "attempt": attempt, **dataclasses.asdict(session),
+                "directory": str(directory), "trajectory_file": str(trajectory),
+                "question_text": question["question"], "reference_answer": question["answer"],
+                "media_files": sorted(str(p) for p in (attempt_dir / "media").glob("frame-*.json")),
+                "trace_length": {
+                    "generated_tokens": sum(r["usage"]["output_tokens"] for r in path_responses),
+                    "model_calls": len(path_responses), "tool_calls": len(harness.context.tool_calls),
+                    "input_tokens": sum(r["usage"]["input_tokens"] for r in path_responses) / len(path_responses),
+                    "peak_context_tokens": max(r["usage"]["input_tokens"] + r["usage"]["output_tokens"] for r in path_responses),
+                },
+                "rollout_time_seconds": time.monotonic() - started + sum(
+                    json.loads(p.read_text())["seconds"] for p in directory.glob("*/rollout-time.json")),
+            }
+            saved_answer.write_text(json.dumps(answer, ensure_ascii=False, indent=2) + "\n")
+            print(f"ANSWER phase={phase} timeline={question['timeline']} question={question['index']} rollout={node['index']}", flush=True)
+            return answer
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:
+            write_error(attempt_dir / "error.json", error)
+            if not retryable(error):
+                raise
+        finally:
+            (attempt_dir / "rollout-time.json").write_text(json.dumps({"seconds": time.monotonic() - started}) + "\n")
+            await harness.close()
+    (directory / "skipped.json").write_text(json.dumps({**metadata, "reason": "qa_attempts_exhausted"}, indent=2) + "\n")
+    print(f"SKIP QA attempts exhausted: {directory}", flush=True)
+    return None
+
+
+@weave.op(postprocess_inputs=lambda x: {k: v for k, v in x.items() if k not in ("semaphore", "metrics")})
+async def score_rollout(answer, semaphore, metrics):
+    directory = Path(answer["directory"])
     result_path = directory / "result.json"
     if result_path.exists():
         return json.loads(result_path.read_text())
     if (directory / "skipped.json").exists():
-        print(f"SKIP saved exhausted rollout: {directory}", flush=True)
         return None
-    skill_dir = RUN / "skills" / skill_version
-    metadata = {"run": RUN.name, "timeline": question["timeline"], "question": str(question["index"]),
-                "rollout": rollout_index, "skill_version": skill_version}
-    with weave.attributes(metadata), trace("Trace2Skill QA rollout", metadata=metadata):
-        for attempt in range(1, 4):
-            attempt_dir = directory / f"attempt-{attempt}"
-            if (attempt_dir / "error.json").exists():
-                continue
-            if attempt_dir.exists() and not (attempt_dir / "answer.json").exists():
-                attempt_dir.rename(directory / f"interrupted-{attempt}-{uuid.uuid4().hex}")
-            harness = make_harness(attempt_dir, skill_dir, semaphore, metrics, question["timeline"])
+    attempt_dir = directory / f"attempt-{answer['attempt']}"
+    harness = make_harness(attempt_dir, RUN / "skills" / answer["skill_version"], semaphore, metrics, answer["timeline"])
+    try:
+        judgment_path = directory / "judgment.json"
+        if judgment_path.exists():
+            score = json.loads(judgment_path.read_text())["score"]
+        else:
             try:
-                with weave.attributes({"attempt": attempt}):
-                    answer_path = attempt_dir / "answer.json"
-                    if answer_path.exists():
-                        answer = json.loads(answer_path.read_text())
-                    else:
-                        started = time.monotonic()
-                        try:
-                            session = await harness.answer(question["question"])
-                        finally:
-                            (attempt_dir / "rollout-time.json").write_text(json.dumps({
-                                "seconds": time.monotonic() - started,
-                            }) + "\n")
-                        if session.status != "answered" or session.answer is None:
-                            raise InvalidTrace(f"QA ended without an answer: {session.status}")
-                        answer = dataclasses.asdict(session)
-                        answer_path.write_text(json.dumps(answer, ensure_ascii=False, indent=2) + "\n")
-                    score = await judge_answer(harness, question["question"], question["answer"], answer["answer"], 3)
-                result = {**metadata, "attempt": attempt, "question_text": question["question"],
-                          "reference_answer": question["answer"], "answer": answer["answer"],
-                          "score": score, "success": score >= 4, "status": "answered",
-                          "rollout_time_seconds": sum(json.loads(p.read_text())["seconds"]
-                                                      for p in directory.glob("*/rollout-time.json")),
-                          "trace_files": sorted(str(p) for p in directory.rglob("traces/*.json")),
-                          "media_files": sorted(str(p) for p in directory.rglob("media/frame-*.json"))}
-                responses = []
-                tool_count = 0
-                replace_count = 0
-                replacement_call_ids = set()
-                for filename in result["trace_files"]:
-                    artifact = json.loads(Path(filename).read_text())
-                    if artifact["agent"]["name"] != "judge":
-                        responses.extend(artifact["raw_responses"])
-                        tool_count += len(artifact["tool_calls"])
-                        replace_count += sum(call["name"] == "replace_tool" for call in artifact["tool_calls"])
-                        replacement_call_ids.update(call["call_id"] for call in artifact["tool_calls"] if call["name"] == "replace_tool")
-                total_context_saved = 0
-                for path in sorted(directory.glob("*/replace-*.json")):
-                    measurement = json.loads(path.read_text())
-                    if measurement["replace_call_id"] not in replacement_call_ids:
-                        continue
-                    for side in ("before", "after"):
-                        if f"{side}_tokens" in measurement:
-                            continue
-                        print(f"count replacement tokens side={side} artifact={path}", flush=True)
-                        items = copy.deepcopy(measurement[side])
-                        output = items[1]["output"]
-                        if isinstance(output, list):
-                            for index, part in enumerate(output):
-                                if part["type"] == "input_image":
-                                    recipe_name = json.loads(output[index - 1]["text"])["filename"]
-                                    recipe = path.parent / "media" / recipe_name
-                                    image_bytes = await asyncio.to_thread(frame_jpeg_bytes, json.loads(recipe.read_text()))
-                                    part["image_url"] = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
-                        async with semaphore:
-                            token_count = await harness.context.client.responses.input_tokens.count(
-                                model=MODEL,
-                                input=[{"role": "user", "content": question["question"]}, *items],
-                                reasoning=measurement["reasoning"],
-                            )
-                        measurement[f"{side}_tokens"] = token_count.input_tokens
-                        path.write_text(json.dumps(measurement, ensure_ascii=False) + "\n")
-                    total_context_saved += measurement["before_tokens"] - measurement["after_tokens"]
-                result["replacement_metrics"] = {
-                    "total_context_saved_tokens": total_context_saved,
-                    "replace_tool_calls": replace_count,
-                }
-                result["trace_length"] = {
-                    "generated_tokens": sum(r["usage"]["output_tokens"] for r in responses),
-                    "model_calls": len(responses), "tool_calls": tool_count,
-                    "input_tokens": sum(r["usage"]["input_tokens"] for r in responses) / len(responses),
-                    "peak_context_tokens": max(r["usage"]["input_tokens"] + r["usage"]["output_tokens"] for r in responses),
-                }
-                result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
-                print(f"{skill_version} timeline={question['timeline']} question={question['index']} rollout={rollout_index} score={score}", flush=True)
-                return result
-            except asyncio.CancelledError:
-                raise
+                score = await judge_answer(harness, answer["question_text"], answer["reference_answer"], answer["answer"], 3)
             except JudgeAttemptsExhausted as error:
-                write_error(attempt_dir / "error.json", error)
-                break
-            except BaseException as error:
-                write_error(attempt_dir / "error.json", error)
-                if not retryable(error):
-                    raise
+                (directory / "skipped.json").write_text(json.dumps({"reason": "judge_attempts_exhausted", "error": str(error)}) + "\n")
+                print(f"SKIP judge attempts exhausted: {directory}", flush=True)
+                return None
+            judgment_path.write_text(json.dumps({"score": score}) + "\n")
+        trace_files = sorted(str(p) for p in directory.rglob("traces/*.json"))
+        billable = {}
+        replacement_call_ids = set()
+        for filename in trace_files:
+            artifact = json.loads(Path(filename).read_text())
+            for response in artifact["raw_responses"]:
+                billable[response["response_id"]] = response["api_usage"]
+            if artifact["agent"]["name"] != "judge":
+                replacement_call_ids.update(call["call_id"] for call in artifact["tool_calls"] if call["name"] == "replace_tool")
+        total_context_saved = 0
+        for path in sorted(directory.glob("*/replace-*.json")):
+            measurement = json.loads(path.read_text())
+            if measurement["replace_call_id"] not in replacement_call_ids:
+                continue
+            for side in ("before", "after"):
+                if f"{side}_tokens" in measurement:
+                    continue
+                items = copy.deepcopy(measurement[side])
+                output = items[1]["output"]
+                if isinstance(output, list):
+                    for index, part in enumerate(output):
+                        if part["type"] == "input_image":
+                            recipe_name = json.loads(output[index - 1]["text"])["filename"]
+                            recipe = path.parent / "media" / recipe_name
+                            image_bytes = await asyncio.to_thread(frame_jpeg_bytes, json.loads(recipe.read_text()))
+                            part["image_url"] = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
+                print(f"count replacement tokens side={side} artifact={path}", flush=True)
+                async with semaphore:
+                    token_count = await harness.context.client.responses.input_tokens.count(
+                        model=MODEL, input=[{"role": "user", "content": answer["question_text"]}, *items],
+                        reasoning=measurement["reasoning"],
+                    )
+                measurement[f"{side}_tokens"] = token_count.input_tokens
+                path.write_text(json.dumps(measurement, ensure_ascii=False) + "\n")
+            total_context_saved += measurement["before_tokens"] - measurement["after_tokens"]
+        result = {
+            **answer, "score": score, "success": score >= 4, "trace_files": trace_files,
+            "cost_usd": sum(response_cost(r) for r in billable.values()),
+            "replacement_metrics": {"total_context_saved_tokens": total_context_saved,
+                                    "replace_tool_calls": len(replacement_call_ids)},
+        }
+        result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+        print(f"SCORE phase={answer['phase']} timeline={answer['timeline']} question={answer['question']} rollout={answer['rollout']} score={score}", flush=True)
+        return result
+    finally:
+        await harness.close()
+
+
+async def collect_trees(questions, semaphore, metrics):
+    jobs = asyncio.PriorityQueue()
+    order = itertools.count()
+    trees = {}
+    results = []
+    for question in questions:
+        key = (question["timeline"], question["index"])
+        tree_file = RUN / "collection" / key[0] / f"question-{key[1]}" / "tree.json"
+        tree_file.parent.mkdir(parents=True, exist_ok=True)
+        if tree_file.exists():
+            tree = json.loads(tree_file.read_text())
+        else:
+            tree = {"timeline": key[0], "question": key[1],
+                    "nodes": [{"index": 0, "parent": None, "expanded": False}]}
+            tree_file.write_text(json.dumps(tree, indent=2) + "\n")
+        trees[key] = (tree_file, tree)
+        for node in tree["nodes"]:
+            jobs.put_nowait((2 if node["parent"] is None else 0, next(order), "qa", question, node))
+
+    async def worker():
+        while True:
+            _, _, kind, question, node = await jobs.get()
+            try:
+                if kind == "score":
+                    result = await score_rollout(node, semaphore, metrics)
+                    if result is not None:
+                        results.append(result)
+                        metrics.record_rollout(result)
+                    continue
+                answer = await rollout(question, node, "collection", "initial", semaphore, metrics)
+                tree_file, tree = trees[(question["timeline"], question["index"])]
+                if answer is None:
+                    node["skipped"] = True
+                    node["expanded"] = True
+                    tree_file.write_text(json.dumps(tree, indent=2) + "\n")
+                    continue
+                if not node["expanded"]:
+                    candidates = []
+                    for filename in answer["trace_files"]:
+                        artifact = json.loads(Path(filename).read_text())
+                        if artifact["agent"]["name"] != "memory-retrieval":
+                            continue
+                        for index, response in enumerate(artifact["raw_responses"]):
+                            calls = [item for item in response["output"] if item["type"] == "function_call"]
+                            if calls and all(call["name"] not in ("submit_answer", "agent_raise") for call in calls):
+                                candidates.append((filename, index))
+                    randomizer = random.Random(f"0:{question['timeline']}:{question['index']}:{node['index']}")
+                    selected = randomizer.sample(candidates, min(5 - len(tree["nodes"]), len(candidates)))
+                    for filename, response_index in selected:
+                        child = {"index": len(tree["nodes"]), "parent": node["index"], "expanded": False,
+                                 "source_trace": filename, "response_index": response_index}
+                        tree["nodes"].append(child)
+                        jobs.put_nowait((0, next(order), "qa", question, child))
+                    node["expanded"] = True
+                    tree_file.write_text(json.dumps(tree, indent=2) + "\n")
+                jobs.put_nowait((1, next(order), "score", question, answer))
             finally:
-                await harness.close()
-    (directory / "skipped.json").write_text(json.dumps({
-        **metadata, "status": "skipped", "reason": "qa_or_judge_attempts_exhausted",
-        "trace_files": sorted(str(p) for p in directory.rglob("traces/*.json")),
-        "media_files": sorted(str(p) for p in directory.rglob("media/frame-*.json")),
-    }, indent=2) + "\n")
-    print(f"SKIP QA/judge attempts exhausted: {directory}", flush=True)
-    return None
+                jobs.task_done()
+
+    async with asyncio.TaskGroup() as group:
+        workers = [group.create_task(worker()) for _ in range(128)]
+        await jobs.join()
+        for task in workers:
+            task.cancel()
+    for tree_file, tree in trees.values():
+        if len(tree["nodes"]) < 5 and not any("skipped" in node for node in tree["nodes"]):
+            raise RuntimeError(f"No unused nonterminal tool points remain before four branches: {tree_file}")
+    return sorted(results, key=lambda r: (r["timeline"], int(r["question"]), r["rollout"]))
+
+
+async def evaluate_month(questions, version, semaphore, metrics):
+    jobs = iter(questions)
+    results = []
+
+    async def worker():
+        for question in jobs:
+            answer = await rollout(question, {"index": 0, "parent": None}, f"month-{version}", version, semaphore, metrics)
+            if answer is None:
+                continue
+            result = await score_rollout(answer, semaphore, metrics)
+            if result is not None:
+                results.append(result)
+                metrics.record_rollout(result)
+
+    async with asyncio.TaskGroup() as group:
+        for _ in range(128):
+            group.create_task(worker())
+    return sorted(results, key=lambda r: int(r["question"]))
 
 
 @weave.op(postprocess_inputs=lambda x: {"timeline": x["result"]["timeline"], "question": x["result"]["question"], "rollout": x["result"]["rollout"], "success": x["result"]["success"]})
