@@ -22,6 +22,8 @@ data/runtime/
 media/
 runs/
 formal_runs/
+analysis/luna_seed0/leaf/
+vis/dist/
 infra_test/*_checkpoints/
 infra/curl_sgl*.err
 infra/bench_*.json
