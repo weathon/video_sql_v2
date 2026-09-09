@@ -1,4 +1,4 @@
-"""Chat structured-parse and flat-subskill bridge for pinned Trace2Skill."""
+"""Responses structured-parse and flat-subskill bridge for pinned Trace2Skill."""
 
 import dataclasses
 import json
@@ -17,6 +17,7 @@ import httpx2
 import weave
 import yaml
 from openai import DefaultHttpxClient, OpenAI
+from dotenv import dotenv_values
 from pydantic import BaseModel, ValidationError
 
 import skill_evolver.parallel_evolving_agent as parallel
@@ -25,7 +26,7 @@ from skill_evolver.skill_evolving_agent import SkillEvolver
 from tracing_bridge import init_weave
 
 
-MODEL = "Inferact/Qwen3.8-Flash-Next-NVFP4"
+MODEL = "gpt-5.6-luna"
 HEADER = "---\nname: video-memory-qa\ndescription: Retrieve and verify evidence to answer questions about long videos.\n---\n\n"
 BRIDGE_RULES = """
 Environment adaptation: SKILL.md is the automatically loaded ROOT-SKILL guide.
@@ -125,7 +126,7 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
             return response_text, conversation + [("assistant", response_text)]
         directory = self.calls / uuid.uuid4().hex
         directory.mkdir()
-        (directory / "request.json").write_text(json.dumps({"instructions": instructions, "user_message": user_message, "model": MODEL, "reasoning": {"effort": "medium"}, "tag": tag}, ensure_ascii=False, indent=2) + "\n")
+        (directory / "request.json").write_text(json.dumps({"instructions": instructions, "user_message": user_message, "model": MODEL, "reasoning": {"effort": "high", "summary": "auto"}, "tag": tag}, ensure_ascii=False, indent=2) + "\n")
         messages = [{"role": "user", "content": user_message}]
         continuations = format_fixes = 0
         while True:
@@ -133,7 +134,8 @@ class BaselineEvolver(CombinedParallelSkillEvolver):
             (directory / f"request-{number}.json").write_text(json.dumps(messages, ensure_ascii=False) + "\n")
             raw = self.client.responses.with_raw_response.parse(
                 model=MODEL, instructions=instructions, input=messages,
-                reasoning={"effort": "medium"}, store=False, text_format=PatchResponse,
+                reasoning={"effort": "high", "summary": "auto"}, store=False,
+                include=["reasoning.encrypted_content"], text_format=PatchResponse,
             )
             body = raw.content
             (directory / f"response-{number}.json").write_bytes(body)
@@ -224,7 +226,8 @@ def evolve(run_directory):
         root += f"- [{source.stem}](references/{source.name})\n"
     (working / "SKILL.md").write_text(root)
     client = OpenAI(
-        api_key="EMPTY", base_url="http://127.0.0.1:8003/v1", max_retries=3,
+        api_key=dotenv_values(Path(__file__).resolve().parents[2] / ".env")["PERSONAL_OPENAI_KEY"],
+        base_url="https://api.openai.com/v1", max_retries=3,
         http_client=DefaultHttpxClient(
             timeout=httpx2.Timeout(connect=60, read=100000, write=100000, pool=100000),
             limits=httpx2.Limits(max_connections=1000, max_keepalive_connections=256),

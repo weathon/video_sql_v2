@@ -1,10 +1,10 @@
 # 问答 Harness 与 Trace2Skill baseline
 
-当前 worktree 为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。当前 baseline 已切换到修复 TP4 padding 的 NVFP4 模型，从 day/week 非 training split 各抽 100 题重新采集；不复用 Luna 轨迹。新实验尚未启动，配置和阻塞见 [TRACE2SKILL_NVFP4_HANDOFF.md](TRACE2SKILL_NVFP4_HANDOFF.md)；旧 Luna 记录保留在 [TRACE2SKILL_LUNA_HANDOFF.md](TRACE2SKILL_LUNA_HANDOFF.md)。
+当前 worktree 为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。本地推理支持已在 `60c84b62` 留存快照，随后移除；当前仅保留 API 路径，暂停等待用户向下一位 agent 指定 API 配置。当前交接见 [TRACE2SKILL_API_HANDOFF.md](TRACE2SKILL_API_HANDOFF.md)；旧 NVFP4 和 Luna 记录分别保留在 [TRACE2SKILL_NVFP4_HANDOFF.md](TRACE2SKILL_NVFP4_HANDOFF.md) 和 [TRACE2SKILL_LUNA_HANDOFF.md](TRACE2SKILL_LUNA_HANDOFF.md)。
 
 这个 harness 使用静态检索技能回答长视频问题。主 agent 在预先构建的 DuckDB 记忆库和 embedding 索引中定位线索，按需调用视觉 agent 检查源视频，再提交开放式答案。评估入口为每道题运行多个独立 rollout，并用 judge 评分。
 
-问答期间 skills 只读，不进行 reflection 或技能更新。当前 baseline 的技能学习由 `src.trace2skill_baseline` 在采集完成后交给上游 Trace2Skill Combined 执行，再冻结技能做同一子集复评。主检索、视觉问答、SQL 问答、judge 和技能分析均使用本地 NVFP4 Responses API；embedding 使用独立的 Qwen3-VL-Embedding-8B 服务。
+问答期间 skills 只读，不进行 reflection 或技能更新。当前 baseline 的技能学习由 `src.trace2skill_baseline` 在采集完成后交给上游 Trace2Skill Combined 执行，再冻结技能做同一子集复评。主检索、视觉问答、SQL 问答、judge 和技能分析均使用 Responses API；embedding 保留独立 API 接口，模型必须与已有索引匹配。
 
 ## 1. 架构与代码入口
 
@@ -57,7 +57,7 @@ PERSONAL_OPENAI_KEY=YOUR_OPENAI_API_KEY
 
 这里使用 `dotenv_values` 直接读取文件；仅在 shell 中 export 同名变量不能替代该文件。密钥不写入 run 配置或本地 trace。
 
-以下为 `src.val` 和 `VideoSQLHarness` 的 Luna 默认设置；当前 NVFP4 baseline 在入口中覆盖模型、endpoint 和 reasoning，见 [新实验配置](TRACE2SKILL_NVFP4_HANDOFF.md#模型与服务)。
+以下为当前保留的 Luna API 默认设置；用户尚未指定下一次 API 配置，本次未启动运行，见 [当前交接](TRACE2SKILL_API_HANDOFF.md)。
 
 | 配置 | 值或行为 |
 | --- | --- |
@@ -75,10 +75,9 @@ PERSONAL_OPENAI_KEY=YOUR_OPENAI_API_KEY
 
 当前 baseline 的实际请求共享 256 个并发名额，包括嵌套 agent、judge、embedding 和 replacement token counting。HTTP connect timeout 为 60 秒，read/write/pool timeout 为 100000 秒；最大连接数 1000，keep-alive 256。
 
-Embedding 服务须提供兼容的 `POST /v1/embeddings` 接口。配套配置为：
+Embedding API 须提供兼容的 `POST /v1/embeddings` 接口。baseline 从本 worktree 的 `.env` 读取 `EMBEDDING_URL`，没有本地 endpoint 默认值；具体接入待用户指定。模型仍须匹配现有索引：
 
 ```text
-URL:   http://127.0.0.1:8014/v1
 model: qwen3-vl-embedding-8b
 ```
 
@@ -253,7 +252,7 @@ Compaction 使用同一个主 Agent 和原会话，临时移除工具，要求�
 
 ## 7. 独立评估入口
 
-本节是 `src.val` 的独立评估接口，不是当前 Trace2Skill baseline 的恢复命令。当前暂停 run 的恢复入口和前台 embedding 启动步骤见 [新交接文档](TRACE2SKILL_LUNA_HANDOFF.md#训练协议与恢复行为)；当前不启动 held-out 评估。
+本节是 `src.val` 的独立评估接口，不是当前 Trace2Skill baseline 的恢复命令。API 接入与运行状态见 [当前交接文档](TRACE2SKILL_API_HANDOFF.md)；当前不启动 held-out 评估。
 
 在仓库根目录运行。以下为新评估目录的启动示例；embedding API、数据、.env 和 W&B 登录应已准备好：
 
@@ -266,7 +265,7 @@ PYTHONUNBUFFERED=1 HF_HOME=/raid/huggingface .venv/bin/python -m src.val \
   --skill-dir skills/initial \
   --model-name gpt-5.6-luna \
   --api-key-env PERSONAL_OPENAI_KEY \
-  --embedding-url http://127.0.0.1:8014/v1 \
+  --embedding-url "$EMBEDDING_URL" \
   --embedding-model qwen3-vl-embedding-8b \
   --batch-size 30 --rollouts 5 --attempts 3 \
   > runs/training-free-example/eval.log 2>&1
@@ -390,4 +389,4 @@ Baseline 的 Weave 使用完整 rollout 调用树，包含主 agent、工具、�
 
 ## 11. 历史固定前缀对比轨迹采集
 
-固定前缀 branching、Qwen 训练轨迹采集及其 GPU/endpoint 配置属于原仓库的历史方法。完整过程和产物链接保留在 [原仓库交接文档](/raid/wg25r/video_sql_v2/notes/DOCS_AND_HANDOFF.md) 的第 11 节；本 worktree 的当前运行与恢复以 [Luna + Trace2Skill 交接文档](TRACE2SKILL_LUNA_HANDOFF.md) 为准。
+固定前缀 branching、Qwen 训练轨迹采集及其 GPU/endpoint 配置属于原仓库的历史方法。完整过程和产物链接保留在 [原仓库交接文档](/raid/wg25r/video_sql_v2/notes/DOCS_AND_HANDOFF.md) 的第 11 节；本 worktree 的当前运行与恢复以 [API 交接文档](TRACE2SKILL_API_HANDOFF.md) 为准。

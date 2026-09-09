@@ -15,22 +15,24 @@ from pathlib import Path
 
 import weave
 import wandb
-from agents import Agent, ModelSettings, OpenAIResponsesModel, StopAtTools, ToolOutputImage, ToolOutputText, function_tool, trace
+from agents import Agent, OpenAIResponsesModel, StopAtTools, ToolOutputImage, ToolOutputText, function_tool, trace
+from dotenv import dotenv_values
 from pydantic import BaseModel, Field, ValidationError
 from third_party.trace2skill.tracing_bridge import init_weave
 
-from src.harness import InvalidTrace, VideoSQLHarness, frame_jpeg_bytes, run_stream, stripped_json, tool_error_json
+from src.harness import OPENAI_BASE_URL, InvalidTrace, VideoSQLHarness, frame_jpeg_bytes, run_stream, stripped_json, tool_error_json
 from src.val import JudgeAttemptsExhausted, judge_answer, retryable, write_error
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = ROOT / "runs/trace2skill-baseline-nvfp4-day-week-seed0"
+RUN = ROOT / "runs/trace2skill-baseline-api-day-week-seed0"
 UPSTREAM = ROOT / "third_party/trace2skill"
 RUNTIME = Path("/raid/wg25r/video_sql_v2/data/runtime")
 DATASET = Path("/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443")
-MODEL = "Inferact/Qwen3.8-Flash-Next-NVFP4"
-BASE_URL = "http://127.0.0.1:8003/v1"
-API_KEY = "EMPTY"
+MODEL = "gpt-5.6-luna"
+BASE_URL = OPENAI_BASE_URL
+API_KEY = dotenv_values(ROOT / ".env")["PERSONAL_OPENAI_KEY"]
+EMBEDDING_URL = dotenv_values(ROOT / ".env")["EMBEDDING_URL"]
 SKILL_HEADER = "---\nname: video-memory-qa\ndescription: Retrieve and verify evidence to answer questions about long videos.\n---\n\n"
 
 
@@ -123,11 +125,7 @@ def make_harness(directory, skill_dir, semaphore, metrics, timeline):
         database=RUNTIME / timeline / "index.duckdb", embedding_index=RUNTIME / timeline / "embedding_index",
         media_map=RUNTIME / timeline / "media-map.json", skill_dir=skill_dir, run_dir=directory,
         model_name=MODEL, api_key=API_KEY, base_url=BASE_URL,
-        embedding_url="http://127.0.0.1:8014/v1", embedding_model="qwen3-vl-embedding-8b",
-        context_limit=314573, compaction_threshold=178000,
-    )
-    harness.context.model_settings = ModelSettings(
-        reasoning={"effort": "medium"}, store=False, preserve_raw_usage=True,
+        embedding_url=EMBEDDING_URL, embedding_model="qwen3-vl-embedding-8b",
     )
     harness.context.model = LimitedResponsesModel(harness.context.client, semaphore, metrics)
     harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
@@ -313,7 +311,8 @@ async def analyze(result, semaphore, metrics):
                         async with semaphore:
                             raw = await harness.context.client.responses.with_raw_response.parse(
                                 model=MODEL, instructions=instructions, input=messages,
-                                reasoning={"effort": "medium"}, store=False,
+                                reasoning={"effort": "high", "summary": "auto"}, store=False,
+                                include=["reasoning.encrypted_content"],
                                 text_format=SuccessReport,
                             )
                         body = raw.content
@@ -440,7 +439,7 @@ async def main():
     init_weave()
     wandb_run = wandb.init(entity="3dsmile", project="video-sql-v2", id=RUN.name,
                            name=RUN.name, resume="allow", dir=str(RUN),
-                           config={"model": MODEL, "reasoning": "medium", "base_url": BASE_URL,
+                           config={"model": MODEL, "reasoning": "high", "reasoning_summary": "auto", "base_url": BASE_URL,
                                    "api": "responses", "reasoning_replay": True,
                                    "client_concurrency": 256, "replace_tool": True,
                                    "split": "test", "timelines": ["day", "week"], "questions_per_timeline": 100, "seed": 0,

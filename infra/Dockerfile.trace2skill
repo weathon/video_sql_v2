@@ -1,3 +1,0 @@
-FROM video-sql-vllm-epd:ec-tp-device
-COPY trace2skill_memory_profile.py /tmp/trace2skill_memory_profile.py
-RUN python3 /tmp/trace2skill_memory_profile.py

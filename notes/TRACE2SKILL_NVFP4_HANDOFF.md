@@ -1,5 +1,7 @@
 # NVFP4 + Trace2Skill：day/week 新实验
 
+历史记录：本地支持完整快照为 `60c84b62`，随后已移除本地兼容代码。当前状态和后续接入见 [API 交接文档](TRACE2SKILL_API_HANDOFF.md)。下文启动脚本、配置与状态描述属于该历史版本。
+
 工作目录为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。本次从头生成轨迹，不复用 Luna rollout，也不使用 training split。用户已要求停止本地运行，等待其指定 API 接入方式。`formal-01.log` 对应的 rollout 进程已停止，结果与恢复记录保留。启动脚本已改为 max-num-seqs=20、MTP 2，但尚未用该配置恢复 rollout；随后本次 PD、proxy、encoder、embedding 均已停止并手动删除容器。日志保留在新 run 目录，其中最后一次 PD/proxy 启动为 `pd-launch3.log`、`proxy-launch3.log`。
 
 ## 数据与方法

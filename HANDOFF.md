@@ -1,5 +1,7 @@
 # video_sql_v2 handoff
 
+本文件为原方法的历史交接，不是当前 Trace2Skill baseline 的接入说明。当前仅保留 API 路径，见 [TRACE2SKILL_API_HANDOFF.md](notes/TRACE2SKILL_API_HANDOFF.md)。
+
 ## 用户当前目标
 
 重新设计训练 harness。继续工作时应以本文件中的“新 harness 规格”为当前需求，不要继续启动旧 v11，也不要把旧的局部修复当成最终设计。

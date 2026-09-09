@@ -1,4 +1,7 @@
-Current formal infrastructure (disaggregated encoder)
+Historical local infrastructure; archived at commit 60c84b62.
+Do not use these launch commands for the API-only baseline. See notes/TRACE2SKILL_API_HANDOFF.md.
+
+Historical formal infrastructure (disaggregated encoder)
 
 The Qwen encoder runs on physical GPU 5. The Qwen prefill/decode service runs
 on physical GPUs 0,2. The embedding service runs on physical GPU 4. All
