@@ -12,7 +12,7 @@
 
 ## 模型与服务
 
-模型为 `Inferact/Qwen3.8-Flash-Next-NVFP4`，镜像为 `video-sql-trace2skill:nvfp4-padding-fix`。修复、实际权重检查和原始响应见 [NVFP4_TP4_RECHECK.md](NVFP4_TP4_RECHECK.md)。四条原始提示、结构化输出、计算工具往返、真实帧及图像工具往返已人工检查；这些短请求未出现循环，长 rollout 尚未验证。
+模型为 `Inferact/Qwen3.8-Flash-Next-NVFP4`，镜像为 `video-sql-trace2skill:nvfp4-padding-fix`。修复、实际权重检查和原始响应见 [NVFP4_TP4_RECHECK.md](NVFP4_TP4_RECHECK.md)。四条原始提示、结构化输出、计算工具往返、真实帧及图像工具往返已人工检查；这些短请求未出现循环，长 rollout 尚未验证。诊断容器已停止（退出码 0）并手动删除；完整服务日志保留在 `/tmp/trace2skill-nvfp4-tp4-padding-fixed-server.log`，停止状态保留在 `/tmp/trace2skill-nvfp4-padding-fixed-stop.json`，镜像和请求产物保留。
 
 答题、子 agent、compaction、judge、分析和 evolution 均通过 Responses API 使用 medium reasoning，保留返回的 reasoning content 并在后续请求重放。服务默认 `enable_thinking=true`、`preserve_thinking=true`，不请求 Luna 的 encrypted reasoning。
 
