@@ -8,12 +8,13 @@ from collections import deque
 import weave
 from agents import set_trace_processors
 from openai._legacy_response import LegacyAPIResponse
+from openai._response import AsyncAPIResponse
 from weave.integrations.openai import openai_sdk
 from weave.integrations.openai_agents.openai_agents import WeaveTracingProcessor
 
 
 RESPONSES_OUTPUT_PROCESSOR = openai_sdk.responses_on_finish_post_processor
-USE_STREAM_ACCUMULATOR = openai_sdk.should_use_accumulator
+USE_STREAM_ACCUMULATOR = openai_sdk.should_use_responses_accumulator
 
 
 def response_cost(response):
@@ -97,6 +98,9 @@ def response_output(value):
     # retains the actual response and supplies validation errors to the model.
     if isinstance(value, LegacyAPIResponse):
         return json.loads(value.content)
+    if isinstance(value, AsyncAPIResponse):
+        # The Agents response span records the body after the raw stream is consumed.
+        return {"request_id": value.request_id, "status_code": value.status_code}
     return RESPONSES_OUTPUT_PROCESSOR(value)
 
 
@@ -108,7 +112,7 @@ def use_stream_accumulator(inputs):
 
 def init_weave():
     openai_sdk.responses_on_finish_post_processor = response_output
-    openai_sdk.should_use_accumulator = use_stream_accumulator
+    openai_sdk.should_use_responses_accumulator = use_stream_accumulator
     client = weave.init("3dsmile/video-sql-v2")
     set_trace_processors([WeaveTracingProcessor()])
     return client
