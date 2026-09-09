@@ -18,7 +18,7 @@
 
 | 配置 | 当前启动脚本 |
 | --- | --- |
-| PD | GPU 0、1、2、3，TP4，max-num-seqs=50，MTP 3 |
+| PD | GPU 0、1、2、3，TP4，max-num-seqs=20，MTP 2 |
 | Encoder | GPU 4，分离编码，ECExampleConnector |
 | Embedding | GPU 5，Qwen3-VL-Embedding-8B，与已有索引相同 |
 | 端口 | EPD proxy 8003、PD 8024、embedding 8014，均绑定 localhost |
