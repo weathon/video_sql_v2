@@ -1200,9 +1200,11 @@ class VideoSQLHarness:
             final_turn = self.context.answer_turns >= MAX_TURNS
             if final_turn:
                 agent = agent.clone(
-                    instructions=agent.instructions + f"\n\nThe {MAX_TURNS}-turn investigation budget is exhausted. Call submit_answer immediately using the evidence already available. Do not retrieve more evidence or call any other tool.",
-                    tools=[tool for tool in self.answer_tools if tool.name == "submit_answer"],
-                    model_settings=dataclasses.replace(agent.model_settings, tool_choice="submit_answer", parallel_tool_calls=False),
+                    instructions=agent.instructions + f"\n\nThe {MAX_TURNS}-turn investigation budget is exhausted. Return the final answer immediately using the supplied answer schema and the evidence already available. All tools are disabled; do not retrieve more evidence or call any tool.",
+                    tools=[],
+                    output_type=AnswerSubmission,
+                    tool_use_behavior="run_llm_again",
+                    model_settings=dataclasses.replace(agent.model_settings, tool_choice="none", parallel_tool_calls=False),
                     reset_tool_choice=False,
                 )
             result, needs_compaction, trace_file = await run_stream(
@@ -1215,7 +1217,7 @@ class VideoSQLHarness:
             trace_files.append(trace_file)
             history = result.to_input_list()
             if result.final_output is not None:
-                submission = AnswerSubmission.model_validate_json(str(result.final_output))
+                submission = result.final_output if final_turn else AnswerSubmission.model_validate_json(str(result.final_output))
                 return RolloutSession(
                     answer=submission.answer,
                     status="answered",
