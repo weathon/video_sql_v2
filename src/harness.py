@@ -45,7 +45,7 @@ OPENAI_BASE_URL = "https://api.openai.com/v1"
 REQUEST_TRACE = ContextVar("request_trace")
 CONTEXT_LIMIT = 314573
 COMPACTION_THRESHOLD = 178_000
-MAX_TURNS = 100
+MAX_TURNS = 12
 FRAME_SIZE = (854, 480)
 # Keep the existing sampling allowance when switching providers; this is not a
 # model-specific image token estimate. Context accounting uses returned usage.
@@ -124,6 +124,7 @@ class HarnessContext:
     context_limit: int = CONTEXT_LIMIT
     compaction_threshold: int = COMPACTION_THRESHOLD
     compactions: int = 0
+    answer_turns: int = 0
     base_instructions: str = ""
     response_states: dict[str, Any] = field(default_factory=dict)
     response_usage: dict[str, Any] = field(default_factory=dict)
@@ -181,6 +182,7 @@ class HarnessContext:
             else:
                 completed = payload["status"] == "completed"
                 recorded = {"response_id": payload["id"], "agent": "clip-qa", "usage": payload["usage"], "service_tier": payload["service_tier"], "status": "response." + payload["status"]}
+            recorded["model"] = payload["model"]
             self.response_usage[payload["id"]] = recorded
             if completed:
                 self.path_responses.append(recorded)
@@ -208,7 +210,7 @@ class HarnessContext:
             path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
             if payload["usage"] is None:
                 raise RuntimeError(f"{name} response {payload['id']} has no usage")
-            recorded = {"response_id": payload["id"], "agent": name, "usage": payload["usage"], "service_tier": payload["service_tier"], "status": "response." + payload["status"]}
+            recorded = {"response_id": payload["id"], "agent": name, "model": payload["model"], "usage": payload["usage"], "service_tier": payload["service_tier"], "status": "response." + payload["status"]}
             self.response_usage[payload["id"]] = recorded
             if payload["status"] == "completed":
                 self.path_responses.append(recorded)
@@ -511,6 +513,8 @@ async def run_stream(
         agent = agent.clone(tools=wrapped_tools, tool_use_behavior=finish_numbered)
     else:
         agent = agent.clone(tools=wrapped_tools)
+    answering = agent.name == "memory-retrieval" and label == "answer"
+    max_turns = MAX_TURNS + 1 - context.answer_turns if answering else 100
     header = {
         "agent": {
             "name": agent.name,
@@ -529,7 +533,8 @@ async def run_stream(
         },
         "run_config": {
             "reasoning_item_id_policy": context.run_config.reasoning_item_id_policy,
-            "max_turns": MAX_TURNS,
+            "max_turns": max_turns,
+            "answer_turn_limit": MAX_TURNS,
             "watch_context": watch_context,
             "context_limit": context.context_limit,
             "compaction_threshold": context.compaction_threshold,
@@ -579,6 +584,7 @@ async def run_stream(
                     "input": stripped_json(items), "agent": header["agent"],
                     "base_instructions": context.base_instructions,
                     "compactions": context.compactions,
+                    "answer_turns": context.answer_turns,
                     "tool_counter": context.tool_counter,
                     "tool_calls": stripped_json(context.tool_calls),
                     "tool_ids": dict(context.tool_ids),
@@ -592,12 +598,14 @@ async def run_stream(
                     expected = context.expected_prefix
                     if snapshot["input"] != expected["input"] or snapshot["agent"] != expected["agent"]:
                         raise RuntimeError("Restored branch differs from the original model request")
-                    for key in ("base_instructions", "compactions", "tool_counter", "tool_calls", "tool_ids", "tool_outputs", "notes"):
+                    for key in ("base_instructions", "compactions", "answer_turns", "tool_counter", "tool_calls", "tool_ids", "tool_outputs", "notes"):
                         if snapshot[key] != expected[key]:
                             raise RuntimeError(f"Restored branch state differs: {key}")
                     events.write(json.dumps({"type": "prefix_verified", "input": snapshot["input"]}, ensure_ascii=False) + "\n")
                     context.expected_prefix = None
                 request["snapshot"] = snapshot
+            if answering:
+                context.answer_turns += 1
             REQUEST_TRACE.set(request)
             events.write(json.dumps({"type": "model_input", "instructions": data.model_data.instructions,
                                      "input": stripped_json(items)}, ensure_ascii=False) + "\n")
@@ -609,7 +617,7 @@ async def run_stream(
         result = Runner.run_streamed(
             agent,
             input_items,
-            max_turns=MAX_TURNS,
+            max_turns=max_turns,
             run_config=dataclasses.replace(context.run_config, call_model_input_filter=model_input),
         )
         try:
@@ -641,7 +649,9 @@ async def run_stream(
                     - response.usage.input_tokens
                     - response.usage.output_tokens
                 )
-                if watch_context and remaining <= context.compaction_threshold:
+                if answering and context.answer_turns == MAX_TURNS:
+                    result.cancel(mode="after_turn")
+                elif watch_context and remaining <= context.compaction_threshold:
                     result.cancel(mode="after_turn")
                     context_triggered = True
         except BaseException as error:
@@ -971,7 +981,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
 
     @function_tool(failure_error_function=tool_error_json)
     async def clip_qa(start_s: float, end_s: float, fps: float, question: str) -> list[Any]:
-        """Inspect at most 20 minutes of source media sampled at the supplied fps. Choose fps for the detail or action being checked; sampling must fit within 650 images. Returns an answer with evidence images and actual source times."""
+        """Use only after retrieval has clearly located the relevant interval and a specific unresolved detail requires viewing images. Do not use clip_qa for broad search or to scan speculative intervals. Inspect at most 20 minutes of source media sampled at the supplied fps. Choose fps for the detail or action being checked; sampling must fit within 650 images. Returns an answer with evidence images and actual source times."""
         if not math.isfinite(start_s) or not math.isfinite(end_s) or start_s < 0 or end_s <= start_s:
             raise ValueError("clip interval must be finite, non-negative and increasing")
         if end_s - start_s > 1200:
@@ -1117,6 +1127,7 @@ class VideoSQLHarness:
 
     async def restore_prefix(self, snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         context = self.context
+        context.answer_turns = snapshot["answer_turns"]
         context.tool_counter = snapshot["tool_counter"]
         context.tool_calls = {int(key): value for key, value in copy.deepcopy(snapshot["tool_calls"]).items()}
         context.tool_ids = dict(snapshot["tool_ids"])
@@ -1156,6 +1167,8 @@ class VideoSQLHarness:
                 "Answer the user's question by retrieving evidence from the memory database. "
                 "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
                 + "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text."
+                + "\n\nVisual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals."
+                + f"\n\nInvestigation budget: You have at most {MAX_TURNS} model turns for investigation, including skill loading and context replacement. After that, immediately submit the best supported answer from the evidence already available; no further investigation is allowed. Branching or context compaction does not reset this budget."
                 + "\n\nContext maintenance: Only the latest tool result in your context can be replaced. After reading it, use replace_tool alone before continuing if it is large, even when useful and correct, or if it is invalid. Write replacement yourself and give a brief reason. Summarize only the target result's question and evidence, preserving relevant facts, IDs, times, uncertainty, contradictions, and unresolved details. Other results may be cited explicitly by tool_id, but do not present their evidence as part of this result or substitute a summary of another question. For invalid results, replace the entire content with why it must not be used. All history after the target result through the replacement turn is removed, including reasoning, messages, and tool calls; future reasoning starts from the replacement. Do not combine replace_tool with any other tool call in the same turn. Saving add_note does not replace a tool result."
                 + "\n\nROOT-SKILL (skill loading guidance):\n"
                 + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
@@ -1177,12 +1190,20 @@ class VideoSQLHarness:
             input_items = f"Question: {normalize_text(question)}\n\nAvailable skills:\n{skills}"
         trace_files = []
         while True:
+            final_turn = self.context.answer_turns >= MAX_TURNS
+            if final_turn:
+                agent = agent.clone(
+                    instructions=agent.instructions + f"\n\nThe {MAX_TURNS}-turn investigation budget is exhausted. Call submit_answer immediately using the evidence already available. Do not retrieve more evidence or call any other tool.",
+                    tools=[tool for tool in self.answer_tools if tool.name == "submit_answer"],
+                    model_settings=dataclasses.replace(agent.model_settings, tool_choice="submit_answer", parallel_tool_calls=False),
+                    reset_tool_choice=False,
+                )
             result, needs_compaction, trace_file = await run_stream(
                 self.context,
                 agent,
                 input_items,
                 "answer",
-                True,
+                not final_turn,
             )
             trace_files.append(trace_file)
             history = result.to_input_list()
@@ -1194,6 +1215,9 @@ class VideoSQLHarness:
                     trace_files=trace_files,
                 )
             if not needs_compaction:
+                if not final_turn and self.context.answer_turns >= MAX_TURNS:
+                    input_items = history
+                    continue
                 raise InvalidTrace("answer loop ended without submit_answer")
             self.context.compactions += 1
             original_tools = agent.tools

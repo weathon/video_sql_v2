@@ -18,23 +18,22 @@ from contextvars import ContextVar
 import weave
 import wandb
 from agents import Agent, OpenAIResponsesModel, StopAtTools, ToolOutputImage, ToolOutputText, function_tool, trace
-from dotenv import dotenv_values
 from pydantic import BaseModel, Field, ValidationError
 from third_party.trace2skill.tracing_bridge import RunMetrics, init_weave, response_cost
 
-from src.harness import OPENAI_BASE_URL, REQUEST_TRACE, InvalidTrace, VideoSQLHarness, frame_jpeg_bytes, run_stream, stripped_json, tool_error_json
+from src.harness import MAX_TURNS, REQUEST_TRACE, InvalidTrace, VideoSQLHarness, frame_jpeg_bytes, run_stream, stripped_json, tool_error_json
 from src.val import JudgeAttemptsExhausted, judge_answer, retryable, write_error
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = ROOT / "runs/luna-day-week-tree-month-val-seed0"
+RUN = ROOT / "runs/qwen38-fp8-turn12-day-week-tree-month-val-seed0"
 UPSTREAM = ROOT / "third_party/trace2skill"
 RUNTIME = Path("/raid/wg25r/video_sql_v2/data/runtime")
 DATASET = Path("/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443")
-MODEL = "gpt-5.6-luna"
-BASE_URL = OPENAI_BASE_URL
-API_KEY = dotenv_values(ROOT / ".env")["PERSONAL_OPENAI_KEY"]
-EMBEDDING_URL = dotenv_values(ROOT / ".env")["EMBEDDING_URL"]
+MODEL = "Qwen/Qwen3.8-27B-FP8"
+BASE_URL = "http://127.0.0.1:8003/v1"
+API_KEY = "local"
+EMBEDDING_URL = "http://127.0.0.1:8014/v1/embeddings"
 SKILL_HEADER = "---\nname: video-memory-qa\ndescription: Retrieve and verify evidence to answer questions about long videos.\n---\n\n"
 REQUEST_PRIORITY = ContextVar("request_priority", default=2)
 
@@ -100,7 +99,7 @@ class LimitedResponsesModel(OpenAIResponsesModel):
             async for event in super().stream_response(*args, **kwargs):
                 if event.type in ("response.completed", "response.incomplete", "response.failed"):
                     response = event.response
-                    recorded = {"response_id": response.id, "agent": request["agent"],
+                    recorded = {"response_id": response.id, "agent": request["agent"], "model": response.model,
                                 "usage": None if response.usage is None else response.usage.model_dump(),
                                 "service_tier": response.service_tier,
                                 "status": event.type}
@@ -135,9 +134,9 @@ def make_harness(directory, skill_dir, semaphore, metrics, timeline):
         media_map=RUNTIME / timeline / "media-map.json", skill_dir=skill_dir, run_dir=directory,
         model_name=MODEL, api_key=API_KEY, base_url=BASE_URL,
         embedding_url=EMBEDDING_URL, embedding_model="qwen3-vl-embedding-8b",
+        clip_qa_video=True,
     )
     harness.context.model = LimitedResponsesModel(harness.context, semaphore, metrics)
-    harness.context.model_settings.extra_args = {"service_tier": "default"}
     harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
     original_clip_response = harness.context.clip_response
 
@@ -194,10 +193,7 @@ async def rollout(question, node, phase, skill_version, semaphore, metrics):
                     snapshot = parent["raw_responses"][node["response_index"]]["prefix_state"]
                     (attempt_dir / "prefix.json").write_text(json.dumps(snapshot, ensure_ascii=False) + "\n")
                     restored = await harness.restore_prefix(snapshot)
-                    # Only the user-authorized service tier may differ from an old prefix.
                     harness.context.expected_prefix = copy.deepcopy(snapshot)
-                    prefix_settings = harness.context.expected_prefix["agent"]["model_settings"]
-                    prefix_settings["extra_args"] = {**(prefix_settings["extra_args"] or {}), "service_tier": "default"}
                     session = await harness.answer(
                         question["question"], input_items=restored,
                         instructions=snapshot["agent"]["instructions"],
@@ -444,6 +440,7 @@ async def analyze(result, semaphore, metrics):
                 instructions = (UPSTREAM / "analysis/success_analysis_system_llm.txt").read_text()
                 instructions = instructions.replace("spreadsheet manipulation tasks", "video question answering tasks").replace("`input.xlsx`", "video evidence, memory database")
                 instructions += "\nTreat clip_qa as a fixed, opaque tool. Analyze its caller's decisions and use of returned answers and evidence; do not analyze or learn the visual agent's internal reasoning, sampling or cropping. Images are limited to evidence returned to the caller."
+                instructions += f"\nThe target has at most {MAX_TURNS} investigation turns, followed by an immediate answer-only turn. Branching and compaction do not reset this budget. Context is a constrained resource: excessive retained context can cause evidence confusion and incorrect answers. Identify efficient retrieval and replacement decisions that preserve useful evidence within this budget. clip_qa is only for visual verification after the relevant interval has been clearly located, never broad search."
                 instructions += "\nReturn the Lean Solution Path and at most three Success Memory Items using the supplied JSON schema."
                 content = [{"type": "input_text", "text": json.dumps(bundle, ensure_ascii=False)}]
                 for filename in result["media_files"]:
@@ -457,7 +454,6 @@ async def analyze(result, semaphore, metrics):
                         async with semaphore:
                             raw = await harness.context.client.responses.with_raw_response.parse(
                                 model=MODEL, instructions=instructions, input=messages,
-                                service_tier="flex",
                                 reasoning={"effort": "high", "summary": "auto"}, store=False,
                                 include=["reasoning.encrypted_content"],
                                 text_format=SuccessReport,
@@ -604,7 +600,8 @@ async def main():
     init_weave()
     config = {
         "model": MODEL, "reasoning": "high", "reasoning_summary": "auto", "base_url": BASE_URL,
-        "api": "responses", "service_tier": "flex", "reasoning_replay": True, "client_concurrency": 128, "replace_tool": True,
+        "api": "responses", "reasoning_replay": True, "client_concurrency": 128, "replace_tool": True,
+        "investigation_turn_limit": MAX_TURNS, "forced_answer_after_limit": True, "clip_qa_video": True,
         "collection": {"split": "test", "timelines": ["day", "week"], "questions_per_timeline": 200,
                        "root_rollouts": 1, "branch_rollouts": 4, "branch_before": "model_tool_decision"},
         "evaluation": {"timeline": "month", "split": "val", "questions": 100, "rollouts": 1,

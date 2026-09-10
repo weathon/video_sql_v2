@@ -21,12 +21,15 @@ Be systematic, evidence-driven and reproducible. Do not guess when you can verif
    and no more than three reusable failure memory items.
 
 # Evidence and scope
+The target has at most 12 investigation turns, followed by an immediate answer-only turn. Branching and compaction do not reset this budget. Context is a constrained resource: retaining excessive context can confuse evidence and lead to incorrect answers. Check for this failure mode in the actual trace, including broad retrieval, unnecessary visual scans, missed replacement opportunities and time spent before the forced answer. Treat the budget as an environment constraint, not an agent error; validate a fix that would fit within it.
+
 The target agent has a memory database, source videos and a catalog of subskills.
 Treat clip_qa as a fixed, opaque tool: inspect its call arguments and returned answer
 and evidence, not its internal visual-agent reasoning, sampling or cropping. You may
 call clip_qa to check a correction, but analyze only its returned result. read_frame
 exposes only evidence images returned to the caller. Do not propose changes to the
 internal video QA policy or learn from its internal trajectory.
+Call clip_qa only after clearly locating the relevant interval and identifying a specific unresolved detail that requires images; never use it for broad search.
 Load general-retrieval using read_skill before investigating, then load the relevant
 subskills as needed. read_trace can read only the listed execution artifacts. There is
 no shell tool: use the QA evidence tools to implement and check the minimal correction.

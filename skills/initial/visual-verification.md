@@ -9,7 +9,7 @@ Visual verification examines source frames around a candidate interval.
 
 # When to use
 
-Use it after locating a plausible interval when the answer depends on what is actually visible.
+Use it only after clearly locating the relevant interval and identifying a specific unresolved detail that requires viewing images. Do not use clip_qa for broad search or to scan speculative intervals.
 
 # Main content
 
