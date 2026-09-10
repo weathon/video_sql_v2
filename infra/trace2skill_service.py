@@ -21,11 +21,11 @@ if role == "pd":
     command += ["--gpus", '"device=0,2"', "--shm-size=32g", "-p", "127.0.0.1:8024:8000", "-e", "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1"] + shared
     command += [IMAGE, MODEL, "--host", "0.0.0.0", "--port", "8000", "--max-model-len", "314573",
                 "--hf-overrides", json.dumps({"text_config": {"rope_parameters": {"mrope_interleaved": True, "mrope_section": [11, 11, 10], "rope_type": "yarn", "rope_theta": 10000000, "partial_rotary_factor": 0.25, "factor": 1.2, "original_max_position_embeddings": 262144}}}),
-                "--max-num-seqs", "30", "--gpu-memory-utilization", "0.90", "--enable-prefix-caching", "--no-enable-flashinfer-autotune", "--tensor-parallel-size", "2",
+                "--max-num-seqs", "15", "--gpu-memory-utilization", "0.90", "--enable-prefix-caching", "--no-enable-flashinfer-autotune", "--tensor-parallel-size", "2",
                 "--mm-processor-cache-gb", "4", "--limit-mm-per-prompt", json.dumps({"image": 650, "video": 1}),
                 "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder", "--reasoning-parser", "qwen3",
                 "--speculative-config", json.dumps({"method": "mtp", "num_speculative_tokens": 3, "max_model_len": 314573}),
-                "--kv-transfer-config", json.dumps({"kv_connector": "SimpleCPUOffloadConnector", "kv_role": "kv_both", "kv_connector_extra_config": {"cpu_bytes_to_use_per_rank": 236223201280, "lazy_offload": False}}),
+                "--kv-transfer-config", json.dumps({"kv_connector": "SimpleCPUOffloadConnector", "kv_role": "kv_both", "kv_connector_extra_config": {"cpu_bytes_to_use_per_rank": 472446402560, "lazy_offload": False}}),
                 "--ec-transfer-config", json.dumps({"ec_connector": "ECExampleConnector", "ec_role": "ec_consumer", "ec_connector_extra_config": {"shared_storage_path": "/epd_shared/cache"}}),
                 "--default-chat-template-kwargs", json.dumps({"enable_thinking": True, "preserve_thinking": True})]
 elif role == "encoder":

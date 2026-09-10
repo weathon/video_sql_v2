@@ -213,4 +213,4 @@ def test_mtp_context_length_matches_main_model(monkeypatch):
     mtp = json.loads(command[command.index("--speculative-config") + 1])
     assert mtp["method"] == "mtp"
     assert mtp["max_model_len"] == main_length
-    assert command[command.index("--max-num-seqs") + 1] == "30"
+    assert command[command.index("--max-num-seqs") + 1] == "15"
