@@ -17,6 +17,7 @@ dependencies = [
     "python-dotenv",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
+    "sqlglot>=30.18.0",
     "tqdm>=4.70.0",
     "wandb",
     "weave",
