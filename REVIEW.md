@@ -40,6 +40,32 @@ erated image is blurred/broken; claims a restart while W&B `resume="allow"` sile
 11. Is the edit minimal?
 12. Does it seem to make a repo for a SAAS company instead of a research project?
 13. Review it against the requirement spec sheet, is there anything NOT the same as the requirement doc? Even if the current apporch might seem better/makes more sense, all the requirement should stick to original design doc strictly. If there is fuzzy/ambitious, ask user. 
+14. Did the code/text/prompt/comments leaked user prompt into context? For example, if user asked "no X here" you should not put without X in the comment. Also global design should not be exposed to agent. (eg. do not tell agent the outside env)
+15. Is there hard line breaks? 
+Example
+```
+            instructions=(
+                "Answer the visual question by sampling the supplied interval. "
+                "Use sample_video, crop_frame for fine details, notes when useful, and "
+                "submit_clip_answer with evidence_frame_ids from returned images. "
+                f"Sampling and crops share {CLIP_IMAGE_LIMIT} images across this entire investigation. "
+                "Each image is at most 854 by 480 pixels; crop_frame reads its original resolution. "
+                "Do not infer an answered result without visible evidence."
+            ),
+```
+
+Including
+```
+            """Crop a sampled frame reloaded from its source video at the recorded PTS.
+
+            Coordinates always refer to the original full frame, even when frame_id
+            names an earlier crop. Units are 0-1000; full frame is 0,0,1000,1000.
+            Require 0 <= left < right <= 1000 and 0 <= top < bottom <= 1000.
+            Each returned crop consumes one image from this clip's shared budget.
+            """
+```
+
+Does not include lists, paragraphes, etc. 
 
 ## Principles the review enforces
 Anti-perfect research code: offensive programming, direct and purpose-built implementation, crash on the unexpected, no token/output caps, no speed-for-quality or speed-for-correctness downgrades. Correctness above "it runs"; polish, generality, defensive completeness, and production readiness are review failures when the experiment did not require them.
