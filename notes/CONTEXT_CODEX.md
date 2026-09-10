@@ -227,6 +227,8 @@
 
 **仍有摘要内容问题：** 第二次 replace 将 37500、61740、68820、76650、78000、78540、80280 秒的后期装备信息写进工具 28 的摘要，但目标的 75 行原始返回中没有定风珠、绣花针、芭蕉扇及对应英文名称，也没有这些精确时间。模型未标注外部 tool_id 引用。因此，本次历史/reasoning 裁剪检查通过，但仅靠当前 prompt 尚未消除跨结果混写。
 
+**来源归属判断更正：** 用户明确：引用其他上下文不需要标注 tool_id，只要是在引用其他信息，没有把它说成当前工具返回的内容。按此标准，这次符合：replacement 先写“from event_chains”，随后另说“Later magic-treasure menu evidence”，没有声称后面的菜单证据来自当前工具。上面把未标注 tool_id 当作问题的判断过严。
+
 - [本条完整指标](../runs/day196-latest-replace/audit-summary.json)
 - [替换、reasoning 和 reminder 核对](../runs/day196-latest-replace/replacement-audit.json)
 - [前后对照](../runs/day196-latest-replace/comparison.json)
