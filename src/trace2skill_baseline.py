@@ -33,7 +33,7 @@ DATASET = Path("/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapsho
 MODEL = "Qwen/Qwen3.8-27B-FP8"
 BASE_URL = "http://127.0.0.1:8003/v1"
 API_KEY = "local"
-EMBEDDING_URL = "http://127.0.0.1:8014/v1/embeddings"
+EMBEDDING_URL = "http://127.0.0.1:8014/v1"
 SKILL_HEADER = "---\nname: video-memory-qa\ndescription: Retrieve and verify evidence to answer questions about long videos.\n---\n\n"
 REQUEST_PRIORITY = ContextVar("request_priority", default=2)
 
