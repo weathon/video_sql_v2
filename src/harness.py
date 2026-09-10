@@ -1135,6 +1135,7 @@ class VideoSQLHarness:
             base_instructions = instructions if instructions is not None else (
                 "Answer the user's question by retrieving evidence from the memory database. "
                 "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
+                + "\n\nContext maintenance: After reading a large tool result, call replace_tool to replace it with a concise note or summary before continuing the investigation. Do this even when all of the result is useful and correct: preserve the facts, evidence IDs, time intervals, and unresolved details needed for the answer or next steps, and include a brief reason that the full result is too large to retain. If a tool result is invalid, wrong, or irrelevant, replace its entire content with a brief reason explaining why it must not be used; do not retain invalid content as evidence. Do not wait until a result is completely wrong or useless. Saving an add_note does not replace the original tool result; use replace_tool to remove its bulk from context."
                 + "\n\nROOT-SKILL (skill loading guidance):\n"
                 + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
             )
