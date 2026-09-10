@@ -503,16 +503,30 @@ async def run_stream(
     with events_path.open("x", buffering=1) as events:
         def model_input(data):
             items = []
+            removed_calls = set()
             for item in data.model_data.input:
                 if item.get("type") in ("function_call", "function_call_output"):
                     tool_id = context.tool_ids[item["call_id"]]
                     record = context.tool_calls[tool_id]
                     if record["name"] == "replace_tool" and "replaced_tool_id" in json.loads(record["original_output"]):
+                        removed_calls.add(item["call_id"])
                         continue
                     if item["type"] == "function_call_output" and record["replacements"]:
                         output = json.dumps({"tool_id": tool_id}) + "\nReplaced with:\n" + record["replacements"][-1]
                         item = {**item, "output": output}
                 items.append(item)
+            removed_reasoning = set()
+            for index, item in enumerate(data.model_data.input):
+                if item.get("type") != "reasoning":
+                    continue
+                following_calls = []
+                for following in data.model_data.input[index + 1:]:
+                    if following.get("type") != "function_call":
+                        break
+                    following_calls.append(following["call_id"])
+                if following_calls and all(call_id in removed_calls for call_id in following_calls):
+                    removed_reasoning.add(item["id"])
+            items = [item for item in items if item.get("type") != "reasoning" or item["id"] not in removed_reasoning]
             request = {"agent": agent.name}
             if agent.name == "memory-retrieval":
                 # Persist the exact caller-visible image bytes used by this request.
@@ -936,7 +950,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
 
     @function_tool(failure_error_function=tool_error_json)
     async def clip_qa(start_s: float, end_s: float, fps: float, question: str) -> list[Any]:
-        """Sample at most 20 minutes of source media at the supplied fps and answer the visual question in one model call. All sampled frames are sent together in time order. Choose fps for the detail or action being checked; sampling must fit within 650 images. Returns an answer with evidence images and actual source times."""
+        """Inspect at most 20 minutes of source media sampled at the supplied fps. Choose fps for the detail or action being checked; sampling must fit within 650 images. Returns an answer with evidence images and actual source times."""
         if not math.isfinite(start_s) or not math.isfinite(end_s) or start_s < 0 or end_s <= start_s:
             raise ValueError("clip interval must be finite, non-negative and increasing")
         if end_s - start_s > 1200:
