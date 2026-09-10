@@ -95,7 +95,7 @@ class AnswerSubmission(BaseModel):
 class ClipSubmission(BaseModel):
     status: Literal["answered", "unknown"]
     answer: str
-    evidence_frame_ids: list[str]
+    evidence_frame_indices: list[int]
 
 
 @dataclass
@@ -119,6 +119,7 @@ class HarnessContext:
     embedding_url: str
     embedding_model: str
     embedding_client: httpx.AsyncClient
+    clip_qa_video: bool = False
     context_limit: int = CONTEXT_LIMIT
     compaction_threshold: int = COMPACTION_THRESHOLD
     compactions: int = 0
@@ -156,6 +157,40 @@ class HarnessContext:
                 allow_pickle=False,
             )
         self.sources = json.loads(self.media_map.read_text())["sources"]
+
+    async def clip_response(self, request: dict[str, Any], call_id: str, frame_files: list[str]):
+        path = self.run_dir / "traces" / f"clip-{call_id}.json"
+        artifact = {"agent": {"name": "clip-qa", "model": request["model"], "tools": []}, "api": "chat.completions" if self.clip_qa_video else "responses", "input": stripped_json(request), "frame_files": frame_files, "tool_calls": [], "api_usage": [], "error": None}
+        path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+        print(f"clip_qa model={request['model']} api={artifact['api']} frames={len(frame_files)} trace={path}", flush=True)
+        try:
+            if self.clip_qa_video:
+                raw = await self.client.chat.completions.with_raw_response.parse(**request, response_format=ClipSubmission)
+            else:
+                raw = await self.client.responses.with_raw_response.parse(**request, text_format=ClipSubmission)
+            payload = json.loads(raw.content)
+            artifact["response"] = payload
+            path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+            if payload["usage"] is None:
+                raise RuntimeError(f"clip_qa response {payload['id']} has no usage")
+            if self.clip_qa_video:
+                usage = {"input_tokens": payload["usage"]["prompt_tokens"], "output_tokens": payload["usage"]["completion_tokens"], "total_tokens": payload["usage"]["total_tokens"]}
+                completed = payload["choices"][0]["finish_reason"] == "stop"
+                recorded = {"response_id": payload["id"], "agent": "clip-qa", "usage": usage, "raw_usage": payload["usage"], "api": "chat.completions", "status": payload["choices"][0]["finish_reason"]}
+            else:
+                completed = payload["status"] == "completed"
+                recorded = {"response_id": payload["id"], "agent": "clip-qa", "usage": payload["usage"], "service_tier": payload["service_tier"], "status": "response." + payload["status"]}
+            self.response_usage[payload["id"]] = recorded
+            if completed:
+                self.path_responses.append(recorded)
+            artifact["api_usage"] = [recorded]
+            path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+            return raw, recorded
+        except BaseException as error:
+            artifact["error"] = {"type": type(error).__name__, "message": str(error)}
+            path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+            print(f"clip_qa trace={path} error={error}", flush=True)
+            raise
 
 
 def exception_chain(error: BaseException) -> list[BaseException]:
@@ -201,6 +236,8 @@ def stripped_json(value: Any) -> Any:
         return str(value)
     if isinstance(value, str) and value.startswith("data:image/"):
         return "<base64-image-removed>"
+    if isinstance(value, str) and value.startswith("data:video/"):
+        return "<base64-video-removed>"
     return value
 
 
@@ -636,26 +673,6 @@ def frame_jpeg_bytes(frame: dict[str, Any]) -> bytes:
         return image_jpeg_bytes(original, frame["crop"])
 
 
-def render_frame(frame: dict[str, Any], jpeg_bytes: bytes) -> list[ToolOutputText | ToolOutputImage]:
-    recipe = {key: value for key, value in frame.items() if key != "recipe_path"}
-    frame["recipe_path"].write_text(
-        json.dumps(stripped_json(recipe), ensure_ascii=False, indent=2) + "\n"
-    )
-    return [
-        ToolOutputText(text=json.dumps({
-            "frame_id": frame["frame_id"],
-            "time_s": frame["time_s"],
-            "filename": frame["recipe_path"].name,
-            "crop": frame["crop"],
-        })),
-        ToolOutputImage(
-            image_url="data:image/jpeg;base64,"
-            + base64.b64encode(jpeg_bytes).decode(),
-            detail="high",
-        ),
-    ]
-
-
 async def sample_frames(
     context: HarnessContext,
     start_s: float,
@@ -918,187 +935,45 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         return AnswerSubmission(answer=answer).model_dump_json()
 
     @function_tool(failure_error_function=tool_error_json)
-    async def clip_qa(start_s: float, end_s: float, question: str) -> list[Any]:
-        """Inspect at most 20 minutes of source media and return an answer with evidence images."""
+    async def clip_qa(start_s: float, end_s: float, fps: float, question: str) -> list[Any]:
+        """Sample at most 20 minutes of source media at the supplied fps and answer the visual question in one model call. All sampled frames are sent together in time order. Choose fps for the detail or action being checked; sampling must fit within 650 images. Returns an answer with evidence images and actual source times."""
         if not math.isfinite(start_s) or not math.isfinite(end_s) or start_s < 0 or end_s <= start_s:
             raise ValueError("clip interval must be finite, non-negative and increasing")
         if end_s - start_s > 1200:
             raise ValueError("clip_qa rejects intervals longer than 20 minutes")
         call_id = uuid.uuid4().hex
-        frames: dict[str, dict[str, Any]] = {}
-        images_lock = asyncio.Lock()
-
-        @function_tool(failure_error_function=tool_error_json)
-        async def sample_video(
-            sample_start_s: float,
-            sample_end_s: float,
-            fps: float,
-            include_captions: bool,
-            crop_left: int,
-            crop_top: int,
-            crop_right: int,
-            crop_bottom: int,
-        ) -> list[Any]:
-            """Return individual frames, their IDs and actual source times.
-
-            Crop coordinates refer to the original full frame, in 0-1000 units.
-            Full frame: left=0, top=0, right=1000, bottom=1000.
-            Require 0 <= left < right <= 1000 and 0 <= top < bottom <= 1000.
-            Sampling and crops share a cumulative 650-image limit per clip_qa.
-            An over-budget request returns an error without partial images.
-            """
-            if not start_s <= sample_start_s < sample_end_s <= end_s:
-                raise ValueError("sample interval must lie inside the clip_qa interval")
-            if not (
-                0 <= crop_left < crop_right <= 1000
-                and 0 <= crop_top < crop_bottom <= 1000
-            ):
-                raise ValueError("crop coordinates must satisfy 0 <= left < right <= 1000 and 0 <= top < bottom <= 1000")
-            async with images_lock:
-                new_frames = await sample_frames(
-                    context, sample_start_s, sample_end_s, fps,
-                    (crop_left, crop_top, crop_right, crop_bottom),
-                    call_id, CLIP_IMAGE_LIMIT - len(frames),
-                )
-                captions = []
-                if include_captions:
-                    result = await asyncio.to_thread(
-                        execute_sql,
-                        context.database,
-                        "SELECT row_id, start_s, end_s, text FROM episodes "
-                        "WHERE granularity = '30sec' AND end_s > ? AND start_s < ? "
-                        "ORDER BY start_s",
-                        None, [sample_start_s, sample_end_s], None,
-                    )
-                    captions = result["rows"]
-                count = len(frames) + len(new_frames)
-                outputs: list[Any] = [ToolOutputText(text=json.dumps({
-                    "frame_count": len(new_frames),
-                    "images_used": count,
-                    "remaining_images": CLIP_IMAGE_LIMIT - count,
-                    "captions": captions,
-                }, ensure_ascii=False))]
-                for frame, jpeg_bytes in new_frames:
-                    outputs.extend(await asyncio.to_thread(render_frame, frame, jpeg_bytes))
-                frames.update({frame["frame_id"]: frame for frame, _ in new_frames})
-                return outputs
-
-        @function_tool(failure_error_function=tool_error_json)
-        async def crop_frame(
-            frame_id: str,
-            crop_left: int,
-            crop_top: int,
-            crop_right: int,
-            crop_bottom: int,
-        ) -> list[Any]:
-            """Crop a sampled frame reloaded from its source video at the recorded PTS.
-
-            Coordinates always refer to the original full frame, even when frame_id
-            names an earlier crop. Units are 0-1000; full frame is 0,0,1000,1000.
-            Require 0 <= left < right <= 1000 and 0 <= top < bottom <= 1000.
-            Each returned crop consumes one image from this clip's shared budget.
-            """
-            if not (
-                0 <= crop_left < crop_right <= 1000
-                and 0 <= crop_top < crop_bottom <= 1000
-            ):
-                raise ValueError("crop coordinates must satisfy 0 <= left < right <= 1000 and 0 <= top < bottom <= 1000")
-            async with images_lock:
-                if frame_id not in frames:
-                    raise ValueError("frame_id must refer to an image returned in this clip_qa")
-                if len(frames) == CLIP_IMAGE_LIMIT:
-                    raise ValueError("clip image limit reached; remaining_images=0")
-                original = frames[frame_id]
-                new_id = uuid.uuid4().hex
-                frame = {
-                    **original,
-                    "parent_frame_id": frame_id,
-                    "frame_id": new_id,
-                    "time_s": original["time_s"],
-                    "recipe_path": context.run_dir / "media" / f"frame-{new_id}.json",
-                    "crop": (crop_left, crop_top, crop_right, crop_bottom),
-                }
-                jpeg_bytes = await asyncio.to_thread(frame_jpeg_bytes, frame)
-                outputs = await asyncio.to_thread(render_frame, frame, jpeg_bytes)
-                count = len(frames) + 1
-                outputs.append(ToolOutputText(text=json.dumps({
-                    "images_used": count,
-                    "remaining_images": CLIP_IMAGE_LIMIT - count,
-                })))
-                frames[new_id] = frame
-                return outputs
-
-        @function_tool(failure_error_function=tool_error_json)
-        async def add_clip_note(note: str) -> str:
-            """Add a note for this visual investigation."""
-            path = context.run_dir / f"clip-notes-{call_id}.jsonl"
-            with path.open("a") as output:
-                output.write(json.dumps({"note": normalize_text(note)}) + "\n")
-            return json.dumps({"saved": True})
-
-        @function_tool(failure_error_function=tool_error_json)
-        async def read_clip_notes() -> str:
-            """Read notes for this visual investigation."""
-            path = context.run_dir / f"clip-notes-{call_id}.jsonl"
-            if not path.exists():
-                return "[]"
-            return json.dumps([json.loads(line) for line in path.read_text().splitlines()])
-
-        @function_tool(failure_error_function=tool_error_json)
-        async def submit_clip_answer(
-            status: Literal["answered", "unknown"],
-            answer: str,
-            evidence_frame_ids: list[str],
-        ) -> str:
-            """Submit the visual answer citing frame IDs returned by sample_video or crop_frame."""
-            if status == "answered" and not evidence_frame_ids:
-                raise ValueError("answered requires at least one evidence frame")
-            if any(frame_id not in frames for frame_id in evidence_frame_ids):
-                raise ValueError("evidence_frame_ids must refer to images returned in this clip_qa")
-            return ClipSubmission(
-                status=status,
-                answer=answer,
-                evidence_frame_ids=evidence_frame_ids,
-            ).model_dump_json()
-
-        def finish_clip(_run_context: Any, tool_results: list[Any]) -> ToolsToFinalOutputResult:
-            for result in tool_results:
-                if result.tool.name == "submit_clip_answer":
-                    payload = json.loads(result.output.partition("\n")[2])
-                    if "error" not in payload:
-                        submission = ClipSubmission.model_validate(payload)
-                        return ToolsToFinalOutputResult(
-                            is_final_output=True,
-                            final_output=submission.model_dump_json(),
-                        )
-            return ToolsToFinalOutputResult(is_final_output=False)
-
-        clip_agent = Agent(
-            name="clip-qa",
-            instructions=(
-                "Answer the visual question by sampling the supplied interval. "
-                "Use sample_video, crop_frame for fine details, notes when useful, and "
-                "submit_clip_answer with evidence_frame_ids from returned images. "
-                f"Sampling and crops share {CLIP_IMAGE_LIMIT} images across this entire investigation. "
-                "Each image is at most 854 by 480 pixels; crop_frame reads its original resolution. "
-                "Do not infer an answered result without visible evidence."
-            ),
-            model=context.model,
-            model_settings=context.model_settings,
-            tools=[sample_video, crop_frame, add_clip_note, read_clip_notes, submit_clip_answer],
-            tool_use_behavior=finish_clip,
-        )
-        clip_result, _, _ = await run_stream(
-            context,
-            clip_agent,
-            (
-                f"Interval: {start_s:.3f}s to {end_s:.3f}s\n"
-                f"Visual question: {normalize_text(question)}"
-            ),
-            f"clip-{call_id}",
-            False,
-        )
-        submission = ClipSubmission.model_validate_json(str(clip_result.final_output))
+        sampled = await sample_frames(context, start_s, end_s, fps, (0, 0, 1000, 1000), call_id, CLIP_IMAGE_LIMIT)
+        encoded_frames = []
+        for frame, jpeg_bytes in sampled:
+            recipe = {key: value for key, value in frame.items() if key != "recipe_path"}
+            frame["recipe_path"].write_text(json.dumps(stripped_json(recipe), ensure_ascii=False, indent=2) + "\n")
+            encoded_frames.append(base64.b64encode(jpeg_bytes).decode())
+        instructions = "Answer the visual question using only the supplied ordered frame sequence. Return unknown when the visible evidence is insufficient. Cite supporting frames with zero-based evidence_frame_indices; answered requires at least one evidence frame. Use the supplied actual source times when referring to the source timeline."
+        prompt = json.dumps({"question": normalize_text(question), "start_s": start_s, "end_s": end_s, "fps": fps, "frame_times_s": [frame["time_s"] for frame, _ in sampled]}, ensure_ascii=False)
+        if context.clip_qa_video:
+            content = [{"type": "text", "text": prompt}, {"type": "video_url", "video_url": {"url": "data:video/jpeg;base64," + ",".join(encoded_frames)}}]
+            request = {"model": context.model.model, "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}], "extra_body": {"media_io_kwargs": {"video": {"num_frames": -1, "fps": fps, "frames_indices": list(range(len(sampled))), "total_num_frames": len(sampled), "duration": len(sampled) / fps, "do_sample_frames": False}}, "mm_processor_kwargs": {"do_sample_frames": False}}}
+        else:
+            content = [{"type": "input_text", "text": prompt}, *[{"type": "input_image", "image_url": "data:image/jpeg;base64," + encoded, "detail": "high"} for encoded in encoded_frames]]
+            request = {"model": context.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": context.model_settings.reasoning, "store": context.model_settings.store, "include": context.model_settings.response_include, "extra_body": context.model_settings.extra_body}
+            if context.model_settings.extra_args is not None:
+                request.update(context.model_settings.extra_args)
+        raw, _ = await context.clip_response(request, call_id, [frame["recipe_path"].name for frame, _ in sampled])
+        response = raw.parse()
+        if context.clip_qa_video:
+            if response.choices[0].finish_reason != "stop":
+                raise InvalidTrace(f"clip_qa did not finish: {response.choices[0].finish_reason}")
+            submission = response.choices[0].message.parsed
+        else:
+            if response.status != "completed":
+                raise InvalidTrace(f"clip_qa did not finish: {response.status}")
+            submission = response.output_parsed
+        if submission is None:
+            raise InvalidTrace("clip_qa returned no structured answer")
+        if submission.status == "answered" and not submission.evidence_frame_indices:
+            raise ValueError("answered requires at least one evidence frame")
+        if any(index < 0 or index >= len(sampled) for index in submission.evidence_frame_indices):
+            raise ValueError("evidence_frame_indices must refer to the supplied frame sequence")
         outputs: list[Any] = [
             ToolOutputText(
                 text=json.dumps(
@@ -1106,8 +981,8 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                         "status": submission.status,
                         "answer": submission.answer,
                         "evidence_times_s": [
-                            frames[frame_id]["time_s"]
-                            for frame_id in submission.evidence_frame_ids
+                            sampled[index][0]["time_s"]
+                            for index in submission.evidence_frame_indices
                         ],
                     },
                     ensure_ascii=False,
@@ -1115,11 +990,11 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             )
         ]
         if submission.status == "answered":
-            for frame_id in submission.evidence_frame_ids:
-                frame = frames[frame_id]
+            for index in submission.evidence_frame_indices:
+                frame, jpeg_bytes = sampled[index]
                 outputs.append(
                     ToolOutputText(text=json.dumps({
-                        "frame_id": frame_id,
+                        "frame_id": frame["frame_id"],
                         "evidence_time_s": frame["time_s"],
                         "filename": frame["recipe_path"].name,
                         "crop": frame["crop"],
@@ -1128,7 +1003,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                 outputs.append(
                     ToolOutputImage(
                         image_url="data:image/jpeg;base64,"
-                        + base64.b64encode(await asyncio.to_thread(frame_jpeg_bytes, frame)).decode(),
+                        + base64.b64encode(jpeg_bytes).decode(),
                         detail="high",
                     )
                 )
@@ -1162,6 +1037,7 @@ class VideoSQLHarness:
         embedding_model: str,
         *,
         base_url: str = OPENAI_BASE_URL,
+        clip_qa_video: bool = False,
         context_limit: int = CONTEXT_LIMIT,
         compaction_threshold: int = COMPACTION_THRESHOLD,
     ) -> None:
@@ -1195,6 +1071,7 @@ class VideoSQLHarness:
             run_config=run_config,
             embedding_url=embedding_url,
             embedding_model=embedding_model,
+            clip_qa_video=clip_qa_video,
             embedding_client=httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
                 limits=httpx.Limits(max_connections=1000, max_keepalive_connections=256),

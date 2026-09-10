@@ -139,6 +139,15 @@ def make_harness(directory, skill_dir, semaphore, metrics, timeline):
     harness.context.model = LimitedResponsesModel(harness.context, semaphore, metrics)
     harness.context.model_settings.extra_args = {"service_tier": "flex"}
     harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
+    original_clip_response = harness.context.clip_response
+
+    async def limited_clip_response(*args, **kwargs):
+        async with semaphore:
+            raw, recorded = await original_clip_response(*args, **kwargs)
+        metrics.record_response(recorded)
+        return raw, recorded
+
+    harness.context.clip_response = limited_clip_response
     return harness
 
 
