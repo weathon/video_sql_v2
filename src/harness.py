@@ -1151,7 +1151,7 @@ class VideoSQLHarness:
                 continue
             (context.run_dir / "media" / source.name).write_bytes(source.read_bytes())
         items = copy.deepcopy(snapshot["input"])
-        for item in items:
+        for item in [*items, *(pair[1] for pair in context.tool_outputs.values())]:
             if item.get("type") != "function_call_output" or not isinstance(item["output"], list):
                 continue
             for index, part in enumerate(item["output"]):
