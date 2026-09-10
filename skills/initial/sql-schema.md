@@ -13,7 +13,7 @@ Read this skill before complex joins, aggregations, or evidence tracing.
 
 # Main content
 
-Prefer run_sql with a question to answer from the complete query result while retaining supporting row IDs and times. Use question=null only when raw rows are needed; raw mode returns at most 100 rows and shortens long text cells.
+With question=null, run_sql returns at most 100 raw rows and shortens long text cells. Supplying question optionally requests a separate QA answer from the complete query result with supporting row IDs and times.
 
 Available tables and columns:
 
@@ -31,4 +31,3 @@ Available tables and columns:
 - event_step_evidence(row_id, step_row_id, caption_30sec_row_id).
 
 Join facts and steps to their chains through chain_row_id. Join precise evidence to episodes.row_id through caption row IDs. For object states, episode_3min_row_id gives surrounding context and caption_30sec_row_id gives the precise evidence interval. Times are seconds on one continuous logical clock.
-

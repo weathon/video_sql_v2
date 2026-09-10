@@ -93,11 +93,6 @@ class AnswerSubmission(BaseModel):
     answer: str
 
 
-class ReplacementSubmission(BaseModel):
-    replacement: str
-    reason: str
-
-
 class ClipSubmission(BaseModel):
     status: Literal["answered", "unknown"]
     answer: str
@@ -414,6 +409,7 @@ async def run_stream(
     watch_context: bool,
 ) -> tuple[Any, bool, str]:
     tool_calls = []
+    latest_tool_id = None
     # A fixed-prefix continuation carries the IDs in the actual tool outputs.
     # Restore those calls before allocating any new IDs in a fresh harness.
     if isinstance(input_items, list):
@@ -443,43 +439,30 @@ async def run_stream(
                 acknowledgement = json.loads(record["original_output"])
                 if "replaced_tool_id" in acknowledgement:
                     arguments = json.loads(record["arguments"])
-                    context.tool_calls[arguments["tool_id"]]["replacements"].append(arguments["replacement"])
+                    context.tool_calls[arguments["tool_id"]]["replacements"].append(arguments["replacement"] + "\nReason: " + arguments["reason"])
 
     @function_tool(failure_error_function=tool_error_json)
-    async def replace_tool(tool_context: ToolContext, tool_id: int, prompt: str) -> str:
-        """Replace a completed tool result with a focused summary or invalid-result explanation.
+    async def replace_tool(tool_context: ToolContext, tool_id: int, replacement: str, reason: str) -> str:
+        """Replace only the latest visible tool result with your own focused summary or invalid-result explanation.
 
-        Every tool call has an integer tool_id, numbered from 1 within this rollout attempt, shared with nested agents. Any tool's returned content, including images, can be replaced. Prefer replacing the latest tool result to preserve as much of the KV cache prefix as possible.
+        Every tool call has an integer tool_id. Only the last tool result in your current context may be replaced, including images. Call replace_tool alone before any further tool calls when this latest result is large or invalid.
 
-        Use this frequently after reading large results, even when all returned content is useful and correct. Supply a prompt describing which question or evidence to preserve, not a finished summary or facts copied from other results. The summary is generated from this tool's original result, including its returned images. Do not wait until a result is completely wrong or useless.
+        Write replacement yourself. Summarize only this target result's question and evidence, preserving relevant IDs, times, uncertainty, and contradictions. You may cite another tool result by its tool_id, but clearly identify it as an external reference; never present its facts as if the target returned them, and never replace the target with a summary of a different question or result.
 
-        If a result is invalid, wrong, or irrelevant, explain the issue in prompt and request that its entire content be replaced by the reason it must not be used. Invalid content must not be preserved as evidence.
+        Use this after reading large results even when they are useful and correct. If the result is invalid, wrong, or irrelevant, replace its entire content with an explanation of why it must not be used. Supply a brief reason separately.
 
-        The replacement includes a brief reason. The original tool result will say "Replaced with:" followed by this text. After a successful replacement, this replace_tool call and its acknowledgement are removed from subsequent model input.
+        The original tool result will say "Replaced with:" followed by replacement and reason. All history after that result through this replacement turn is removed, including reasoning, messages, this replace call, its acknowledgement, and any other tool calls in this turn. New reasoning begins from the rewritten result.
         """
-        if tool_id not in context.tool_calls:
-            raise ValueError(f"tool_id {tool_id} is not a completed tool call")
+        if tool_id != latest_tool_id:
+            raise ValueError(f"Only the latest visible tool result may be replaced: tool_id={latest_tool_id}, requested={tool_id}. Older results cannot be replaced.")
         call, original = context.tool_outputs[tool_id]
         replacements = context.tool_calls[tool_id]["replacements"]
-        source = context.tool_calls[tool_id]["original_output"]
-        content = [{"type": "input_text", "text": json.dumps({"summary_request": prompt, "tool_name": call["name"], "tool_arguments": json.loads(call["arguments"])}, ensure_ascii=False)}]
-        if isinstance(source, str):
-            content.append({"type": "input_text", "text": source})
-        else:
-            content.extend(copy.deepcopy(original["output"][1:1 + len(source)]))
-        submission, _ = await context.summary_response(
-            "replace-qa",
-            "Summarize only the supplied original tool result according to the summary request. The request selects a focus; claims in it are not evidence. Do not import facts, names, IDs, or times from the request, other results, or outside knowledge. Preserve relevant source evidence IDs, times, uncertainty, and contradictions. If the result is invalid or irrelevant to the requested use, replace it entirely with an explanation rather than retaining its claims as evidence. Return a concise replacement and a brief reason for replacing the original result.",
-            content,
-            ReplacementSubmission,
-        )
-        replacement = submission.replacement + "\nReason: " + submission.reason
+        replacement = replacement + "\nReason: " + reason
         prefix = json.dumps({"tool_id": tool_id}) + "\nReplaced with:\n"
         before = {**original, "output": prefix + replacements[-1]} if replacements else original
         after = {**original, "output": prefix + replacement}
         (context.run_dir / f"replace-{tool_context.tool_call_id}.json").write_text(json.dumps({
             "tool_id": tool_id, "replace_call_id": tool_context.tool_call_id,
-            "prompt": prompt,
             "model": context.model.model, "reasoning": stripped_json(context.model_settings.reasoning),
             "before": stripped_json([call, before]), "after": stripped_json([call, after]),
         }, ensure_ascii=False) + "\n")
@@ -501,7 +484,7 @@ async def run_stream(
             text_characters = len(output) if isinstance(output, str) else sum(len(part.text) for part in output if isinstance(part, ToolOutputText))
             output_header = {"tool_id": tool_id}
             if text_characters > TOOL_REMINDER_CHARACTERS:
-                output_header["reminder"] = f"Large tool result ({text_characters} text characters). Consider using replace_tool with tool_id={tool_id} and a focused summary prompt."
+                output_header["reminder"] = f"Large tool result ({text_characters} text characters). Consider using replace_tool with your own focused replacement and reason if tool_id={tool_id} is the latest tool result. Cite other results explicitly; do not mix their evidence into this result."
             prefix = json.dumps(output_header) + "\n"
             if isinstance(output, str):
                 numbered_output = prefix + output
@@ -557,31 +540,28 @@ async def run_stream(
     caught: BaseException | None = None
     with events_path.open("x", buffering=1) as events:
         def model_input(data):
+            nonlocal latest_tool_id
             items = []
-            removed_calls = set()
+            skip_outputs = False
             for item in data.model_data.input:
+                if skip_outputs and item.get("type") == "function_call_output":
+                    continue
+                skip_outputs = False
                 if item.get("type") in ("function_call", "function_call_output"):
                     tool_id = context.tool_ids[item["call_id"]]
                     record = context.tool_calls[tool_id]
-                    if record["name"] == "replace_tool" and "replaced_tool_id" in json.loads(record["original_output"]):
-                        removed_calls.add(item["call_id"])
+                    if item["type"] == "function_call_output" and record["name"] == "replace_tool" and "replaced_tool_id" in json.loads(record["original_output"]):
+                        target_id = json.loads(record["original_output"])["replaced_tool_id"]
+                        target_call_id = context.tool_calls[target_id]["call_id"]
+                        target_index = next(index for index, prior in enumerate(items) if prior.get("type") == "function_call_output" and prior["call_id"] == target_call_id)
+                        items = items[:target_index + 1]
+                        skip_outputs = True
                         continue
                     if item["type"] == "function_call_output" and record["replacements"]:
                         output = json.dumps({"tool_id": tool_id}) + "\nReplaced with:\n" + record["replacements"][-1]
                         item = {**item, "output": output}
                 items.append(item)
-            removed_reasoning = set()
-            for index, item in enumerate(data.model_data.input):
-                if item.get("type") != "reasoning":
-                    continue
-                following_calls = []
-                for following in data.model_data.input[index + 1:]:
-                    if following.get("type") != "function_call":
-                        break
-                    following_calls.append(following["call_id"])
-                if following_calls and all(call_id in removed_calls for call_id in following_calls):
-                    removed_reasoning.add(item["id"])
-            items = [item for item in items if item.get("type") != "reasoning" or item["id"] not in removed_reasoning]
+            latest_tool_id = next((context.tool_ids[item["call_id"]] for item in reversed(items) if item.get("type") == "function_call_output"), None)
             request = {"agent": agent.name}
             if agent.name == "memory-retrieval":
                 # Persist the exact caller-visible image bytes used by this request.
@@ -825,7 +805,7 @@ async def sample_frames(
 def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
     @function_tool(failure_error_function=tool_error_json)
     async def run_sql(sql: str, question: str | None = None) -> str:
-        """Execute one read-only SQL query. Prefer supplying question to receive a concise answer grounded in the complete query result, with supporting row IDs and times. Use question=null only when raw rows are needed; raw mode returns at most 100 rows with long text cells shortened."""
+        """Execute one read-only SQL query. With question=null, return up to 100 raw rows with long text cells shortened. Optionally supply question to request a separate QA answer from the complete query result, with supporting row IDs and times."""
         result = await asyncio.to_thread(
             execute_sql, context.database, sql, 100 if question is None else None, None, 500 if question is None else None
         )
@@ -869,7 +849,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         max_score: float | None = None,
         question: str | None = None,
     ) -> str:
-        """Search one embedded table. Prefer supplying question to receive a concise answer from the selected hits instead of retaining the full search result. rank_start is one-based and n is the number of ranks.
+        """Search one embedded table and return raw hits when question is null. Optionally supply question to request a separate QA answer from the selected hits. rank_start is one-based and n is the number of ranks.
 
         Args:
             query: Semantic search text.
@@ -1175,8 +1155,8 @@ class VideoSQLHarness:
             base_instructions = instructions if instructions is not None else (
                 "Answer the user's question by retrieving evidence from the memory database. "
                 "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
-                + "\n\nRetrieval QA: Prefer supplying question to run_sql and semantic_search so they answer from their retrieved evidence without putting the full result into your context. This is proactive context replacement. Use question=null only when you need to inspect raw rows or hits directly. Keep semantic_search.query focused on retrieval and use question to specify what to answer from the hits."
-                + "\n\nContext maintenance: After reading a large tool result, call replace_tool with its tool_id and a prompt describing what needs to be summarized before continuing the investigation. Do this even when all of the result is useful and correct. Request the facts, evidence IDs, time intervals, and unresolved details needed for the answer or next steps. Do not compose the replacement yourself or inject facts from other tool results into the prompt; the replacement is generated from the target's original result and includes a reason. If a result is invalid, wrong, or irrelevant, explain the issue in prompt and request replacing its entire content with the reason it must not be used. Do not wait until a result is completely wrong or useless. Saving an add_note does not replace the original tool result."
+                + "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text."
+                + "\n\nContext maintenance: Only the latest tool result in your context can be replaced. After reading it, use replace_tool alone before continuing if it is large, even when useful and correct, or if it is invalid. Write replacement yourself and give a brief reason. Summarize only the target result's question and evidence, preserving relevant facts, IDs, times, uncertainty, contradictions, and unresolved details. Other results may be cited explicitly by tool_id, but do not present their evidence as part of this result or substitute a summary of another question. For invalid results, replace the entire content with why it must not be used. All history after the target result through the replacement turn is removed, including reasoning, messages, and tool calls; future reasoning starts from the replacement. Do not combine replace_tool with any other tool call in the same turn. Saving add_note does not replace a tool result."
                 + "\n\nROOT-SKILL (skill loading guidance):\n"
                 + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
             )
