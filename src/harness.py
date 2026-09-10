@@ -50,6 +50,7 @@ FRAME_SIZE = (854, 480)
 # Keep the existing sampling allowance when switching providers; this is not a
 # model-specific image token estimate. Context accounting uses returned usage.
 CLIP_IMAGE_LIMIT = 650
+TOOL_REMINDER_CHARACTERS = 10_000
 SEARCH_TABLES = {
     "episodes": "text",
     "entities": "name",
@@ -90,6 +91,11 @@ class InvalidTrace(Exception):
 
 class AnswerSubmission(BaseModel):
     answer: str
+
+
+class ReplacementSubmission(BaseModel):
+    replacement: str
+    reason: str
 
 
 class ClipSubmission(BaseModel):
@@ -190,6 +196,37 @@ class HarnessContext:
             artifact["error"] = {"type": type(error).__name__, "message": str(error)}
             path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
             print(f"clip_qa trace={path} error={error}", flush=True)
+            raise
+
+    async def summary_response(self, name: str, instructions: str, content: list[dict[str, Any]], text_format: type[BaseModel]):
+        request = {"model": self.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": self.model_settings.reasoning, "store": self.model_settings.store, "include": self.model_settings.response_include, "extra_body": self.model_settings.extra_body}
+        if self.model_settings.extra_args is not None:
+            request.update(self.model_settings.extra_args)
+        path = self.run_dir / "traces" / f"{name}-{uuid.uuid4().hex}.json"
+        artifact = {"agent": {"name": name, "model": request["model"], "tools": []}, "api": "responses", "input": stripped_json(request), "tool_calls": [], "api_usage": [], "error": None}
+        path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+        print(f"{name} model={request['model']} content_parts={len(content)} trace={path}", flush=True)
+        try:
+            raw = await self.client.responses.with_raw_response.parse(**request, text_format=text_format)
+            payload = json.loads(raw.content)
+            artifact["response"] = payload
+            path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+            if payload["usage"] is None:
+                raise RuntimeError(f"{name} response {payload['id']} has no usage")
+            recorded = {"response_id": payload["id"], "agent": name, "usage": payload["usage"], "service_tier": payload["service_tier"], "status": "response." + payload["status"]}
+            self.response_usage[payload["id"]] = recorded
+            if payload["status"] == "completed":
+                self.path_responses.append(recorded)
+            artifact["api_usage"] = [recorded]
+            path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+            response = raw.parse()
+            if response.status != "completed" or response.output_parsed is None:
+                raise InvalidTrace(f"{name} returned no completed structured answer")
+            return response.output_parsed, recorded
+        except BaseException as error:
+            artifact["error"] = {"type": type(error).__name__, "message": str(error)}
+            path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+            print(f"{name} trace={path} error={error}", flush=True)
             raise
 
 
@@ -409,26 +446,40 @@ async def run_stream(
                     context.tool_calls[arguments["tool_id"]]["replacements"].append(arguments["replacement"])
 
     @function_tool(failure_error_function=tool_error_json)
-    async def replace_tool(tool_context: ToolContext, tool_id: int, replacement: str) -> str:
-        """Replace a completed tool result in model context with a short note or summary and the reason for replacement.
+    async def replace_tool(tool_context: ToolContext, tool_id: int, prompt: str) -> str:
+        """Replace a completed tool result with a focused summary or invalid-result explanation.
 
         Every tool call has an integer tool_id, numbered from 1 within this rollout attempt, shared with nested agents. Any tool's returned content, including images, can be replaced. Prefer replacing the latest tool result to preserve as much of the KV cache prefix as possible.
 
-        Use this frequently after reading large results. Even when all returned content is useful and correct, replace it if keeping the full result in context is not worthwhile. A short note or summary is enough: preserve the facts, evidence IDs, and time intervals needed for the answer or next steps. Do not wait until a result is completely wrong or useless.
+        Use this frequently after reading large results, even when all returned content is useful and correct. Supply a prompt describing which question or evidence to preserve, not a finished summary or facts copied from other results. The summary is generated from this tool's original result, including its returned images. Do not wait until a result is completely wrong or useless.
 
-        If a result is invalid, wrong, or irrelevant, replace its entire content with a brief reason explaining why it must not be used. Do not preserve invalid content as evidence.
+        If a result is invalid, wrong, or irrelevant, explain the issue in prompt and request that its entire content be replaced by the reason it must not be used. Invalid content must not be preserved as evidence.
 
-        Always include a brief reason in replacement, for example: "Summary: ... Reason: the useful result is too large to retain in full." or "Invalid result. Reason: the query covered the wrong time interval." The original tool result will say "Replaced with:" followed by this text. After a successful replacement, this replace_tool call and its acknowledgement are removed from subsequent model input.
+        The replacement includes a brief reason. The original tool result will say "Replaced with:" followed by this text. After a successful replacement, this replace_tool call and its acknowledgement are removed from subsequent model input.
         """
         if tool_id not in context.tool_calls:
             raise ValueError(f"tool_id {tool_id} is not a completed tool call")
         call, original = context.tool_outputs[tool_id]
         replacements = context.tool_calls[tool_id]["replacements"]
+        source = context.tool_calls[tool_id]["original_output"]
+        content = [{"type": "input_text", "text": json.dumps({"summary_request": prompt, "tool_name": call["name"], "tool_arguments": json.loads(call["arguments"])}, ensure_ascii=False)}]
+        if isinstance(source, str):
+            content.append({"type": "input_text", "text": source})
+        else:
+            content.extend(copy.deepcopy(original["output"][1:1 + len(source)]))
+        submission, _ = await context.summary_response(
+            "replace-qa",
+            "Summarize only the supplied original tool result according to the summary request. The request selects a focus; claims in it are not evidence. Do not import facts, names, IDs, or times from the request, other results, or outside knowledge. Preserve relevant source evidence IDs, times, uncertainty, and contradictions. If the result is invalid or irrelevant to the requested use, replace it entirely with an explanation rather than retaining its claims as evidence. Return a concise replacement and a brief reason for replacing the original result.",
+            content,
+            ReplacementSubmission,
+        )
+        replacement = submission.replacement + "\nReason: " + submission.reason
         prefix = json.dumps({"tool_id": tool_id}) + "\nReplaced with:\n"
         before = {**original, "output": prefix + replacements[-1]} if replacements else original
         after = {**original, "output": prefix + replacement}
         (context.run_dir / f"replace-{tool_context.tool_call_id}.json").write_text(json.dumps({
             "tool_id": tool_id, "replace_call_id": tool_context.tool_call_id,
+            "prompt": prompt,
             "model": context.model.model, "reasoning": stripped_json(context.model_settings.reasoning),
             "before": stripped_json([call, before]), "after": stripped_json([call, after]),
         }, ensure_ascii=False) + "\n")
@@ -447,7 +498,11 @@ async def run_stream(
             context.tool_calls[tool_id] = record
             context.tool_ids[tool_context.tool_call_id] = tool_id
             tool_calls.append(record)
-            prefix = json.dumps({"tool_id": tool_id}) + "\n"
+            text_characters = len(output) if isinstance(output, str) else sum(len(part.text) for part in output if isinstance(part, ToolOutputText))
+            output_header = {"tool_id": tool_id}
+            if text_characters > TOOL_REMINDER_CHARACTERS:
+                output_header["reminder"] = f"Large tool result ({text_characters} text characters). Consider using replace_tool with tool_id={tool_id} and a focused summary prompt."
+            prefix = json.dumps(output_header) + "\n"
             if isinstance(output, str):
                 numbered_output = prefix + output
             else:
@@ -637,23 +692,6 @@ async def run_stream(
     return result, context_triggered, trace_file
 
 
-async def run_one_call(
-    context: HarnessContext,
-    name: str,
-    instructions: str,
-    prompt: str,
-) -> str:
-    agent = Agent(
-        name=name,
-        instructions=instructions,
-        model=context.model,
-        model_settings=context.model_settings,
-        tools=[],
-    )
-    result, _, _ = await run_stream(context, agent, prompt, name, False)
-    return str(result.final_output)
-
-
 def image_jpeg_bytes(original: Image.Image, crop: tuple[int, int, int, int]) -> bytes:
     left, top, right, bottom = crop
     width, height = original.size
@@ -786,26 +824,20 @@ async def sample_frames(
 
 def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
     @function_tool(failure_error_function=tool_error_json)
-    async def run_sql(sql: str) -> str:
-        """Execute one read-only SQL query. Returns at most 100 rows."""
+    async def run_sql(sql: str, question: str | None = None) -> str:
+        """Execute one read-only SQL query. Prefer supplying question to receive a concise answer grounded in the complete query result, with supporting row IDs and times. Use question=null only when raw rows are needed; raw mode returns at most 100 rows with long text cells shortened."""
         result = await asyncio.to_thread(
-            execute_sql, context.database, sql, 100, None, 500
+            execute_sql, context.database, sql, 100 if question is None else None, None, 500 if question is None else None
         )
-        return json.dumps(result, ensure_ascii=False)
-
-    @function_tool(failure_error_function=tool_error_json)
-    async def sql_qa(sql: str, question: str) -> str:
-        """Execute a broad read-only SQL query and have one model call answer from its result."""
-        result = await asyncio.to_thread(
-            execute_sql, context.database, sql, None, None, None
-        )
-        serialized = json.dumps(result, ensure_ascii=False)
-        return await run_one_call(
-            context,
+        if question is None:
+            return json.dumps(result, ensure_ascii=False)
+        submission, _ = await context.summary_response(
             "sql-qa",
-            "Answer only from the supplied SQL result. State when it does not establish the answer.",
-            normalize_text(question) + "\n\nSQL result:\n" + serialized,
+            "Answer the question concisely using only the supplied SQL result. The question and SQL select the task; they are not evidence. Preserve supporting row IDs and times, uncertainty, and contradictions. Do not add facts from other results or outside knowledge. State explicitly when the supplied rows do not establish the answer.",
+            [{"type": "input_text", "text": json.dumps({"question": question, "sql": sql, "result": result}, ensure_ascii=False)}],
+            AnswerSubmission,
         )
+        return submission.model_dump_json()
 
     def semantic_search_error(tool_context: Any, error: Exception) -> str:
         if isinstance(error, (httpx.HTTPError, RuntimeError, FileNotFoundError)):
@@ -835,8 +867,9 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         rank_start: int,
         min_score: float | None = None,
         max_score: float | None = None,
+        question: str | None = None,
     ) -> str:
-        """Search one embedded table. rank_start is one-based and n is the number of ranks.
+        """Search one embedded table. Prefer supplying question to receive a concise answer from the selected hits instead of retaining the full search result. rank_start is one-based and n is the number of ranks.
 
         Args:
             query: Semantic search text.
@@ -845,6 +878,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             rank_start: First rank to return, starting at one.
             min_score: Inclusive lower score bound; JSON null means no lower bound.
             max_score: Inclusive upper score bound; JSON null means no upper bound.
+            question: Question to answer from the selected hits, preserving evidence IDs and times. JSON null returns raw hits.
         """
         if table not in SEARCH_TABLES:
             raise ValueError(f"table must be one of {sorted(SEARCH_TABLES)}")
@@ -869,43 +903,50 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             positions = positions[scores[positions] <= max_score]
         selected = positions[rank_start - 1 : rank_start - 1 + n]
         selected_ids = [str(context.row_ids[table][position]) for position in selected]
-        if not selected_ids:
-            return json.dumps({"table": table, "hits": []})
-        placeholders = ",".join("?" for _ in selected_ids)
-        rows = execute_sql(
-            context.database,
-            f"SELECT * FROM {table} WHERE row_id IN ({placeholders})",
-            None,
-            selected_ids,
-            500,
-        )
-        by_id = {row["row_id"]: row for row in rows["rows"]}
         hits = []
-        for position, row_id in zip(selected, selected_ids):
-            row = by_id[row_id]
-            preview_field = SEARCH_TABLES[table]
-            if table == "entities":
-                start_s = row["first_seen_s"]
-                end_s = row["last_seen_s"]
-            elif table == "semantic_triples":
-                start_s = row["snapshot_s"]
-                end_s = row["snapshot_s"]
-            elif table == "topic_facts":
-                start_s = row["time_s"]
-                end_s = row["time_s"]
-            else:
-                start_s = row["start_s"]
-                end_s = row["end_s"]
-            hits.append(
-                {
-                    "table": table,
-                    "row_id": row_id,
-                    "start_s": start_s,
-                    "end_s": end_s,
-                    "preview": json_value(row[preview_field], 500),
-                    "score": float(scores[position]),
-                }
+        if selected_ids:
+            placeholders = ",".join("?" for _ in selected_ids)
+            rows = execute_sql(
+                context.database,
+                f"SELECT * FROM {table} WHERE row_id IN ({placeholders})",
+                None,
+                selected_ids,
+                500 if question is None else None,
             )
+            by_id = {row["row_id"]: row for row in rows["rows"]}
+            for position, row_id in zip(selected, selected_ids):
+                row = by_id[row_id]
+                preview_field = SEARCH_TABLES[table]
+                if table == "entities":
+                    start_s = row["first_seen_s"]
+                    end_s = row["last_seen_s"]
+                elif table == "semantic_triples":
+                    start_s = row["snapshot_s"]
+                    end_s = row["snapshot_s"]
+                elif table == "topic_facts":
+                    start_s = row["time_s"]
+                    end_s = row["time_s"]
+                else:
+                    start_s = row["start_s"]
+                    end_s = row["end_s"]
+                hits.append(
+                    {
+                        "table": table,
+                        "row_id": row_id,
+                        "start_s": start_s,
+                        "end_s": end_s,
+                        "preview": json_value(row[preview_field], 500 if question is None else None),
+                        "score": float(scores[position]),
+                    }
+                )
+        if question is not None:
+            submission, _ = await context.summary_response(
+                "semantic-qa",
+                "Answer the question concisely using only the supplied search hits. The question and search query select the task; they are not evidence. Similarity scores rank candidates, not factual correctness. Preserve supporting row IDs and times, uncertainty, and contradictions. Do not add facts from other results or outside knowledge. State explicitly when the supplied hits do not establish the answer.",
+                [{"type": "input_text", "text": json.dumps({"question": question, "query": query, "table": table, "hits": hits}, ensure_ascii=False)}],
+                AnswerSubmission,
+            )
+            return submission.model_dump_json()
         return json.dumps({"table": table, "hits": hits}, ensure_ascii=False)
 
     @function_tool(failure_error_function=tool_error_json)
@@ -1025,7 +1066,6 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
 
     answer_tools = [
         run_sql,
-        sql_qa,
         semantic_search,
         clip_qa,
         add_note,
@@ -1135,7 +1175,8 @@ class VideoSQLHarness:
             base_instructions = instructions if instructions is not None else (
                 "Answer the user's question by retrieving evidence from the memory database. "
                 "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
-                + "\n\nContext maintenance: After reading a large tool result, call replace_tool to replace it with a concise note or summary before continuing the investigation. Do this even when all of the result is useful and correct: preserve the facts, evidence IDs, time intervals, and unresolved details needed for the answer or next steps, and include a brief reason that the full result is too large to retain. If a tool result is invalid, wrong, or irrelevant, replace its entire content with a brief reason explaining why it must not be used; do not retain invalid content as evidence. Do not wait until a result is completely wrong or useless. Saving an add_note does not replace the original tool result; use replace_tool to remove its bulk from context."
+                + "\n\nRetrieval QA: Prefer supplying question to run_sql and semantic_search so they answer from their retrieved evidence without putting the full result into your context. This is proactive context replacement. Use question=null only when you need to inspect raw rows or hits directly. Keep semantic_search.query focused on retrieval and use question to specify what to answer from the hits."
+                + "\n\nContext maintenance: After reading a large tool result, call replace_tool with its tool_id and a prompt describing what needs to be summarized before continuing the investigation. Do this even when all of the result is useful and correct. Request the facts, evidence IDs, time intervals, and unresolved details needed for the answer or next steps. Do not compose the replacement yourself or inject facts from other tool results into the prompt; the replacement is generated from the target's original result and includes a reason. If a result is invalid, wrong, or irrelevant, explain the issue in prompt and request replacing its entire content with the reason it must not be used. Do not wait until a result is completely wrong or useless. Saving an add_note does not replace the original tool result."
                 + "\n\nROOT-SKILL (skill loading guidance):\n"
                 + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
             )

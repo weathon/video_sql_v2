@@ -148,6 +148,15 @@ def make_harness(directory, skill_dir, semaphore, metrics, timeline):
         return raw, recorded
 
     harness.context.clip_response = limited_clip_response
+    original_summary_response = harness.context.summary_response
+
+    async def limited_summary_response(*args, **kwargs):
+        async with semaphore:
+            submission, recorded = await original_summary_response(*args, **kwargs)
+        metrics.record_response(recorded)
+        return submission, recorded
+
+    harness.context.summary_response = limited_summary_response
     return harness
 
 
@@ -256,12 +265,20 @@ async def score_rollout(answer, semaphore, metrics):
         trace_files = sorted(str(p) for p in directory.rglob("traces/*.json"))
         billable = {}
         replacement_call_ids = set()
+        retrieval_call_ids = {"run_sql": set(), "semantic_search": set()}
+        qa_call_ids = {"run_sql": set(), "semantic_search": set()}
         for filename in trace_files:
             artifact = json.loads(Path(filename).read_text())
             for response in artifact["api_usage"]:
                 billable[response["response_id"]] = response
             if artifact["agent"]["name"] != "judge":
                 replacement_call_ids.update(call["call_id"] for call in artifact["tool_calls"] if call["name"] == "replace_tool")
+                for call in artifact["tool_calls"]:
+                    if call["name"] in retrieval_call_ids:
+                        retrieval_call_ids[call["name"]].add(call["call_id"])
+                        arguments = json.loads(call["arguments"])
+                        if "question" in arguments and arguments["question"] is not None:
+                            qa_call_ids[call["name"]].add(call["call_id"])
         total_context_saved = 0
         for path in sorted(directory.glob("*/replace-*.json")):
             measurement = json.loads(path.read_text())
@@ -292,7 +309,10 @@ async def score_rollout(answer, semaphore, metrics):
             **answer, "score": score, "success": score >= 4, "trace_files": trace_files,
             "cost_usd": sum(response_cost(r) for r in billable.values()),
             "replacement_metrics": {"total_context_saved_tokens": total_context_saved,
-                                    "replace_tool_calls": len(replacement_call_ids)},
+                                    "replace_tool_calls": len(replacement_call_ids),
+                                    "preemptive_qa_calls": sum(len(ids) for ids in qa_call_ids.values()),
+                                    "total_compression_calls": len(replacement_call_ids) + sum(len(ids) for ids in qa_call_ids.values())},
+            "retrieval_qa_metrics": {name: {"tool_calls": len(retrieval_call_ids[name]), "qa_calls": len(qa_call_ids[name])} for name in retrieval_call_ids},
         }
         result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
         print(f"SCORE phase={answer['phase']} timeline={answer['timeline']} question={answer['question']} rollout={answer['rollout']} score={score}", flush=True)

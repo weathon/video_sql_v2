@@ -13,6 +13,8 @@ Read this skill before complex joins, aggregations, or evidence tracing.
 
 # Main content
 
+Prefer run_sql with a question to answer from the complete query result while retaining supporting row IDs and times. Use question=null only when raw rows are needed; raw mode returns at most 100 rows and shortens long text cells.
+
 Available tables and columns:
 
 - episodes(row_id, start_s, end_s, granularity, text); granularities include 30sec, 3min, 1h, 6h, video, and scale.
