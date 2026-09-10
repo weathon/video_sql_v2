@@ -137,6 +137,7 @@ def make_harness(directory, skill_dir, semaphore, metrics, timeline):
         clip_qa_video=True,
     )
     harness.context.model = LimitedResponsesModel(harness.context, semaphore, metrics)
+    harness.context.model_settings.reasoning = {"effort": "xhigh", "summary": "auto"}
     harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
     original_clip_response = harness.context.clip_response
 
@@ -454,7 +455,7 @@ async def analyze(result, semaphore, metrics):
                         async with semaphore:
                             raw = await harness.context.client.responses.with_raw_response.parse(
                                 model=MODEL, instructions=instructions, input=messages,
-                                reasoning={"effort": "high", "summary": "auto"}, store=False,
+                                reasoning=harness.context.model_settings.reasoning, store=False,
                                 include=["reasoning.encrypted_content"],
                                 text_format=SuccessReport,
                             )
@@ -599,7 +600,7 @@ async def main():
     RUN.mkdir(parents=True, exist_ok=True)
     init_weave()
     config = {
-        "model": MODEL, "reasoning": "high", "reasoning_summary": "auto", "base_url": BASE_URL,
+        "model": MODEL, "reasoning": "xhigh", "reasoning_summary": "auto", "base_url": BASE_URL,
         "api": "responses", "reasoning_replay": True, "client_concurrency": 128, "replace_tool": True,
         "investigation_turn_limit": MAX_TURNS, "forced_answer_after_limit": True, "clip_qa_video": True,
         "collection": {"split": "test", "timelines": ["day", "week"], "questions_per_timeline": 200,
