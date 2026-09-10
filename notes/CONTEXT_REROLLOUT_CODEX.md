@@ -71,3 +71,48 @@ The run completed on attempt 1 with 41 main-agent tool calls: 5 read_skill, 16 s
 - [Main-prompt comparison JSON](../runs/context-rerollout-day196-replace-main-prompt/comparison.json)
 - [Main-prompt test trace](../runs/context-rerollout-day196-replace-main-prompt/collection/day/question-196/rollout-00/attempt-1/traces/answer-segment-00.json)
 - [Main-prompt W&B run](https://wandb.ai/3dsmile/video-sql-v2/runs/context-rerollout-day196-replace-main-prompt)
+
+## Ten additional rollouts
+
+Ran the user-requested ten independent root rollouts of day/196 with the same main prompt, initial skills, model, high reasoning, flex tier, and existing retry/concurrency settings. The full-repository Claude CLI review reported no blocking issues. No repository source was changed for this batch.
+
+The initial run name produced a 66-character prompt_cache_key; the API rejected it with a 64-character maximum. All ten initial traces contained zero completed model responses and zero tool calls. The failed launcher was stopped after its Weave flush stalled. Shortening the run name to `day196-replace-main-10` produced a 41-character key; that batch completed all ten rollouts.
+
+Input/output and clip API counts below cover each successful QA path; cost includes failed attempts and judge. Rollout IDs are zero-based.
+
+| Rollout | replace_tool | Clip API calls | Input tokens | Output tokens | Judge score | Total cost, USD |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 00 | 0 | 4 | 2,100,978 | 40,412 | 0 | 0.205997330 |
+| 01 | 4 | 9 | 2,629,101 | 70,115 | 0 | 0.250767115 |
+| 02 | 15 | 14 | 2,031,448 | 101,152 | 0 | 0.242872300 |
+| 03 | 6 | 1 | 1,241,926 | 13,231 | 0 | 0.070282825 |
+| 04 | 0 | 7 | 1,465,172 | 51,336 | 0 | 0.740979500 |
+| 05 | 6 | 16 | 2,431,845 | 121,213 | 5 | 0.491117900 |
+| 06 | 3 | 9 | 2,225,546 | 70,799 | 0 | 0.208540040 |
+| 07 | 9 | 9 | 1,947,104 | 86,568 | 2 | 0.192567280 |
+| 08 | 0 | 9 | 1,648,616 | 78,047 | 0 | 0.159205150 |
+| 09 | 4 | 6 | 950,083 | 31,892 | 0 | 0.069363425 |
+| Total | 47 | 84 | 18,671,819 | 664,765 | 1 score 5, 1 score 2, 8 score 0 | 2.631692865 |
+
+### Replacement checks
+
+- Seven of ten rollouts used replace_tool. All 47 calls completed: 26 replaced SQL results and 21 replaced clip QA results. Failed attempts contributed no additional replacements in this batch.
+- Checked every replacement argument and acknowledgement against the saved target result and all 378 subsequent request snapshots in which the target remained present. All contained the expected `Replaced with:` result and omitted the replace call and acknowledgement. No mismatch was found in those checks.
+- Every replacement reduced its individual payload token count. Summed before/after reduction: **331,740 tokens**. This is a local payload measurement, not cumulative billed-token savings.
+- Rollout 03 replaced a duplicate-column SQL error with an invalid-result reason. Rollout 07 replaced four unsupported clip answers; inspected representative returned images for all four, which showed a shrine, an equipment overview, a root menu, and a shrine menu rather than the claimed readable treasure transitions.
+
+### Observed problems
+
+- **Replacement is still inconsistent.** Rollouts 00, 04, and 08 made zero replacement calls. Their largest SQL results contained 62,640, 64,801, and 39,249 characters, respectively. Rollouts 00 and 08 also left failed SQL/tool results unreplaced.
+- **Some replacement summaries mix evidence from other results.** In rollout 03, replace call 43 targeted tool 41: its 100 returned event-step rows covered 60,060–62,910 seconds and contained no 芭蕉扇, but the summary added 芭蕉扇 dialogue at 66,570–66,600 seconds. Call 42 similarly added 定风珠 at 16,920–16,950 to rows ending at 16,410 that contained no 定风珠. In rollout 07, call 37 added 绣花针 at 61,740 to a result ending at 15,810 with no 绣花针. These were checked against the actual returned row text, not only the time-range metadata.
+- **Two rollouts required a second attempt.** Rollout 04 directly emitted prose instead of invoking submit_answer; AnswerSubmission JSON validation rejected it. Rollout 05 received an API overload error. Both completed on the existing retry path.
+- **Tool errors occurred and were returned to the model.** There were five over-budget clip requests and five SQL errors across all attempts. SQL errors included nonexistent columns, duplicate column names, treating plain text as JSON, and an invalid alias. No clip trace reported missing video. All 117 completed clip API artifacts across both successful and failed QA attempts contained one completed response, no internal tool calls, and matching frame/image counts with in-range evidence indices.
+- **Shutdown was not clean despite exit 0.** After BATCH COMPLETE, the log recorded two asynchronous-generator closing errors ending in `RuntimeError: generator didn't stop after athrow()`. All ten answer/result/judge artifacts were already present; the shutdown error was not counted as a successful check.
+
+Read all ten final answers and judge outputs. The sole score-5 answer identified 凤翅将军 and the actual change 辟火罩 → 芭蕉扇; inspected its boss HUD and equipped-item evidence images. The score-2 answer included additional menu-browsing selections in its replacement sequence.
+
+- [Batch summary](../runs/day196-replace-main-10/summary.json)
+- [Metrics and per-rollout errors](../runs/day196-replace-main-10/audit-metrics.json)
+- [Replacement inputs, outputs, and replay checks](../runs/day196-replace-main-10/replacement-audit.json)
+- [Clip request/answer audit](../runs/day196-replace-main-10/clip-audit.json)
+- [Batch W&B run](https://wandb.ai/3dsmile/video-sql-v2/runs/day196-replace-main-10)
