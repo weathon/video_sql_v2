@@ -15,6 +15,8 @@ Read this skill before complex joins, aggregations, or evidence tracing.
 
 With question=null, run_sql returns at most 100 raw rows and shortens long text cells. Supplying question optionally requests a separate QA answer from the complete query result with supporting row IDs and times.
 
+Every query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and the QA question are not restrictions. Unrestricted queries are rejected before execution and must be rewritten.
+
 Available tables and columns:
 
 - episodes(row_id, start_s, end_s, granularity, text); granularities include 30sec, 3min, 1h, 6h, video, and scale.
@@ -31,4 +33,3 @@ Available tables and columns:
 - event_step_evidence(row_id, step_row_id, caption_30sec_row_id).
 
 Join facts and steps to their chains through chain_row_id. Join precise evidence to episodes.row_id through caption row IDs. For object states, episode_3min_row_id gives surrounding context and caption_30sec_row_id gives the precise evidence interval. Times are seconds on one continuous logical clock.
-

@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = ROOT / "runs/qwen38-fp8-turn12-day-week-tree-month-val-seed0"
+RUN = ROOT / "runs/qwen38-fp8-context128k-day-week-tree-month-val-seed0"
 MODEL = "Qwen/Qwen3.8-27B-FP8"
 IMAGE = "video-sql-vllm-epd:ec-tp-device"
 NETWORK = "video-sql-turn12"

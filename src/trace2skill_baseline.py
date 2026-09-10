@@ -21,12 +21,12 @@ from agents import Agent, OpenAIResponsesModel, StopAtTools, ToolOutputImage, To
 from pydantic import BaseModel, Field, ValidationError
 from third_party.trace2skill.tracing_bridge import RunMetrics, init_weave, response_cost
 
-from src.harness import MAX_TURNS, REQUEST_TRACE, InvalidTrace, VideoSQLHarness, frame_jpeg_bytes, run_stream, stripped_json, tool_error_json
+from src.harness import ANSWER_CONTEXT_LIMIT, REQUEST_TRACE, InvalidTrace, VideoSQLHarness, frame_jpeg_bytes, run_stream, stripped_json, tool_error_json
 from src.val import JudgeAttemptsExhausted, judge_answer, retryable, write_error
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = ROOT / "runs/qwen38-fp8-turn12-day-week-tree-month-val-seed0"
+RUN = ROOT / "runs/qwen38-fp8-context128k-day-week-tree-month-val-seed0"
 UPSTREAM = ROOT / "third_party/trace2skill"
 RUNTIME = Path("/raid/wg25r/video_sql_v2/data/runtime")
 DATASET = Path("/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapshots/248aa82039a574e63a2e524746a7cd8f32330443")
@@ -441,7 +441,7 @@ async def analyze(result, semaphore, metrics):
                 instructions = (UPSTREAM / "analysis/success_analysis_system_llm.txt").read_text()
                 instructions = instructions.replace("spreadsheet manipulation tasks", "video question answering tasks").replace("`input.xlsx`", "video evidence, memory database")
                 instructions += "\nTreat clip_qa as a fixed, opaque tool. Analyze its caller's decisions and use of returned answers and evidence; do not analyze or learn the visual agent's internal reasoning, sampling or cropping. Images are limited to evidence returned to the caller."
-                instructions += f"\nThe target has at most {MAX_TURNS} investigation turns, followed by an immediate answer-only turn. Branching and compaction do not reset this budget. Context is a constrained resource: excessive retained context can cause evidence confusion and incorrect answers. Identify efficient retrieval and replacement decisions that preserve useful evidence within this budget. clip_qa is only for visual verification after the relevant interval has been clearly located, never broad search."
+                instructions += f"\nThe target has no turn limit and must answer immediately once its context reaches {ANSWER_CONTEXT_LIMIT} tokens. Reaching this size suggests a stalled investigation where further searching is unlikely to help; the cutoff reserves context for the final answer. Excessive retained context can confuse evidence and cause incorrect answers. Identify focused SQL queries and replacement decisions that preserve useful evidence within this context budget. SQL requires WHERE, LIMIT, or another result restriction before execution. clip_qa is only for visual verification after the relevant interval has been clearly located, never broad search."
                 instructions += "\nReturn the Lean Solution Path and at most three Success Memory Items using the supplied JSON schema."
                 content = [{"type": "input_text", "text": json.dumps(bundle, ensure_ascii=False)}]
                 for filename in result["media_files"]:
@@ -602,7 +602,7 @@ async def main():
     config = {
         "model": MODEL, "reasoning": "xhigh", "reasoning_summary": "auto", "base_url": BASE_URL,
         "api": "responses", "reasoning_replay": True, "client_concurrency": 128, "replace_tool": True,
-        "investigation_turn_limit": MAX_TURNS, "forced_answer_after_limit": True, "clip_qa_video": True,
+        "answer_context_limit": ANSWER_CONTEXT_LIMIT, "forced_answer_after_limit": True, "sql_scope_required": True, "clip_qa_video": True,
         "collection": {"split": "test", "timelines": ["day", "week"], "questions_per_timeline": 200,
                        "root_rollouts": 1, "branch_rollouts": 4, "branch_before": "model_tool_decision"},
         "evaluation": {"timeline": "month", "split": "val", "questions": 100, "rollouts": 1,

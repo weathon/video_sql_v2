@@ -19,13 +19,15 @@ import duckdb
 import httpx
 import httpx2
 import numpy as np
+import sqlglot
+from sqlglot import exp
 from agents import (
     Agent,
     ItemHelpers,
-    MaxTurnsExceeded,
     ModelSettings,
     OpenAIResponsesModel,
     RunConfig,
+    RunHooks,
     Runner,
     StopAtTools,
     ToolOutputImage,
@@ -46,7 +48,7 @@ OPENAI_BASE_URL = "https://api.openai.com/v1"
 REQUEST_TRACE = ContextVar("request_trace")
 CONTEXT_LIMIT = 314573
 COMPACTION_THRESHOLD = 178_000
-MAX_TURNS = 12
+ANSWER_CONTEXT_LIMIT = 128_000
 FRAME_SIZE = (854, 480)
 # Keep the existing sampling allowance when switching providers; this is not a
 # model-specific image token estimate. Context accounting uses returned usage.
@@ -90,6 +92,10 @@ class InvalidTrace(Exception):
     pass
 
 
+class AnswerContextLimit(Exception):
+    pass
+
+
 class AnswerSubmission(BaseModel):
     answer: str
 
@@ -126,6 +132,8 @@ class HarnessContext:
     compaction_threshold: int = COMPACTION_THRESHOLD
     compactions: int = 0
     answer_turns: int = 0
+    answer_context_tokens: int = 0
+    answer_context_reached: bool = False
     base_instructions: str = ""
     response_states: dict[str, Any] = field(default_factory=dict)
     response_usage: dict[str, Any] = field(default_factory=dict)
@@ -477,7 +485,10 @@ async def run_stream(
         async def invoke_tool(tool_context: ToolContext, arguments: str, original=tool.on_invoke_tool):
             context.tool_counter += 1
             tool_id = context.tool_counter
-            output = await original(tool_context, arguments)
+            if answering and context.answer_context_reached and tool_context.tool_name != "submit_answer":
+                output = json.dumps({"error": f"Context reached {ANSWER_CONTEXT_LIMIT} tokens. This tool was not executed. Return the final answer from existing evidence immediately."})
+            else:
+                output = await original(tool_context, arguments)
             record = {"tool_id": tool_id, "call_id": tool_context.tool_call_id,
                       "name": tool_context.tool_name, "arguments": arguments,
                       "original_output": stripped_json(output), "replacements": []}
@@ -515,7 +526,7 @@ async def run_stream(
     else:
         agent = agent.clone(tools=wrapped_tools)
     answering = agent.name == "memory-retrieval" and label == "answer"
-    max_turns = max(1, MAX_TURNS - context.answer_turns) if answering else 100
+    max_turns = None if answering else 100
     header = {
         "agent": {
             "name": agent.name,
@@ -535,7 +546,7 @@ async def run_stream(
         "run_config": {
             "reasoning_item_id_policy": context.run_config.reasoning_item_id_policy,
             "max_turns": max_turns,
-            "answer_turn_limit": MAX_TURNS,
+            "answer_context_limit": ANSWER_CONTEXT_LIMIT,
             "watch_context": watch_context,
             "context_limit": context.context_limit,
             "compaction_threshold": context.compaction_threshold,
@@ -543,10 +554,10 @@ async def run_stream(
     }
     events_path = context.run_dir / "traces" / f"{label}-events-{uuid.uuid4().hex}.jsonl"
     context_triggered = False
-    turn_limit_reached = False
+    answer_limit_reached = False
     caught: BaseException | None = None
     with events_path.open("x", buffering=1) as events:
-        def model_input(data):
+        async def model_input(data):
             nonlocal latest_tool_id
             items = []
             skip_outputs = False
@@ -569,6 +580,17 @@ async def run_stream(
                         item = {**item, "output": output}
                 items.append(item)
             latest_tool_id = next((context.tool_ids[item["call_id"]] for item in reversed(items) if item.get("type") == "function_call_output"), None)
+            if answering and watch_context:
+                count = await context.client.responses.input_tokens.count(
+                    model=context.model.model, instructions=data.model_data.instructions, input=items,
+                    reasoning=agent.model_settings.reasoning,
+                    tools=[{"type": "function", "name": tool.name, "description": tool.description, "parameters": tool.params_json_schema, "strict": tool.strict_json_schema} for tool in agent.tools],
+                )
+                context.answer_context_tokens = count.input_tokens
+                context.answer_context_reached |= count.input_tokens >= ANSWER_CONTEXT_LIMIT
+                events.write(json.dumps({"type": "answer_context_count", "input_tokens": count.input_tokens, "limit": ANSWER_CONTEXT_LIMIT}) + "\n")
+                if context.answer_context_reached:
+                    raise AnswerContextLimit(f"Investigation context reached {ANSWER_CONTEXT_LIMIT} tokens")
             request = {"agent": agent.name}
             if agent.name == "memory-retrieval":
                 # Persist the exact caller-visible image bytes used by this request.
@@ -587,6 +609,8 @@ async def run_stream(
                     "base_instructions": context.base_instructions,
                     "compactions": context.compactions,
                     "answer_turns": context.answer_turns,
+                    "answer_context_tokens": context.answer_context_tokens,
+                    "answer_context_reached": context.answer_context_reached,
                     "tool_counter": context.tool_counter,
                     "tool_calls": stripped_json(context.tool_calls),
                     "tool_ids": dict(context.tool_ids),
@@ -600,7 +624,7 @@ async def run_stream(
                     expected = context.expected_prefix
                     if snapshot["input"] != expected["input"] or snapshot["agent"] != expected["agent"]:
                         raise RuntimeError("Restored branch differs from the original model request")
-                    for key in ("base_instructions", "compactions", "answer_turns", "tool_counter", "tool_calls", "tool_ids", "tool_outputs", "notes"):
+                    for key in ("base_instructions", "compactions", "answer_turns", "answer_context_tokens", "answer_context_reached", "tool_counter", "tool_calls", "tool_ids", "tool_outputs", "notes"):
                         if snapshot[key] != expected[key]:
                             raise RuntimeError(f"Restored branch state differs: {key}")
                     events.write(json.dumps({"type": "prefix_verified", "input": snapshot["input"]}, ensure_ascii=False) + "\n")
@@ -616,10 +640,17 @@ async def run_stream(
         events.write(json.dumps({
             "type": "run_start", **header, "input": stripped_json(input_items),
         }, ensure_ascii=False) + "\n")
+        class AnswerBudgetHooks(RunHooks):
+            async def on_llm_end(self, run_context, current_agent, response):
+                if answering and watch_context:
+                    context.answer_context_tokens = response.usage.input_tokens + response.usage.output_tokens
+                    context.answer_context_reached |= context.answer_context_tokens >= ANSWER_CONTEXT_LIMIT
+
         result = Runner.run_streamed(
             agent,
             input_items,
             max_turns=max_turns,
+            hooks=AnswerBudgetHooks(),
             run_config=dataclasses.replace(context.run_config, call_model_input_filter=model_input),
         )
         try:
@@ -651,16 +682,17 @@ async def run_stream(
                     - response.usage.input_tokens
                     - response.usage.output_tokens
                 )
-                if watch_context and remaining <= context.compaction_threshold and (not answering or context.answer_turns < MAX_TURNS):
+                if answering and watch_context and response.usage.input_tokens + response.usage.output_tokens >= ANSWER_CONTEXT_LIMIT:
+                    context.answer_context_reached = True
                     result.cancel(mode="after_turn")
                     context_triggered = True
-        except MaxTurnsExceeded as error:
-            if not answering or context.answer_turns != MAX_TURNS:
-                caught = error
-                events.write(json.dumps({"type": "run_error", "error_type": type(error).__name__, "message": str(error)}) + "\n")
-            else:
-                turn_limit_reached = True
-                events.write(json.dumps({"type": "investigation_turn_limit", "turns": context.answer_turns}) + "\n")
+                elif watch_context and not answering and remaining <= context.compaction_threshold:
+                    result.cancel(mode="after_turn")
+                    context_triggered = True
+        except AnswerContextLimit:
+            answer_limit_reached = True
+            context_triggered = True
+            events.write(json.dumps({"type": "answer_context_limit", "tokens": context.answer_context_tokens, "limit": ANSWER_CONTEXT_LIMIT}) + "\n")
         except BaseException as error:
             caught = error
             if isinstance(error, asyncio.CancelledError):
@@ -675,12 +707,12 @@ async def run_stream(
             print(f"agent={agent.name} label={label} error={error}", flush=True)
     trace_file = save_trace(
         context, label, result, header, events_path,
-        None if turn_limit_reached else caught if caught is not None else result.run_loop_exception,
+        None if answer_limit_reached else caught if caught is not None else result.run_loop_exception,
         tool_calls,
     )
     if caught is not None:
         raise caught
-    if result.run_loop_exception is not None and not turn_limit_reached:
+    if result.run_loop_exception is not None and not answer_limit_reached:
         raise result.run_loop_exception
     completions = [completion_characters(response) for response in result.raw_responses]
     for index in range(2, len(completions)):
@@ -822,7 +854,22 @@ async def sample_frames(
 def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
     @function_tool(failure_error_function=tool_error_json)
     async def run_sql(sql: str, question: str | None = None) -> str:
-        """Execute one read-only SQL query. With question=null, return up to 100 raw rows with long text cells shortened. Optionally supply question to request a separate QA answer from the complete query result, with supporting row IDs and times."""
+        """Execute one read-only SQL query scoped by an outer WHERE, LIMIT, HAVING, QUALIFY, or sampling clause, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Unrestricted queries are rejected before execution; rewrite them with a relevant time, entity, row-ID filter, or finite LIMIT. ORDER BY alone is not a restriction. With question=null, return up to 100 raw rows with long text cells shortened. Optionally supply question to request a separate QA answer from the complete scoped result, with supporting row IDs and times."""
+        statements = sqlglot.parse(sql, read="duckdb")
+        if len(statements) != 1 or statements[0] is None:
+            raise ValueError("Submit exactly one scoped SQL query; rewrite this request.")
+        query = statements[0]
+        scoped = any(query.args.get(clause) is not None for clause in ("where", "having", "qualify", "sample"))
+        limit = query.args.get("limit")
+        if limit is not None and isinstance(limit.expression, exp.Literal) and limit.expression.is_int and int(limit.expression.this) >= 0:
+            scoped = True
+        if isinstance(query, exp.Select) and query.args.get("group") is None and query.find(exp.Window) is None:
+            scoped |= bool(query.expressions) and all(isinstance(projection.unalias(), (exp.Count, exp.Min, exp.Max, exp.Sum, exp.Avg)) for projection in query.expressions)
+        if isinstance(query, (exp.Describe, exp.Show)):
+            scoped = True
+        if not scoped:
+            print(f"Rejected unrestricted SQL before execution: {sql}", flush=True)
+            raise ValueError("Unrestricted SQL was not executed. Rewrite with an outer WHERE targeting the relevant time/entity/row IDs, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. ORDER BY, a filter in an unrelated subquery, and the optional QA question do not restrict the returned rows.")
         result = await asyncio.to_thread(
             execute_sql, context.database, sql, 100 if question is None else None, None, 500 if question is None else None
         )
@@ -1135,6 +1182,8 @@ class VideoSQLHarness:
     async def restore_prefix(self, snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         context = self.context
         context.answer_turns = snapshot["answer_turns"]
+        context.answer_context_tokens = snapshot["answer_context_tokens"]
+        context.answer_context_reached = snapshot["answer_context_reached"]
         context.tool_counter = snapshot["tool_counter"]
         context.tool_calls = {int(key): value for key, value in copy.deepcopy(snapshot["tool_calls"]).items()}
         context.tool_ids = dict(snapshot["tool_ids"])
@@ -1174,8 +1223,9 @@ class VideoSQLHarness:
                 "Answer the user's question by retrieving evidence from the memory database. "
                 "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
                 + "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text."
+                + "\n\nSQL scope: Every run_sql query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and a QA question do not constrain SQL. Unrestricted queries will be rejected before execution; rewrite them with a real scope constraint. Do not request an entire timeline's tables to answer a question about a few events."
                 + "\n\nVisual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals."
-                + f"\n\nInvestigation budget: You have at most {MAX_TURNS} model turns for investigation, including skill loading and context replacement. After that, immediately submit the best supported answer from the evidence already available; no further investigation is allowed. Context compaction does not reset this budget."
+                + f"\n\nInvestigation budget: There is no turn limit. Once your context reaches {ANSWER_CONTEXT_LIMIT} tokens, immediately answer using the evidence already available; further tools are disabled. An investigation that has grown this large is likely stuck, and more searching is unlikely to improve the answer. This cutoff reserves ample context for the final answer. Use focused retrieval and replace bulky results before reaching it."
                 + "\n\nContext maintenance: Only the latest tool result in your context can be replaced. After reading it, use replace_tool alone before continuing if it is large, even when useful and correct, or if it is invalid. Write replacement yourself and give a brief reason. Summarize only the target result's question and evidence, preserving relevant facts, IDs, times, uncertainty, contradictions, and unresolved details. Other results may be cited explicitly by tool_id, but do not present their evidence as part of this result or substitute a summary of another question. For invalid results, replace the entire content with why it must not be used. All history after the target result through the replacement turn is removed, including reasoning, messages, and tool calls; future reasoning starts from the replacement. Do not combine replace_tool with any other tool call in the same turn. Saving add_note does not replace a tool result."
                 + "\n\nROOT-SKILL (skill loading guidance):\n"
                 + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
@@ -1197,10 +1247,10 @@ class VideoSQLHarness:
             input_items = f"Question: {normalize_text(question)}\n\nAvailable skills:\n{skills}"
         trace_files = []
         while True:
-            final_turn = self.context.answer_turns >= MAX_TURNS
+            final_turn = self.context.answer_context_reached
             if final_turn:
                 agent = agent.clone(
-                    instructions=agent.instructions + f"\n\nThe {MAX_TURNS}-turn investigation budget is exhausted. Return the final answer immediately using the supplied answer schema and the evidence already available. All tools are disabled; do not retrieve more evidence or call any tool.",
+                    instructions=agent.instructions + f"\n\nThe investigation has reached the {ANSWER_CONTEXT_LIMIT}-token context cutoff. Return the final answer immediately using the supplied answer schema and the evidence already available. Further investigation is unlikely to help. All tools are disabled; do not retrieve more evidence or call any tool.",
                     tools=[],
                     output_type=AnswerSubmission,
                     tool_use_behavior="run_llm_again",
@@ -1223,10 +1273,10 @@ class VideoSQLHarness:
                     status="answered",
                     trace_files=trace_files,
                 )
+            if not final_turn and self.context.answer_context_reached:
+                input_items = history
+                continue
             if not needs_compaction:
-                if not final_turn and self.context.answer_turns >= MAX_TURNS:
-                    input_items = history
-                    continue
                 raise InvalidTrace("answer loop ended without submit_answer")
             self.context.compactions += 1
             original_tools = agent.tools

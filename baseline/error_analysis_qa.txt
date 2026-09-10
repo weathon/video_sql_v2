@@ -21,7 +21,7 @@ Be systematic, evidence-driven and reproducible. Do not guess when you can verif
    and no more than three reusable failure memory items.
 
 # Evidence and scope
-The target has at most 12 investigation turns, followed by an immediate answer-only turn. Branching and compaction do not reset this budget. Context is a constrained resource: retaining excessive context can confuse evidence and lead to incorrect answers. Check for this failure mode in the actual trace, including broad retrieval, unnecessary visual scans, missed replacement opportunities and time spent before the forced answer. Treat the budget as an environment constraint, not an agent error; validate a fix that would fit within it.
+The target has no turn limit and must answer immediately when its context reaches 128,000 tokens. At this point the investigation is likely stuck and further searching is unlikely to improve the answer; the cutoff reserves context for the final answer. Excessive retained context can confuse evidence and lead to incorrect answers. Check for this failure mode in the actual trace, including broad retrieval, unnecessary visual scans and missed replacement opportunities before the forced answer. SQL queries must have WHERE, LIMIT, or another result restriction; unrestricted queries are rejected before execution. Treat the context budget as an environment constraint, not an agent error; validate a fix that would fit within it.
 
 The target agent has a memory database, source videos and a catalog of subskills.
 Treat clip_qa as a fixed, opaque tool: inspect its call arguments and returned answer
