@@ -137,7 +137,7 @@ def make_harness(directory, skill_dir, semaphore, metrics, timeline):
         embedding_url=EMBEDDING_URL, embedding_model="qwen3-vl-embedding-8b",
     )
     harness.context.model = LimitedResponsesModel(harness.context, semaphore, metrics)
-    harness.context.model_settings.extra_args = {"service_tier": "flex"}
+    harness.context.model_settings.extra_args = {"service_tier": "default"}
     harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
     original_clip_response = harness.context.clip_response
 
@@ -197,7 +197,7 @@ async def rollout(question, node, phase, skill_version, semaphore, metrics):
                     # Only the user-authorized service tier may differ from an old prefix.
                     harness.context.expected_prefix = copy.deepcopy(snapshot)
                     prefix_settings = harness.context.expected_prefix["agent"]["model_settings"]
-                    prefix_settings["extra_args"] = {**(prefix_settings["extra_args"] or {}), "service_tier": "flex"}
+                    prefix_settings["extra_args"] = {**(prefix_settings["extra_args"] or {}), "service_tier": "default"}
                     session = await harness.answer(
                         question["question"], input_items=restored,
                         instructions=snapshot["agent"]["instructions"],
