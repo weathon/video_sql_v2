@@ -373,26 +373,21 @@ async def run_stream(
 
     @function_tool(failure_error_function=tool_error_json)
     async def replace_tool(tool_context: ToolContext, tool_id: int, replacement: str) -> str:
-        """Replace any completed tool result in model context with your replacement text.
+        """Replace a completed tool result in model context with a short note or summary and the reason for replacement.
 
-        Every tool call has an integer tool_id, numbered from 1 within this rollout
-        attempt, shared with nested agents. Any tool's returned content, including
-        images and earlier replace_tool results, can be replaced. Prefer replacing
-        the latest tool result to preserve as much of the KV cache prefix as possible.
+        Every tool call has an integer tool_id, numbered from 1 within this rollout attempt, shared with nested agents. Any tool's returned content, including images, can be replaced. Prefer replacing the latest tool result to preserve as much of the KV cache prefix as possible.
 
-        Use this to remove irrelevant results from a wrong tool call (for example,
-        reading the wrong file or executing the wrong SQL): large useless outputs
-        consume context and distract attention. Also use it to summarize redundant
-        results, such as long SQL output containing only a little useful information.
-        Preserve the useful evidence in your replacement. Only the returned content
-        changes; this does not undo the tool's side effects. Original results remain
-        in the saved trace for reflection and Trace2Skill analysis.
+        Use this frequently after reading large results. Even when all returned content is useful and correct, replace it if keeping the full result in context is not worthwhile. A short note or summary is enough: preserve the facts, evidence IDs, and time intervals needed for the answer or next steps. Do not wait until a result is completely wrong or useless.
+
+        If a result is invalid, wrong, or irrelevant, replace its entire content with a brief reason explaining why it must not be used. Do not preserve invalid content as evidence.
+
+        Always include a brief reason in replacement, for example: "Summary: ... Reason: the useful result is too large to retain in full." or "Invalid result. Reason: the query covered the wrong time interval." The original tool result will say "Replaced with:" followed by this text. After a successful replacement, this replace_tool call and its acknowledgement are removed from subsequent model input.
         """
         if tool_id not in context.tool_calls:
             raise ValueError(f"tool_id {tool_id} is not a completed tool call")
         call, original = context.tool_outputs[tool_id]
         replacements = context.tool_calls[tool_id]["replacements"]
-        prefix = json.dumps({"tool_id": tool_id}) + "\n"
+        prefix = json.dumps({"tool_id": tool_id}) + "\nReplaced with:\n"
         before = {**original, "output": prefix + replacements[-1]} if replacements else original
         after = {**original, "output": prefix + replacement}
         (context.run_dir / f"replace-{tool_context.tool_call_id}.json").write_text(json.dumps({
@@ -472,11 +467,13 @@ async def run_stream(
         def model_input(data):
             items = []
             for item in data.model_data.input:
-                if item.get("type") == "function_call_output":
+                if item.get("type") in ("function_call", "function_call_output"):
                     tool_id = context.tool_ids[item["call_id"]]
                     record = context.tool_calls[tool_id]
-                    if record["replacements"]:
-                        output = json.dumps({"tool_id": tool_id}) + "\n" + record["replacements"][-1]
+                    if record["name"] == "replace_tool" and "replaced_tool_id" in json.loads(record["original_output"]):
+                        continue
+                    if item["type"] == "function_call_output" and record["replacements"]:
+                        output = json.dumps({"tool_id": tool_id}) + "\nReplaced with:\n" + record["replacements"][-1]
                         item = {**item, "output": output}
                 items.append(item)
             request = {"agent": agent.name}
