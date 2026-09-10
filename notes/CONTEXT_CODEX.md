@@ -193,3 +193,41 @@
 - [与此前主 prompt 测试的对照](../runs/day196-tool-qa-normal/comparison.json)
 - [Normal 最终答案和评分](../runs/day196-tool-qa-normal/collection/day/question-196/rollout-00/result.json)
 - [Normal W&B run](https://wandb.ai/3dsmile/video-sql-v2/runs/day196-tool-qa-normal)
+
+## 8. QA 改回可选，主模型直接替换最新结果
+
+按用户新要求，撤掉主 prompt、工具描述和三个初始技能中优先使用 SQL/semantic QA 的推荐，保留可选 `question`。`replace_tool(tool_id, replacement, reason)` 改由主模型直接输出摘要，不再调用摘要 API；prompt 要求只总结目标结果，引用其他结果时明确标注 tool_id。运行时只接受当前输入中最新的工具结果。成功替换后，将该结果之后至本次替换轮结束的全部历史移除，包括 reasoning、消息、replace 调用及确认、同轮其他工具记录；之后新生成的 reasoning 正常保留。实现提交为 `1728e20`、`812fcd9`。
+
+独立 diff 评审及 Claude 全仓代码评审均无阻塞项。原 GPU 4 embedding 服务启动时空闲 79.48 GiB，低于原配置所需 80.25 GiB，因此在空闲 GPU 0 上以相同镜像、有效启动命令、环境和挂载运行 embedding；两卡均为 B200，真实查询返回有效 4096 维向量。测试结束后已停止并删除本次新建容器，原 GPU 4 容器保留为停止状态。
+
+只运行了一条 day/196、rollout-00，normal/default、同一模型与 high reasoning；第一次尝试完成，无工具错误、无整条重试。13 个已记录 API 响应全部为 default：12 次主模型和 1 次 judge。
+
+| 指标 | 上一条：推荐 QA＋独立摘要 API | 本条：可选 QA＋直接 replace |
+|---|---:|---:|
+| 耗时（秒） | 2,891.502 | 76.705 |
+| 总费用 USD，含 judge 和未完成响应 | 1.35457228 | 0.05726132 |
+| 主模型调用数 | 24 | 12 |
+| SQL / Semantic 检索调用数 | 16 / 32 | 17 / 8 |
+| SQL / Semantic QA 使用数 | 16 / 32 | 0 / 0 |
+| 显式 replace 调用数 | 5 | 2 |
+| 独立 replacement API 调用数 | 5 | 0 |
+| 视频 QA 工具调用数 | 10 | 0 |
+| 主工具调用总数 | 70 | 33 |
+| 主模型输入加输出峰值 tokens | 40,693 | 117,988 |
+| 全部问答 API 累计 input tokens，不含 judge | 3,525,607 | 582,855 |
+| 全部问答 API 累计 output tokens，不含 judge | 494,027 | 6,259 |
+| 其中 API reasoning tokens | 461,873 | 3,206 |
+| Judge 分数 | 0 | 0 |
+
+本条没有调用视频 QA，调查路径也改变了，耗时和费用差额不能仅归因于 QA 推荐或 replace 实现。最终答案仍把 boss 判为黑熊精，给出辟火罩 → 定风珠 → 绣花针 → 芭蕉扇，与参考答案不符。
+
+实际裁剪核对：两次 replace 分别针对工具 15 和 28，均为当时最新结果，并且独占该轮工具调用。下一次 API 输入逐项等于“原输入保留至目标结果，并改写该结果”，没有留下后缀。两轮共 3 个旧 reasoning item 被移除，在之后合计 8 个请求快照中没有再次出现；接下来生成的 3 个新 reasoning item 均正常保留。全部 12 个主请求的 function_call 与 function_call_output 成对匹配。before/after API token count 分别为 4,920 → 464、9,202 → 333，局部减少合计 13,325 tokens。
+
+13 个工具结果超过 10,000 字符，全部实际带有 reminder；其中工具 15、28 被替换。其余大结果未被替换，主模型峰值 context 因而仍达 117,988 tokens。
+
+**仍有摘要内容问题：** 第二次 replace 将 37500、61740、68820、76650、78000、78540、80280 秒的后期装备信息写进工具 28 的摘要，但目标的 75 行原始返回中没有定风珠、绣花针、芭蕉扇及对应英文名称，也没有这些精确时间。模型未标注外部 tool_id 引用。因此，本次历史/reasoning 裁剪检查通过，但仅靠当前 prompt 尚未消除跨结果混写。
+
+- [本条完整指标](../runs/day196-latest-replace/audit-summary.json)
+- [替换、reasoning 和 reminder 核对](../runs/day196-latest-replace/replacement-audit.json)
+- [前后对照](../runs/day196-latest-replace/comparison.json)
+- [W&B run](https://wandb.ai/3dsmile/video-sql-v2/runs/day196-latest-replace)
