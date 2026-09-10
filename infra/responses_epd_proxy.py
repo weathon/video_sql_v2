@@ -124,7 +124,21 @@ async def responses(request: Request):
 @app.post("/v1/responses/input_tokens")
 async def input_tokens(request: Request):
     native = ResponsesRequest.model_validate(await request.json())
-    messages = construct_input_messages(request_instructions=native.instructions, request_input=native.input)
+    messages = jsonable_encoder(construct_input_messages(request_instructions=native.instructions, request_input=native.input))
+    for message in messages:
+        if not isinstance(message.get("content"), list):
+            continue
+        content = []
+        for part in message["content"]:
+            if part["type"] in ("input_text", "output_text"):
+                part = {"type": "text", "text": part["text"]}
+            elif part["type"] == "input_image":
+                image_url = {"url": part["image_url"]}
+                if "detail" in part:
+                    image_url["detail"] = part["detail"]
+                part = {"type": "image_url", "image_url": image_url}
+            content.append(part)
+        message["content"] = content
     chat_kwargs = native.build_chat_params(None, "auto").chat_template_kwargs
     payload = {
         "model": native.model, "messages": messages,
