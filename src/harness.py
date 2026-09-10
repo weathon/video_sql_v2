@@ -22,6 +22,7 @@ import numpy as np
 from agents import (
     Agent,
     ItemHelpers,
+    MaxTurnsExceeded,
     ModelSettings,
     OpenAIResponsesModel,
     RunConfig,
@@ -472,7 +473,7 @@ async def run_stream(
         return json.dumps({"replaced_tool_id": tool_id})
 
     wrapped_tools = []
-    for tool in [*agent.tools, replace_tool] if agent.tools else []:
+    for tool in [*agent.tools, replace_tool] if agent.tools and agent.model_settings.tool_choice != "submit_answer" else agent.tools:
         async def invoke_tool(tool_context: ToolContext, arguments: str, original=tool.on_invoke_tool):
             context.tool_counter += 1
             tool_id = context.tool_counter
@@ -514,7 +515,7 @@ async def run_stream(
     else:
         agent = agent.clone(tools=wrapped_tools)
     answering = agent.name == "memory-retrieval" and label == "answer"
-    max_turns = MAX_TURNS + 1 - context.answer_turns if answering else 100
+    max_turns = max(1, MAX_TURNS - context.answer_turns) if answering else 100
     header = {
         "agent": {
             "name": agent.name,
@@ -542,6 +543,7 @@ async def run_stream(
     }
     events_path = context.run_dir / "traces" / f"{label}-events-{uuid.uuid4().hex}.jsonl"
     context_triggered = False
+    turn_limit_reached = False
     caught: BaseException | None = None
     with events_path.open("x", buffering=1) as events:
         def model_input(data):
@@ -649,11 +651,16 @@ async def run_stream(
                     - response.usage.input_tokens
                     - response.usage.output_tokens
                 )
-                if answering and context.answer_turns == MAX_TURNS:
-                    result.cancel(mode="after_turn")
-                elif watch_context and remaining <= context.compaction_threshold:
+                if watch_context and remaining <= context.compaction_threshold and (not answering or context.answer_turns < MAX_TURNS):
                     result.cancel(mode="after_turn")
                     context_triggered = True
+        except MaxTurnsExceeded as error:
+            if not answering or context.answer_turns != MAX_TURNS:
+                caught = error
+                events.write(json.dumps({"type": "run_error", "error_type": type(error).__name__, "message": str(error)}) + "\n")
+            else:
+                turn_limit_reached = True
+                events.write(json.dumps({"type": "investigation_turn_limit", "turns": context.answer_turns}) + "\n")
         except BaseException as error:
             caught = error
             if isinstance(error, asyncio.CancelledError):
@@ -668,12 +675,12 @@ async def run_stream(
             print(f"agent={agent.name} label={label} error={error}", flush=True)
     trace_file = save_trace(
         context, label, result, header, events_path,
-        caught if caught is not None else result.run_loop_exception,
+        None if turn_limit_reached else caught if caught is not None else result.run_loop_exception,
         tool_calls,
     )
     if caught is not None:
         raise caught
-    if result.run_loop_exception is not None:
+    if result.run_loop_exception is not None and not turn_limit_reached:
         raise result.run_loop_exception
     completions = [completion_characters(response) for response in result.raw_responses]
     for index in range(2, len(completions)):
@@ -1168,7 +1175,7 @@ class VideoSQLHarness:
                 "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
                 + "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text."
                 + "\n\nVisual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals."
-                + f"\n\nInvestigation budget: You have at most {MAX_TURNS} model turns for investigation, including skill loading and context replacement. After that, immediately submit the best supported answer from the evidence already available; no further investigation is allowed. Branching or context compaction does not reset this budget."
+                + f"\n\nInvestigation budget: You have at most {MAX_TURNS} model turns for investigation, including skill loading and context replacement. After that, immediately submit the best supported answer from the evidence already available; no further investigation is allowed. Context compaction does not reset this budget."
                 + "\n\nContext maintenance: Only the latest tool result in your context can be replaced. After reading it, use replace_tool alone before continuing if it is large, even when useful and correct, or if it is invalid. Write replacement yourself and give a brief reason. Summarize only the target result's question and evidence, preserving relevant facts, IDs, times, uncertainty, contradictions, and unresolved details. Other results may be cited explicitly by tool_id, but do not present their evidence as part of this result or substitute a summary of another question. For invalid results, replace the entire content with why it must not be used. All history after the target result through the replacement turn is removed, including reasoning, messages, and tool calls; future reasoning starts from the replacement. Do not combine replace_tool with any other tool call in the same turn. Saving add_note does not replace a tool result."
                 + "\n\nROOT-SKILL (skill loading guidance):\n"
                 + (self.context.skill_dir / "ROOT-SKILL.md").read_text()

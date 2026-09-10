@@ -21,7 +21,7 @@ def response_cost(response):
     usage = response["usage"]
     if usage is None:
         raise RuntimeError(f"Cannot report complete rollout cost: response {response['response_id']} has no usage")
-    if response.get("model") == "Qwen/Qwen3.8-27B-FP8":
+    if response["model"] == "Qwen/Qwen3.8-27B-FP8":
         return 0.0  # Local inference has no provider API charge; GPU cost is not priced here.
     inputs = usage["input_tokens"]
     cached = usage["input_tokens_details"]["cached_tokens"]
