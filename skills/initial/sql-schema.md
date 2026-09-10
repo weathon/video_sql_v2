@@ -31,3 +31,4 @@ Available tables and columns:
 - event_step_evidence(row_id, step_row_id, caption_30sec_row_id).
 
 Join facts and steps to their chains through chain_row_id. Join precise evidence to episodes.row_id through caption row IDs. For object states, episode_3min_row_id gives surrounding context and caption_30sec_row_id gives the precise evidence interval. Times are seconds on one continuous logical clock.
+
