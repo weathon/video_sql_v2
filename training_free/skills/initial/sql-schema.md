@@ -5,7 +5,7 @@ description: Use when writing SQL or joining memory tables and evidence links.
 
 # Introduction
 
-The database contains normalized textual memory, hierarchical chains, visual-clip descriptions, and evidence links.
+The database contains multi-granularity episode captions, named entities, knowledge-snapshot triples, visual-clip descriptions, graph edges, and topic/event chains.
 
 # When to use
 
@@ -19,17 +19,15 @@ Every query, including QA calls, must restrict its result with a relevant outer 
 
 Available tables and columns:
 
-- episodes(row_id, start_s, end_s, granularity, text); granularities include 30sec, 3min, 1h, 6h, video, and scale.
-- entities(row_id, name, normalized_name, first_seen_s, last_seen_s, frequency).
-- semantic_triples(row_id, caption_30sec_row_id, snapshot_s, subject, predicate, object, text).
-- topic_chains(row_id, entity, has_lifecycle, level, scope_id, start_s, end_s, summary).
-- topic_facts(row_id, chain_row_id, caption_30sec_row_id, time_s, fact).
-- event_chains(row_id, name, chain_type, level, scope_id, start_s, end_s, summary).
-- event_steps(row_id, chain_row_id, caption_start_row_id, caption_end_row_id, step_index, start_s, end_s, description).
-- visual_clips(row_id, start_s, end_s, text).
-- object_states(row_id, episode_3min_row_id, caption_30sec_row_id, start_s, end_s, object, status, text).
-- graph_edges(row_id, src_row_id, dst_row_id, edge_type, weight).
-- topic_fact_evidence(row_id, fact_row_id, caption_30sec_row_id).
-- event_step_evidence(row_id, step_row_id, caption_30sec_row_id).
+- episode(id, granularity, date, start_time, end_time, start_ts, end_ts, start_s, end_s, text, video_path); granularities include 30sec, 3min, 10min, and 1h.
+- entity(id, name, normalized_name, frequency, start_ts, end_ts, start_s, end_s).
+- semantic(id, snapshot_ts, snapshot_s, index_in_snapshot, subject, predicate, object, text, text_id); each knowledge snapshot repeats all triples known at that time.
+- semantic_texts(text_id, text, subject, predicate, object, first_snapshot_ts, last_snapshot_ts, first_snapshot_s, last_snapshot_s, snapshot_count); one row per distinct triple.
+- visual_clip(id, date, start_time, end_time, start_ts, end_ts, start_s, end_s, video_path, text).
+- graph_edges(src_id, dst_id, edge_type, weight); edge types co_clip, contains, temporal_next, mentioned_in, appeared_in, has_property.
+- topic_chains(entity, has_lifecycle, fact_count, first_time, last_time, start_s, end_s).
+- topic_facts(fact_id, entity, time, time_ts, time_s, fact).
+- event_chains(chain_id, name, key_entities, step_count).
+- event_steps(step_id, chain_id, name, step_index, day, start_time, end_time, start_ts, end_ts, start_s, end_s, description).
 
-Join facts and steps to their chains through chain_row_id. Join precise evidence to episodes.row_id through caption row IDs. For object states, episode_3min_row_id gives surrounding context and caption_30sec_row_id gives the precise evidence interval. Times are seconds on one continuous logical clock.
+Join facts to their chains through entity and steps to their chains through chain_id. Join a distinct triple to its snapshots through text_id. Join entities to the 30-second episodes that mention them through graph_edges with edge_type mentioned_in, and 30-second episodes to their visual clips through co_clip. Columns ending in _ts and the date/start_time/end_time/day/time columns are wall-clock values (DHHMMSSFF: day digit, hour, minute, second, frame; 111094300 is DAY1 11:09:43). Columns ending in _s are seconds on one continuous logical clock and are the times used by clip_qa.

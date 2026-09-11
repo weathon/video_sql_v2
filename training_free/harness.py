@@ -54,28 +54,36 @@ FRAME_SIZE = (854, 480)
 # model-specific image token estimate. Context accounting uses returned usage.
 CLIP_IMAGE_LIMIT = 650
 TOOL_REMINDER_CHARACTERS = 10_000
+# MAGIC-video graph expressed as SQL tables (magic-video-artifacts, EgoLife A1_JAKE). Searchable table -> embedded text column.
 SEARCH_TABLES = {
-    "episodes": "text",
-    "entities": "name",
-    "semantic_triples": "text",
+    "episode": "text",
+    "entity": "name",
+    "semantic_texts": "text",
+    "visual_clip": "text",
     "topic_facts": "fact",
     "event_steps": "description",
-    "object_states": "text",
-    "visual_clips": "text",
+}
+# Primary key column of each searchable table (row IDs stored in the npy files).
+KEY_COLUMNS = {
+    "episode": "id",
+    "entity": "id",
+    "semantic_texts": "text_id",
+    "visual_clip": "id",
+    "topic_facts": "fact_id",
+    "event_steps": "step_id",
 }
 SCHEMA = """
-episodes(row_id, start_s, end_s, granularity, text)
-entities(row_id, name, normalized_name, first_seen_s, last_seen_s, frequency)
-semantic_triples(row_id, caption_30sec_row_id, snapshot_s, subject, predicate, object, text)
-topic_chains(row_id, entity, has_lifecycle, level, scope_id, start_s, end_s, summary)
-topic_facts(row_id, chain_row_id, caption_30sec_row_id, time_s, fact)
-event_chains(row_id, name, chain_type, level, scope_id, start_s, end_s, summary)
-event_steps(row_id, chain_row_id, caption_start_row_id, caption_end_row_id, step_index, start_s, end_s, description)
-visual_clips(row_id, start_s, end_s, text)
-object_states(row_id, episode_3min_row_id, caption_30sec_row_id, start_s, end_s, object, status, text)
-graph_edges(row_id, src_row_id, dst_row_id, edge_type, weight)
-topic_fact_evidence(row_id, fact_row_id, caption_30sec_row_id)
-event_step_evidence(row_id, step_row_id, caption_30sec_row_id)
+episode(id, granularity, date, start_time, end_time, start_ts, end_ts, start_s, end_s, text, video_path); granularities are 30sec, 3min, 10min, 1h.
+entity(id, name, normalized_name, frequency, start_ts, end_ts, start_s, end_s)
+semantic(id, snapshot_ts, snapshot_s, index_in_snapshot, subject, predicate, object, text, text_id); every ~5-minute knowledge snapshot lists all triples known at that time, so a triple repeats across snapshots.
+semantic_texts(text_id, text, subject, predicate, object, first_snapshot_ts, last_snapshot_ts, first_snapshot_s, last_snapshot_s, snapshot_count); one row per distinct triple text.
+visual_clip(id, date, start_time, end_time, start_ts, end_ts, start_s, end_s, video_path, text)
+graph_edges(src_id, dst_id, edge_type, weight); edge types co_clip (30sec episode <-> visual_clip), contains (coarser episode -> finer episode), temporal_next (adjacent episodes), mentioned_in (entity -> 30sec episode), appeared_in (entity -> visual_clip), has_property (entity -> semantic).
+topic_chains(entity, has_lifecycle, fact_count, first_time, last_time, start_s, end_s)
+topic_facts(fact_id, entity, time, time_ts, time_s, fact)
+event_chains(chain_id, name, key_entities, step_count)
+event_steps(step_id, chain_id, name, step_index, day, start_time, end_time, start_ts, end_ts, start_s, end_s, description)
+Times: *_ts columns are wall-clock integers DHHMMSSFF (day digit, hour, minute, second, frame at 20 fps; 111094300 = DAY1 11:09:43); date/start_time/end_time/day/time are the same clock as text. *_s columns are seconds on the continuous week timeline (recording gaps removed) and are the times clip_qa uses.
 """.strip()
 COMPACTION_INSTRUCTION = """
 Stop calling tools. Produce a trusted handoff that preserves the question, established evidence,
@@ -142,6 +150,7 @@ class HarnessContext:
     expected_prefix: dict[str, Any] | None = None
     vectors: dict[str, np.ndarray] = field(init=False)
     row_ids: dict[str, np.ndarray] = field(init=False)
+    row_masks: dict[str, np.ndarray] = field(init=False)
     sources: list[dict[str, Any]] = field(init=False)
     notes_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     trace_counter: int = 0
@@ -156,6 +165,8 @@ class HarnessContext:
         (self.run_dir / "media").mkdir(exist_ok=True)
         self.vectors = {}
         self.row_ids = {}
+        self.row_masks = {}
+        connection = duckdb.connect(str(self.database), read_only=True)
         for table in SEARCH_TABLES:
             self.row_ids[table] = np.load(
                 self.embedding_index / f"{table}.row_ids.npy",
@@ -167,6 +178,14 @@ class HarnessContext:
                 mmap_mode="r",
                 allow_pickle=False,
             )
+            # The npy files cover the whole week; the database is filtered to the question's cutoff.
+            # Only rows present in the database may be returned by semantic_search.
+            allowed = {row[0] for row in connection.execute(f"SELECT {KEY_COLUMNS[table]} FROM {table}").fetchall()}
+            mask = np.fromiter((str(row_id) in allowed for row_id in self.row_ids[table]), dtype=np.bool_, count=len(self.row_ids[table]))
+            if int(mask.sum()) != len(allowed):
+                raise RuntimeError(f"{table}: database has {len(allowed)} rows but only {int(mask.sum())} have vectors")
+            self.row_masks[table] = mask
+        connection.close()
         self.sources = json.loads(self.media_map.read_text())["sources"]
 
     async def clip_response(self, request: dict[str, Any], call_id: str, frame_files: list[str]):
@@ -904,8 +923,8 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
     async def semantic_search(
         query: str,
         table: Literal[
-            "episodes", "entities", "semantic_triples", "topic_facts",
-            "event_steps", "object_states", "visual_clips",
+            "episode", "entity", "semantic_texts", "visual_clip",
+            "topic_facts", "event_steps",
         ],
         n: int,
         rank_start: int,
@@ -940,7 +959,10 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         if query_vector.shape != (4096,) or not np.isfinite(query_vector).all():
             raise RuntimeError(f"invalid query vector shape or values: {query_vector.shape}")
         scores = context.vectors[table] @ query_vector
+        # Rows outside the cutoff database are excluded before ranking.
+        scores = np.where(context.row_masks[table], scores, -np.inf)
         positions = np.argsort(-scores)
+        positions = positions[np.isfinite(scores[positions])]
         if min_score is not None:
             positions = positions[scores[positions] >= min_score]
         if max_score is not None:
@@ -950,23 +972,21 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         hits = []
         if selected_ids:
             placeholders = ",".join("?" for _ in selected_ids)
+            key_column = KEY_COLUMNS[table]
             rows = execute_sql(
                 context.database,
-                f"SELECT * FROM {table} WHERE row_id IN ({placeholders})",
+                f"SELECT * FROM {table} WHERE {key_column} IN ({placeholders})",
                 None,
                 selected_ids,
                 500 if question is None else None,
             )
-            by_id = {row["row_id"]: row for row in rows["rows"]}
+            by_id = {row[key_column]: row for row in rows["rows"]}
             for position, row_id in zip(selected, selected_ids):
                 row = by_id[row_id]
                 preview_field = SEARCH_TABLES[table]
-                if table == "entities":
-                    start_s = row["first_seen_s"]
-                    end_s = row["last_seen_s"]
-                elif table == "semantic_triples":
-                    start_s = row["snapshot_s"]
-                    end_s = row["snapshot_s"]
+                if table == "semantic_texts":
+                    start_s = row["first_snapshot_s"]
+                    end_s = row["last_snapshot_s"]
                 elif table == "topic_facts":
                     start_s = row["time_s"]
                     end_s = row["time_s"]
