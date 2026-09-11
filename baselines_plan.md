@@ -5,10 +5,11 @@
 ## 0. 背景与目标
 
 - 同一目录、同一分支（`codex/trace2skill-baseline`）上另有一个 agent 在跑 Trace2Skill rollout（入口 `src/trace2skill_baseline.py`，run 目录 `runs/qwen38-fp8-context128k-day-week-tree-month-val-seed0`）。不碰 `src/`、`skills/`、`third_party/`、它的 run 目录，不改动、不重启任何 vLLM 容器。
-- 目标一：用我们 harness 的 training-free 形态（静态 `skills/initial`，不做 reflection/evolution）在 EgoLife 题目上跑 baseline，题目用 EgoLifeQA，视频与索引复用 MM-Lifelong week。
-- 目标二：克隆 MAGIC-video（https://github.com/lijiazheng0917/MAGIC-video.git），改为使用同一个 Qwen LLM 与同一个 embedding 服务，索引用它自己发布的 magic-video-artifacts（EgoLife A1_JAKE），在同一批题上跑 baseline。
-- 目标三：把 MAGIC 的索引转换成我们的格式，再用我们的方法跑一遍。一共三个 run：我们的方法 + 我们的索引、我们的方法 + MAGIC 索引转换、MAGIC + MAGIC 索引。
-- 目标四：三个 run 按总分、均分、准确率（judge 满分比例）做 overall 与按 EgoLife 题型的对比，写成一份简报和一份详细背景。
+- 用户最新指令（执行中改）：不使用我们自己的 week 索引，只用 MAGIC 的 artifacts，跑两套方法。
+- 目标一：克隆 MAGIC-video（https://github.com/lijiazheng0917/MAGIC-video.git），改为使用同一个 Qwen LLM 与同一个 embedding 服务，索引用它自己发布的 magic-video-artifacts（EgoLife A1_JAKE），在 EgoLifeQA 上跑 baseline；视频用 MM-Lifelong week 文件。
+- 目标二：把 MAGIC 的 artifacts 转换成我们的索引格式，用我们 harness 的 training-free 形态（静态 `skills/initial`，不做 reflection/evolution）跑一遍。
+- 目标三：两个 run 按总分、均分、准确率（judge 满分比例）做 overall 与按 EgoLife 题型的对比，写成一份简报和一份详细背景。
+- 已存 embedding 的核对：`/raid/wg25r/video_sql_v2/data/pilot/stage2/` 的原始构建曾用 MAGIC 官方 30 秒 caption（`run/dense/week__*` 标 `kind=official`）走我们的 Qwen 结构化流程；其 duckdb 已被重生成版覆盖，但旧 embedding shards（`embedding_shards/text/*`、`embedding_shards/video/visual_clips`）与每条请求的原文 trace（`run/traces/embeddings/`）仍在。用户要求在空闲 GPU 上新起一个 vLLM embedder 核对这些向量，核对通过后 MAGIC 图的 30 秒 caption 节点与 visual_clips 节点直接复用它们。
 
 ## 1. 边界与纪律
 
@@ -22,6 +23,8 @@
    - `git clone` GitHub 上的 MAGIC-video。
    - `systemd-run --user --scope` 给 MAGIC 进程设内存上限。
    - 删除操作用 `mv` 到 `/raid/wg25r/trash/` 代替 `rm`（`rm -rf .git` 被拒后用户指定）。
+   - 只读 `/raid/wg25r/video_sql_v2/`（查找已存的 MAGIC 相关 embedding；实际用到 `data/pilot/stage2/embedding_shards/`、`data/pilot/stage2/run/traces/embeddings/`、`data/pilot/stage2/run/dense/`、`INFRA.txt`、`notes/`）。
+   - 启动一个新的 vLLM embedding 容器做核对：`egolife-embedding-verify`，GPU 7，宿主端口 8015，镜像 `vllm/vllm-openai:qwen38-flash-next`，`Qwen/Qwen3-VL-Embedding-8B`，served name `qwen3-vl-embedding-8b`，`--runner pooling`，`--gpu-memory-utilization 0.45`，其余参数同 `INFRA.txt` 的 embedding 配方，不加 `--rm`；核对完先不停，等用户指示。
 3. 服务不在运行、数据缺失、映射对不上、字段与预期不符：停下来问用户，不换模型、不换索引、不造替代数据、不跳过阶段。
 4. git：在当前分支直接提交，每次编辑后提交；只 `git add` `training_free/**`、`baselines_plan.md`、以及本计划新建的 markdown。不 add 别人的未跟踪/已修改文件（`AGENTS.md`、`src/analysis.py`、`src/check_status.py`、`notes/INCIDENT_*` 等）。不用 `git stash`。
 5. venv：两个，执行时发现同名 venv 已存在（非本会话所建），用户批准 `uv venv --clear` 重建：
@@ -39,31 +42,30 @@ training_free/
   normalize.py        # 复制 src/normalize.py
   tracing_bridge.py   # 复制 third_party/trace2skill/tracing_bridge.py（RunMetrics、init_weave、response_cost）
   skills/initial/     # 复制 skills/initial/ 七个 md，运行时逐字节核对未变
-  prepare_egolife.py  # 核对、出题、生成按截止时刻过滤的 duckdb 与 media-map（对两套索引都做）
+  prepare_egolife.py  # 核对、出题、生成按截止时刻过滤的 duckdb 与 media-map（对转换后的索引做）
+  verify_embeddings.py   # 用 8015 新 embedder 重算旧 shards 抽样行（每表 50 行，视频 20 个），比较余弦，写 report
   convert_magic_index.py # 把 MAGIC artifacts 转成我们的 duckdb + npy 格式（细节见第 5 节待定项）
-  build_magic_graph.py   # 从 MAGIC artifacts 建 MAGIC 自己的 graph.pkl，文本向量走 8014
-  run_training_free.py# 我们方法的 EgoLife 评测入口，参数选择索引（own / magic-index）
+  build_magic_graph.py   # 从 MAGIC artifacts 建 MAGIC 自己的 graph.pkl：30sec/visual 节点向量复用旧 shards，其余文本向量走 8014
+  run_training_free.py# 我们方法的 EgoLife 评测入口（只有 magic-index 一种索引）
   MAGIC-video/        # 新鲜克隆，commit 0f2273f7f07360cc58588399553b5a6ea758b084，内嵌 .git 已移到 /raid/wg25r/trash/，由本仓库跟踪
   run_magic.py        # MAGIC 的评测入口（HTTP embedder、LLM 端点、并发 10、judge、W&B）
   compare.py          # 汇总三个 run，写 RESULTS.md / RESULTS_DETAILS.md
   RESULTS.md          # 简报：只有对比数字
   RESULTS_DETAILS.md  # 详细背景：设置、commit、核对结果、W&B 链接、运行统计、偏差说明
-runs/egolife-week-shared/          # 三个 run 共用的产物（runs/ 已被 gitignore）
+runs/egolife-week-shared/          # 两个 run 共用的产物（runs/ 已被 gitignore）
   egolife_raw/                     # QA 原始 json 副本
-  verification/                    # 时长、映射、抽帧图与 report.json
+  verification/                    # 视频时长、映射、抽帧图与 report.json；embedding 核对 report
   questions.json                   # 最终题目（开放式）
-  cutoffs/<cutoff_s>/index.duckdb  # 我们的索引：每个不同截止时刻一份过滤后的库
-  cutoffs/<cutoff_s>/media-map.json
-  magic_index/index.duckdb         # MAGIC 索引转换成我们格式的全量库
-  magic_index/embedding_index/     # 其 npy（8014 计算）
-  magic_index/cutoffs/<cutoff_s>/index.duckdb  # 转换库的按截止过滤版本（media-map 与上面共用）
+  cutoffs/<cutoff_s>/media-map.json  # 截断到截止时刻的 media-map
+  magic_index/index.duckdb         # MAGIC artifacts 转换成我们格式的全量库
+  magic_index/embedding_index/     # 其 npy
+  magic_index/cutoffs/<cutoff_s>/index.duckdb  # 转换库的按截止过滤版本
   magic_graph/graph.pkl            # MAGIC 自己用的图（时间用 DHHMMSSFF，它自己按提问时刻过滤）
-runs/training-free-egolife-week/             # 我们方法 + 我们索引
 runs/training-free-egolife-week-magic-index/ # 我们方法 + MAGIC 索引转换
 runs/magic-video-egolife-week/               # MAGIC + MAGIC 索引
 ```
 
-三个 run 目录名同时是 W&B run 名，用户已批准。
+两个 run 目录名同时是 W&B run 名，用户已批准（原计划里的 `runs/training-free-egolife-week` 按最新指令不再跑）。
 
 ## 3. 已确定的参数
 
@@ -84,7 +86,8 @@ runs/magic-video-egolife-week/               # MAGIC + MAGIC 索引
 | W&B / Weave | entity `3dsmile`，project `video-sql-v2`，run id 与 name 等于 run 目录名，Weave 开启；都用 `RunMetrics`；MAGIC 用不到的 replacement 指标记 0 |
 | MAGIC 克隆 | `training_free/MAGIC-video/`，main 分支 commit `0f2273f7f07360cc58588399553b5a6ea758b084`；内嵌 `.git` 已 mv 到 `/raid/wg25r/trash/MAGIC-video-dot-git-0f2273f7`；已提交 |
 | MAGIC 索引 | 用 artifacts 自己的 captions（30sec/3min/10min/1h）、openie、semantic consolidation、topic_chains.json、step3_enriched_chains.json；转换一份全量 graph.pkl（时间 DHHMMSSFF），until_time 传提问时刻，由它自己的 filter_by_time 过滤；不为每个截止时刻单独建图 |
-| MAGIC embedding | 唯一不用其原始索引的地方：文本嵌入（建图时的节点文本 + 查询）走 8014 `qwen3-vl-embedding-8b`，不装进程内 Qwen3-Embedding-4B；视觉向量待定（第 5 节） |
+| MAGIC embedding | 唯一不用其原始索引的地方：不装进程内 Qwen3-Embedding-4B / VLM2Vec。30 秒 caption 节点的文本向量与 visual_clips 节点的视频向量复用 `video_sql_v2/data/pilot/stage2/embedding_shards/` 里官方 caption 版 week 的旧向量（核对通过后）；3min/10min/1h 摘要、NER 实体、consolidation 三元组的文本向量和查询向量走现有 8014 `qwen3-vl-embedding-8b` |
+| 旧向量核对 | `verify_embeddings.py`：从旧 shards 随机抽 week 行（文本 6 表各 50 行、visual_clips 20 个），用 trace 里保存的原文 / clip 文件在 8015 新 embedder 重算，比较余弦，写 `verification/embedding_check.json` |
 | MAGIC LLM | retriever 与 respond 两个角色都用 8003 的 `Qwen/Qwen3.8-27B-FP8`；不传 reasoning 参数；原代码 respond 角色的采样参数（temperature 1.0、top_p 0.95、top_k 20、min_p 0、presence_penalty 1.5、repetition_penalty 1.0）全部删掉，用服务器默认；`parse_time_reference` 里写死走 OpenRouter 的 `qwen/qwen3.5-flash-02-23` 也改到 8003 同一 Qwen |
 | MAGIC 提问方式 | 开放式：choices 不传，`question` 字段与我们完全相同；推理模板仍用 `memory_reasoning_unified_egolife`；回答模板换成它自己的 `qa_mmlifelong` / `qa_mmlifelong_chain`；until_time 传提问时刻 DHHMMSSFF；答案用同一个 judge 打 0–5 分 |
 | MAGIC 链 | `chain_mode=facts`，用 artifacts 的 topic_chains.json（257 实体，236 有 lifecycle，5267 条 facts）与 step3_enriched_chains.json（18 条链，75 步） |
@@ -116,14 +119,14 @@ runs/magic-video-egolife-week/               # MAGIC + MAGIC 索引
    - 每天至少取 3 个时刻（首个片段起点附近、中间、末尾）用 ffmpeg 抽帧保存 jpg 并人工看图，确认画面里叠印的 DAY/时刻与文件名时钟一致。
    - 时长不一致、叠印时刻与文件名不符：停下问用户。
 3. 出题写 `questions.json`，每题保留原始 ID、`type`、原题干、四个选项、正确字母、原始 query_time，另加 `question`（第 3 节格式）、`answer`（正确选项文本）、`cutoff_s`（第 3 节映射）、`until_time`（DHHMMSSFF 整数，给 MAGIC）。答题 agent 只看到 `question`；reference 只进 judge。
-4. 对每个不同的 `cutoff_s`，从 `runtime/week/index.duckdb` 只读复制出 `cutoffs/<cutoff_s>/index.duckdb`（`ATTACH … (READ_ONLY)` + `CREATE TABLE … AS SELECT … WHERE …`，参照 `src/prepare_runtime.py` 的写法），过滤条件见第 3 节；`graph_edges`、`topic_fact_evidence`、`event_step_evidence` 只保留两端都还存在的行。同时写截断的 `media-map.json`。不生成 npy。同样的过滤对 `magic_index/index.duckdb` 再做一遍，输出到 `magic_index/cutoffs/<cutoff_s>/`。
+4. 对每个不同的 `cutoff_s`，从 `magic_index/index.duckdb` 只读复制出 `magic_index/cutoffs/<cutoff_s>/index.duckdb`（`ATTACH … (READ_ONLY)` + `CREATE TABLE … AS SELECT … WHERE …`，参照 `src/prepare_runtime.py` 的写法），过滤条件见第 3 节；`graph_edges`、`topic_fact_evidence`、`event_step_evidence` 只保留两端都还存在的行。同时写截断的 `cutoffs/<cutoff_s>/media-map.json`。不生成 npy。
 5. 抽查若干截止时刻的库：行数随截止时刻单调增加、没有 `start_s` 超过截止的行、media-map 末尾被截断。
 
 ### 4.3 我们方法：harness 改动与评测入口
 
 1. `training_free/harness.py` 唯一功能改动：`HarnessContext.__post_init__` 里对每个 `SEARCH_TABLES` 表从（过滤后的）duckdb 读出全部 `row_id`，对共享 npy 的 `row_ids` 做成布尔掩码；`semantic_search` 里排序前把掩码外的分数置为 `-inf`（或只在允许位置上 argsort），其余逻辑不变。`visual_clips` 表同样处理。
 2. `training_free/run_training_free.py`：以 `src/trace2skill_baseline.py` 的 `RecordedResponsesModel`、`make_harness`、`rollout`、`score_rollout`、`evaluate_month`、`MainAgentSlots`、`RunMetrics` 为蓝本改写：
-   - 命令行选择索引：`own` → database `cutoffs/<cutoff_s>/index.duckdb`、embedding_index `runtime/week/embedding_index`、run 目录 `runs/training-free-egolife-week`；`magic-index` → database `magic_index/cutoffs/<cutoff_s>/index.duckdb`、embedding_index `magic_index/embedding_index`、run 目录 `runs/training-free-egolife-week-magic-index`。media_map 两者都用 `cutoffs/<cutoff_s>/media-map.json`。
+   - 索引只有一种：database `magic_index/cutoffs/<cutoff_s>/index.duckdb`、embedding_index `magic_index/embedding_index`、media_map `cutoffs/<cutoff_s>/media-map.json`，run 目录 `runs/training-free-egolife-week-magic-index`。
    - `MAIN_AGENT_CONCURRENCY = 10`，每题 1 条 rollout，目录 `<run>/qa/question-<ID>/rollout-00/`。
    - `wandb.init(entity="3dsmile", project="video-sql-v2", id=RUN.name, name=RUN.name, resume="allow", dir=RUN)`，`init_weave()`，`RunMetrics(wandb_run, "egolife", RUN)`；`wandb-run.json` 记 id 与 url。
    - `skills/initial` 复制到 run 目录并逐字节核对（沿用现有做法）。
@@ -151,9 +154,9 @@ runs/magic-video-egolife-week/               # MAGIC + MAGIC 索引
 
 ### 4.6 对比与报告（`compare.py`）
 
-1. 读三个 run 的 `result.json`/`skipped.json`，按 `questions.json` 对齐题目。
-2. `training_free/RESULTS.md`：只放对比表：overall 与按 `type` 的题数、总分、均分、准确率（分等于 5 的比例），三个 run 各一列，外加 skip 题目 ID 列表。不放运行统计。
-3. `training_free/RESULTS_DETAILS.md`：两个服务的实际参数（`/v1/models` 与 `docker ps` 所见）、MAGIC 的 commit 号与改动清单、artifacts 快照号、EgoLife 本地快照号与 QA 字段、视频核对结果（每天时长、映射公式、空档列表、图片路径）、题目文本格式、截止过滤规则与截止时刻数量、索引转换规则、W&B 链接、三个 run 的运行统计（耗时、吞吐、token）、skip 原因、所有与本计划的偏差。
+1. 读两个 run 的 `result.json`/`skipped.json`，按 `questions.json` 对齐题目。
+2. `training_free/RESULTS.md`：只放对比表：overall 与按 `type` 的题数、总分、均分、准确率（分等于 5 的比例），两个 run 各一列，外加 skip 题目 ID 列表。不放运行统计。
+3. `training_free/RESULTS_DETAILS.md`：两个服务的实际参数（`/v1/models` 与 `docker ps` 所见）、MAGIC 的 commit 号与改动清单、artifacts 快照号、EgoLife 本地快照号与 QA 字段、视频核对结果（每天时长、映射公式、空档列表、图片路径）、题目文本格式、截止过滤规则与截止时刻数量、索引转换规则、W&B 链接、两个 run 的运行统计（耗时、吞吐、token）、skip 原因、所有与本计划的偏差。
 4. 提交。
 
 ### 4.7 收尾
@@ -161,11 +164,11 @@ runs/magic-video-egolife-week/               # MAGIC + MAGIC 索引
 - 用本计划内容整体覆盖 `baselines_plan.md`（已做，并随每次决定更新）。
 - 不关闭任何 vLLM 服务。
 
-## 5. 仍需向用户确认的点（全部与索引差异有关）
+## 5. 仍需向用户确认的点（全部与索引转换有关）
 
-- MAGIC 图里 visual_clips 节点的视觉向量来源（8014 现在拒绝图像/视频请求）。候选：复用 week 索引同名片段的 visual_clips 向量；不用视觉向量（alpha=1.0）；在 `/raid/wg25r/video_sql_v2/data/pilot/` 下建空目录 `clips` 后再试 8014 图像嵌入。用户表示先想一下。
-- MAGIC 索引转成我们格式时 semantic_triples 的转法（consolidation 首次出现 / extraction 文件 / 全量展开）。
-- 其余 MAGIC → 我们格式的字段映射尚未确认：entities 来源（openie ner_results）与 first/last_seen、topic_chains/event_chains 的 level、scope_id、chain_type 取值、graph_edges 的构造（按 MAGIC 建图规则生成 co_clip/contains/temporal_next/mentioned_in/appeared_in/has_property）、episodes 的 10min 层保留为 granularity 字符串 `10min`、object_states 空表、visual_clips 向量来源。
+- 旧 shards 的文本向量是对小写化（normalize_text）后的原文算的（trace 里保存的输入全是小写）；而用户已定转换索引的文本向量"不做 normalize_text"。MAGIC 图 30 秒节点复用旧向量与这条决定的关系待用户裁定（复用即等于用了小写化文本的向量）。
+- MAGIC artifacts 转成我们格式时 semantic_triples 的转法（consolidation 首次出现 / extraction 文件 / 全量展开），用户表示无偏好。
+- 其余 MAGIC → 我们格式的字段映射尚未确认：entities 来源（openie ner_results）与 first/last_seen、topic_chains/event_chains 的 level、scope_id、chain_type 取值、graph_edges 的构造（按 MAGIC 建图规则生成 co_clip/contains/temporal_next/mentioned_in/appeared_in/has_property）、episodes 的 10min 层保留为 granularity 字符串 `10min`、object_states 空表、转换索引 visual_clips 向量是否也复用旧 shards 的视频向量。
 
 ## 6. MAGIC-video 已知 bug（保留自原计划）
 
@@ -176,6 +179,6 @@ runs/magic-video-egolife-week/               # MAGIC + MAGIC 索引
 
 - 数据：`verification/report.json` 里每个源文件 ffprobe 时长与 media-map 一致、逐片段的时钟→时间轴表、空档列表、每题 cutoff_s 与 until_time，并且人工看过抽帧 jpg。
 - 过滤库：抽查的截止时刻库里没有超过截止的行，media-map 末尾被截断；转换库同样抽查。
-- 我们方法（两个 run）：打开真实 trace 核对 semantic_search/run_sql/clip_qa 的时间边界与 judge 输入；`summary.json` 的题数等于 `questions.json` 题数减 skip 数；W&B run 页面有 `egolife/*` 与 `client/*` 曲线。
+- 我们方法：打开真实 trace 核对 semantic_search/run_sql/clip_qa 的时间边界与 judge 输入；`summary.json` 的题数等于 `questions.json` 题数减 skip 数；W&B run 页面有 `egolife/*` 与 `client/*` 曲线。
 - MAGIC：每题目录里有 round_history、检索结果、prompt、原始响应；embedding 请求日志有 4096 维返回；检索结果时间不超过提问时刻；scope 的 MemoryMax 已核对；W&B 同上。
-- 报告：`RESULTS.md` 的每个数字能从三个 run 目录的 `result.json` 重新算出。
+- 报告：`RESULTS.md` 的每个数字能从两个 run 目录的 `result.json` 重新算出。
