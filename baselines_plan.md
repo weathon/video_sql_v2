@@ -49,7 +49,7 @@ training_free/
   run_training_free.py# 我们方法的 EgoLife 评测入口（只有 magic-index 一种索引）
   MAGIC-video/        # 新鲜克隆，commit 0f2273f7f07360cc58588399553b5a6ea758b084，内嵌 .git 已移到 /raid/wg25r/trash/，由本仓库跟踪
   run_magic.py        # MAGIC 的评测入口（HTTP embedder、LLM 端点、并发 10、judge、W&B）
-  compare.py          # 汇总三个 run，写 RESULTS.md / RESULTS_DETAILS.md
+  compare.py          # 汇总两个 run，写 RESULTS.md / RESULTS_DETAILS.md
   RESULTS.md          # 简报：只有对比数字
   RESULTS_DETAILS.md  # 详细背景：设置、commit、核对结果、W&B 链接、运行统计、偏差说明
 runs/egolife-week-shared/          # 两个 run 共用的产物（runs/ 已被 gitignore）
@@ -82,7 +82,7 @@ runs/magic-video-egolife-week/               # MAGIC + MAGIC 索引
 | harness 设置 | 全部沿用 `src/trace2skill_baseline.py` 的 `make_harness`/`rollout`/`score_rollout`：模型 `Qwen/Qwen3.8-27B-FP8`、base_url `http://127.0.0.1:8003/v1`、reasoning xhigh + summary auto、clip_qa_video 开、650 图额度、prompt_cache_key、attempts 3、耗尽后 skip 整题、judge 同模型 0–5 分 |
 | embedding | `http://127.0.0.1:8014/v1`，served name `qwen3-vl-embedding-8b`，4096 维；目前只接纯文本（图像/视频请求被服务器拒绝，见第 5 节） |
 | rollout | 每题 1 条 |
-| 并发 | 三个 run 都是 10 个题同时进行（我们方法用 `MainAgentSlots`，上限改 10） |
+| 并发 | 两个 run 都是 10 个题同时进行（我们方法用 `MainAgentSlots`，上限改 10） |
 | W&B / Weave | entity `3dsmile`，project `video-sql-v2`，run id 与 name 等于 run 目录名，Weave 开启；都用 `RunMetrics`；MAGIC 用不到的 replacement 指标记 0 |
 | MAGIC 克隆 | `training_free/MAGIC-video/`，main 分支 commit `0f2273f7f07360cc58588399553b5a6ea758b084`；内嵌 `.git` 已 mv 到 `/raid/wg25r/trash/MAGIC-video-dot-git-0f2273f7`；已提交 |
 | MAGIC 索引 | 用 artifacts 自己的 captions（30sec/3min/10min/1h）、openie、semantic consolidation、topic_chains.json、step3_enriched_chains.json；转换一份全量 graph.pkl（时间 DHHMMSSFF），until_time 传提问时刻，由它自己的 filter_by_time 过滤；不为每个截止时刻单独建图 |
