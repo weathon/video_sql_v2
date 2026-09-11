@@ -622,8 +622,8 @@ async def main():
             ]
             month_selection.write_text(json.dumps(month_questions, ensure_ascii=False, indent=2) + "\n")
         main_slots = MainAgentSlots(wandb_run)
-        metrics = RunMetrics(wandb_run, "collection", RUN)
-        results = await collect_trees(questions, main_slots, metrics)
+        results = [json.loads(path.read_text()) for path in sorted((RUN / "collection").glob("*/*/*/result.json"))]
+        print(f"ANALYSIS INPUT: {len(results)} saved collection results", flush=True)
         summarize("collection", questions, results, 5)
         analysis_jobs = iter(results)
         metrics = RunMetrics(wandb_run, "analysis", RUN)
