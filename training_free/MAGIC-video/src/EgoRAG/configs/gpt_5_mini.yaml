@@ -1,0 +1,12 @@
+# RAG Settings
+rag:
+  data_type: "clip"       # Type of data processing (e.g., 'clip', 'raw')
+
+caption:
+  fps: 1
+
+model:
+  name: "azure"
+  params:
+    api_key: "OPENAI API KEY"
+    endpoint: "OPENAI API ENDPOINT"
