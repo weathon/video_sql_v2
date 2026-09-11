@@ -194,7 +194,13 @@ def build_graph():
             node.text_embedding = vector
             reused += 1
         elif node.node_type == NodeType.VISUAL_CLIP:
-            continue  # visual nodes get zeroed text embeddings in build_igraph; text vector not needed
+            # Same caption text as the 30sec episode; build_igraph zeroes it, but UnifiedMemory.index would
+            # re-embed every node whose text_embedding is None on each question, so fill it here.
+            name = Path(node.metadata["video_path"]).name
+            text, vector = official[name]
+            if text != node.text:
+                raise RuntimeError(f"official caption text mismatch for visual clip {name}")
+            node.text_embedding = vector
         else:
             other_nodes.append(node)
     print(f"reused {reused} official 30sec vectors; embedding {len(other_nodes)} other nodes", flush=True)
