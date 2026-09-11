@@ -36,6 +36,7 @@ API_KEY = "local"
 EMBEDDING_URL = "http://127.0.0.1:8014/v1"
 SKILL_HEADER = "---\nname: video-memory-qa\ndescription: Retrieve and verify evidence to answer questions about long videos.\n---\n\n"
 REQUEST_PRIORITY = ContextVar("request_priority", default=2)
+MAIN_AGENT_CONCURRENCY = 15
 
 
 class MemoryItem(BaseModel):
@@ -54,7 +55,7 @@ class FailureReport(BaseModel):
     failure_memory: list[MemoryItem] = Field(max_length=3)
 
 
-class RequestSlots:
+class MainAgentSlots:
     def __init__(self, run):
         self.condition = asyncio.Condition()
         self.waiters = []
@@ -68,7 +69,7 @@ class RequestSlots:
         async with self.condition:
             heapq.heappush(self.waiters, ticket)
             try:
-                await self.condition.wait_for(lambda: self.active < 128 and self.waiters[0] == ticket)
+                await self.condition.wait_for(lambda: self.active < MAIN_AGENT_CONCURRENCY and self.waiters[0] == ticket)
             except asyncio.CancelledError:
                 self.waiters.remove(ticket)
                 heapq.heapify(self.waiters)
@@ -78,57 +79,43 @@ class RequestSlots:
             self.active += 1
             self.peak = max(self.peak, self.active)
             self.condition.notify_all()
-        self.run.log({"client/active_requests": self.active, "client/peak_requests": self.peak})
+        self.run.log({"client/active_main_agents": self.active, "client/peak_main_agents": self.peak})
 
     async def __aexit__(self, *exc):
         async with self.condition:
             self.active -= 1
             self.condition.notify_all()
+        self.run.log({"client/active_main_agents": self.active, "client/peak_main_agents": self.peak})
 
 
-class LimitedResponsesModel(OpenAIResponsesModel):
-    def __init__(self, context, semaphore, metrics):
+class RecordedResponsesModel(OpenAIResponsesModel):
+    def __init__(self, context, metrics):
         super().__init__(model=MODEL, openai_client=context.client)
         self.context = context
-        self.semaphore = semaphore
         self.metrics = metrics
 
     async def stream_response(self, *args, **kwargs):
         request = REQUEST_TRACE.get()
-        async with self.semaphore:
-            async for event in super().stream_response(*args, **kwargs):
-                if event.type in ("response.completed", "response.incomplete", "response.failed"):
-                    response = event.response
-                    recorded = {"response_id": response.id, "agent": request["agent"], "model": response.model,
-                                "usage": None if response.usage is None else response.usage.model_dump(),
-                                "service_tier": response.service_tier,
-                                "status": event.type}
-                    self.context.response_usage[response.id] = recorded
-                    if request["agent"] != "judge" and event.type == "response.completed":
-                        self.context.path_responses.append(recorded)
-                    if "snapshot" in request:
-                        self.context.response_states[response.id] = request["snapshot"]
-                    if response.usage is None:
-                        print(f"UNPRICED response={response.id} status={event.type}; preserve SDK failure retry", flush=True)
-                    else:
-                        self.metrics.record_response(recorded)
-                yield event
+        async for event in super().stream_response(*args, **kwargs):
+            if event.type in ("response.completed", "response.incomplete", "response.failed"):
+                response = event.response
+                recorded = {"response_id": response.id, "agent": request["agent"], "model": response.model,
+                            "usage": None if response.usage is None else response.usage.model_dump(),
+                            "service_tier": response.service_tier,
+                            "status": event.type}
+                self.context.response_usage[response.id] = recorded
+                if request["agent"] != "judge" and event.type == "response.completed":
+                    self.context.path_responses.append(recorded)
+                if "snapshot" in request:
+                    self.context.response_states[response.id] = request["snapshot"]
+                if response.usage is None:
+                    print(f"UNPRICED response={response.id} status={event.type}; preserve SDK failure retry", flush=True)
+                else:
+                    self.metrics.record_response(recorded)
+            yield event
 
 
-class LimitedEmbeddingClient:
-    def __init__(self, client, semaphore):
-        self.client = client
-        self.semaphore = semaphore
-
-    async def post(self, *args, **kwargs):
-        async with self.semaphore:
-            return await self.client.post(*args, **kwargs)
-
-    async def aclose(self):
-        await self.client.aclose()
-
-
-def make_harness(directory, skill_dir, semaphore, metrics, timeline):
+def make_harness(directory, skill_dir, metrics, timeline):
     harness = VideoSQLHarness(
         database=RUNTIME / timeline / "index.duckdb", embedding_index=RUNTIME / timeline / "embedding_index",
         media_map=RUNTIME / timeline / "media-map.json", skill_dir=skill_dir, run_dir=directory,
@@ -136,33 +123,29 @@ def make_harness(directory, skill_dir, semaphore, metrics, timeline):
         embedding_url=EMBEDDING_URL, embedding_model="qwen3-vl-embedding-8b",
         clip_qa_video=True,
     )
-    harness.context.model = LimitedResponsesModel(harness.context, semaphore, metrics)
+    harness.context.model = RecordedResponsesModel(harness.context, metrics)
     harness.context.model_settings.reasoning = {"effort": "xhigh", "summary": "auto"}
-    harness.context.embedding_client = LimitedEmbeddingClient(harness.context.embedding_client, semaphore)
     original_clip_response = harness.context.clip_response
 
-    async def limited_clip_response(*args, **kwargs):
-        async with semaphore:
-            raw, recorded = await original_clip_response(*args, **kwargs)
+    async def recorded_clip_response(*args, **kwargs):
+        raw, recorded = await original_clip_response(*args, **kwargs)
         metrics.record_response(recorded)
         return raw, recorded
 
-    harness.context.clip_response = limited_clip_response
+    harness.context.clip_response = recorded_clip_response
     original_summary_response = harness.context.summary_response
 
-    async def limited_summary_response(*args, **kwargs):
-        async with semaphore:
-            submission, recorded = await original_summary_response(*args, **kwargs)
+    async def recorded_summary_response(*args, **kwargs):
+        submission, recorded = await original_summary_response(*args, **kwargs)
         metrics.record_response(recorded)
         return submission, recorded
 
-    harness.context.summary_response = limited_summary_response
+    harness.context.summary_response = recorded_summary_response
     return harness
 
 
-@weave.op(postprocess_inputs=lambda x: {k: v for k, v in x.items() if k not in ("semaphore", "metrics")})
-async def rollout(question, node, phase, skill_version, semaphore, metrics):
-    REQUEST_PRIORITY.set(0 if node["parent"] is not None else 2)
+@weave.op(postprocess_inputs=lambda x: {k: v for k, v in x.items() if k != "metrics"})
+async def rollout(question, node, phase, skill_version, metrics):
     directory = RUN / phase / question["timeline"] / f"question-{question['index']}" / f"rollout-{node['index']:02d}"
     directory.mkdir(parents=True, exist_ok=True)
     saved_answer = directory / "answer.json"
@@ -180,7 +163,7 @@ async def rollout(question, node, phase, skill_version, semaphore, metrics):
             continue
         if attempt_dir.exists():
             attempt_dir.rename(directory / f"interrupted-{attempt}-{uuid.uuid4().hex}")
-        harness = make_harness(attempt_dir, RUN / "skills" / skill_version, semaphore, metrics, question["timeline"])
+        harness = make_harness(attempt_dir, RUN / "skills" / skill_version, metrics, question["timeline"])
         harness.context.model_settings.extra_body = {
             "prompt_cache_key": f"{RUN.name}:{phase}:{question['timeline']}:{question['index']}"
         }
@@ -236,9 +219,8 @@ async def rollout(question, node, phase, skill_version, semaphore, metrics):
     return None
 
 
-@weave.op(postprocess_inputs=lambda x: {k: v for k, v in x.items() if k not in ("semaphore", "metrics")})
-async def score_rollout(answer, semaphore, metrics):
-    REQUEST_PRIORITY.set(1)
+@weave.op(postprocess_inputs=lambda x: {k: v for k, v in x.items() if k != "metrics"})
+async def score_rollout(answer, metrics):
     directory = Path(answer["directory"])
     result_path = directory / "result.json"
     if result_path.exists():
@@ -246,7 +228,7 @@ async def score_rollout(answer, semaphore, metrics):
     if (directory / "skipped.json").exists():
         return None
     attempt_dir = directory / f"attempt-{answer['attempt']}"
-    harness = make_harness(attempt_dir, RUN / "skills" / answer["skill_version"], semaphore, metrics, answer["timeline"])
+    harness = make_harness(attempt_dir, RUN / "skills" / answer["skill_version"], metrics, answer["timeline"])
     try:
         judgment_path = directory / "judgment.json"
         if judgment_path.exists():
@@ -294,11 +276,10 @@ async def score_rollout(answer, semaphore, metrics):
                             image_bytes = await asyncio.to_thread(frame_jpeg_bytes, json.loads(recipe.read_text()))
                             part["image_url"] = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
                 print(f"count replacement tokens side={side} artifact={path}", flush=True)
-                async with semaphore:
-                    token_count = await harness.context.client.responses.input_tokens.count(
-                        model=MODEL, input=[{"role": "user", "content": answer["question_text"]}, *items],
-                        reasoning=measurement["reasoning"],
-                    )
+                token_count = await harness.context.client.responses.input_tokens.count(
+                    model=MODEL, input=[{"role": "user", "content": answer["question_text"]}, *items],
+                    reasoning=measurement["reasoning"],
+                )
                 measurement[f"{side}_tokens"] = token_count.input_tokens
                 path.write_text(json.dumps(measurement, ensure_ascii=False) + "\n")
             total_context_saved += measurement["before_tokens"] - measurement["after_tokens"]
@@ -318,7 +299,7 @@ async def score_rollout(answer, semaphore, metrics):
         await harness.close()
 
 
-async def collect_trees(questions, semaphore, metrics):
+async def collect_trees(questions, main_slots, metrics):
     trees = {}
     results = []
     for question in questions:
@@ -334,7 +315,9 @@ async def collect_trees(questions, semaphore, metrics):
         trees[key] = (tree_file, tree)
 
     async def run_node(question, node):
-        answer = await rollout(question, node, "collection", "initial", semaphore, metrics)
+        REQUEST_PRIORITY.set(0 if node["parent"] is not None else 2)
+        async with main_slots:
+            answer = await rollout(question, node, "collection", "initial", metrics)
         tree_file, tree = trees[(question["timeline"], question["index"])]
         if answer is None:
             node["skipped"] = True
@@ -362,7 +345,7 @@ async def collect_trees(questions, semaphore, metrics):
             tree_file.write_text(json.dumps(tree, indent=2) + "\n")
         if len(tree["nodes"]) < 5 and all(n["expanded"] for n in tree["nodes"]) and not any("skipped" in n for n in tree["nodes"]):
             raise RuntimeError(f"No unused nonterminal tool points remain before four branches: {tree_file}")
-        result = await score_rollout(answer, semaphore, metrics)
+        result = await score_rollout(answer, metrics)
         if result is not None:
             results.append(result)
             metrics.record_rollout(result)
@@ -375,28 +358,29 @@ async def collect_trees(questions, semaphore, metrics):
     return sorted(results, key=lambda r: (r["timeline"], int(r["question"]), r["rollout"]))
 
 
-async def evaluate_month(questions, version, semaphore, metrics):
+async def evaluate_month(questions, version, main_slots, metrics):
     jobs = iter(questions)
     results = []
 
     async def worker():
         for question in jobs:
-            answer = await rollout(question, {"index": 0, "parent": None}, f"month-{version}", version, semaphore, metrics)
+            async with main_slots:
+                answer = await rollout(question, {"index": 0, "parent": None}, f"month-{version}", version, metrics)
             if answer is None:
                 continue
-            result = await score_rollout(answer, semaphore, metrics)
+            result = await score_rollout(answer, metrics)
             if result is not None:
                 results.append(result)
                 metrics.record_rollout(result)
 
     async with asyncio.TaskGroup() as group:
-        for _ in range(128):
+        for _ in questions:
             group.create_task(worker())
     return sorted(results, key=lambda r: int(r["question"]))
 
 
 @weave.op(postprocess_inputs=lambda x: {"timeline": x["result"]["timeline"], "question": x["result"]["question"], "rollout": x["result"]["rollout"], "success": x["result"]["success"]})
-async def analyze(result, semaphore, metrics):
+async def analyze(result, metrics):
     directory = RUN / "analysis" / result["timeline"] / f"question-{result['question']}" / f"rollout-{result['rollout']:02d}"
     directory.mkdir(parents=True, exist_ok=True)
     output_path = directory / "record.json"
@@ -433,7 +417,7 @@ async def analyze(result, semaphore, metrics):
     bundle = {"question": result["question_text"], "answer": result["answer"],
               "score": result["score"], "histories": histories}
     (directory / "analysis_input.json").write_text(json.dumps(bundle, ensure_ascii=False, indent=2) + "\n")
-    harness = make_harness(directory, RUN / "skills/initial", semaphore, metrics, result["timeline"])
+    harness = make_harness(directory, RUN / "skills/initial", metrics, result["timeline"])
     metadata = {"run": RUN.name, "timeline": result["timeline"], "question": result["question"], "rollout": result["rollout"], "skill_version": "initial"}
     try:
         with weave.attributes(metadata), trace("Trace2Skill trajectory analysis", metadata=metadata):
@@ -452,13 +436,12 @@ async def analyze(result, semaphore, metrics):
                 for attempt in range(1, 4):
                     try:
                         (directory / f"success-request-{attempt}.json").write_text(json.dumps(stripped_json(messages), ensure_ascii=False) + "\n")
-                        async with semaphore:
-                            raw = await harness.context.client.responses.with_raw_response.parse(
-                                model=MODEL, instructions=instructions, input=messages,
-                                reasoning=harness.context.model_settings.reasoning, store=False,
-                                include=["reasoning.encrypted_content"],
-                                text_format=SuccessReport,
-                            )
+                        raw = await harness.context.client.responses.with_raw_response.parse(
+                            model=MODEL, instructions=instructions, input=messages,
+                            reasoning=harness.context.model_settings.reasoning, store=False,
+                            include=["reasoning.encrypted_content"],
+                            text_format=SuccessReport,
+                        )
                         body = raw.content
                         (directory / f"success-response-{attempt}.json").write_bytes(body)
                         payload = json.loads(body)
@@ -505,7 +488,7 @@ async def analyze(result, semaphore, metrics):
                     """Validate the corrected answer and minimal reasoning/tool change using the unchanged 0–5 judge."""
                     nonlocal validated_fix
                     fix_id = uuid.uuid4().hex
-                    judge_harness = make_harness(directory / f"fix-{fix_id}", RUN / "skills/initial", semaphore, metrics, result["timeline"])
+                    judge_harness = make_harness(directory / f"fix-{fix_id}", RUN / "skills/initial", metrics, result["timeline"])
                     try:
                         score = await judge_answer(judge_harness, result["question_text"], result["reference_answer"], answer, 3)
                     finally:
@@ -601,7 +584,7 @@ async def main():
     init_weave()
     config = {
         "model": MODEL, "reasoning": "xhigh", "reasoning_summary": "auto", "base_url": BASE_URL,
-        "api": "responses", "reasoning_replay": True, "client_concurrency": 128, "replace_tool": True,
+        "api": "responses", "reasoning_replay": True, "client_concurrency": None, "main_agent_concurrency": MAIN_AGENT_CONCURRENCY, "replace_tool": True,
         "answer_context_limit": ANSWER_CONTEXT_LIMIT, "forced_answer_after_limit": True, "sql_scope_required": True, "clip_qa_video": True,
         "collection": {"split": "test", "timelines": ["day", "week"], "questions_per_timeline": 200,
                        "root_rollouts": 1, "branch_rollouts": 4, "branch_before": "model_tool_decision"},
@@ -638,9 +621,9 @@ async def main():
                 random.Random(0).sample(json.loads((DATASET / "month/val.json").read_text()), 100)
             ]
             month_selection.write_text(json.dumps(month_questions, ensure_ascii=False, indent=2) + "\n")
-        semaphore = RequestSlots(wandb_run)
+        main_slots = MainAgentSlots(wandb_run)
         metrics = RunMetrics(wandb_run, "collection", RUN)
-        results = await collect_trees(questions, semaphore, metrics)
+        results = await collect_trees(questions, main_slots, metrics)
         summarize("collection", questions, results, 5)
         analysis_jobs = iter(results)
         metrics = RunMetrics(wandb_run, "analysis", RUN)
@@ -649,14 +632,15 @@ async def main():
 
         async def analysis_worker():
             for result in analysis_jobs:
-                record = await analyze(result, semaphore, metrics)
+                async with main_slots:
+                    record = await analyze(result, metrics)
                 if record is None:
                     analysis_skipped.append((result["timeline"], result["question"], result["rollout"]))
                 else:
                     records.append(record)
 
         async with asyncio.TaskGroup() as group:
-            for _ in range(128):
+            for _ in results:
                 group.create_task(analysis_worker())
         records.sort(key=lambda r: r["instance_id"])
         (RUN / "analysis-skipped.json").write_text(json.dumps(analysis_skipped, indent=2) + "\n")
@@ -681,12 +665,12 @@ async def main():
             init_weave()
             wandb_run = wandb.init(entity="3dsmile", project="video-sql-v2", id=RUN.name,
                                    name=RUN.name, resume="must", dir=str(RUN))
-            semaphore.run = wandb_run
+            main_slots.run = wandb_run
         evaluation = {}
         for version in ("initial", "evolved"):
             phase = f"month-{version}"
             metrics = RunMetrics(wandb_run, phase, RUN)
-            evaluation[version] = await evaluate_month(month_questions, version, semaphore, metrics)
+            evaluation[version] = await evaluate_month(month_questions, version, main_slots, metrics)
             summarize(phase, month_questions, evaluation[version], 1)
         indexed = {version: {r["question"]: r for r in values} for version, values in evaluation.items()}
         paired = sorted(set(indexed["initial"]) & set(indexed["evolved"]), key=int)

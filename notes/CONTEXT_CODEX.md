@@ -233,3 +233,9 @@
 - [替换、reasoning 和 reminder 核对](../runs/day196-latest-replace/replacement-audit.json)
 - [前后对照](../runs/day196-latest-replace/comparison.json)
 - [W&B run](https://wandb.ai/3dsmile/video-sql-v2/runs/day196-latest-replace)
+
+## 9. 主 agent 与 QA 并发
+
+用户判断：主 agent 发出 QA 请求后等待回答；客户端并发远高于 vLLM 的 max seq 15，异步 QA 请求排到队列后面，使大量主 agent 处于进行中却被阻塞。等 QA 返回时，主 agent 的 cache 可能已经失效，需要重新 prefill。
+
+按用户最终设置修改：vLLM max seq 为 50；客户端不限制总请求数量，主 agent 并发限制为 15，QA 另算。主 agent 等待 QA 时仍占用自己的并发名额，QA 不占用这 15 个名额。
