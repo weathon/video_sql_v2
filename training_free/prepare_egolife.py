@@ -166,7 +166,7 @@ CUTOFF_SQL = {
     "semantic": ("SELECT * FROM src.semantic WHERE snapshot_s <= ?", 1),
     "semantic_texts": ("SELECT * FROM src.semantic_texts WHERE first_snapshot_s <= ?", 1),
     "visual_clip": ("SELECT * FROM src.visual_clip WHERE start_s <= ?", 1),
-    "topic_facts": ("SELECT * FROM src.topic_facts WHERE time_s <= ?", 1),
+    "topic_facts": ("SELECT * FROM src.topic_facts WHERE time_s <= ? OR time_s IS NULL", 1),
     "event_steps": ("SELECT * FROM src.event_steps WHERE start_s <= ?", 1),
 }
 

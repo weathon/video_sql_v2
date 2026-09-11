@@ -9,6 +9,7 @@ import bisect
 import hashlib
 import json
 import pickle
+import re
 import sys
 from pathlib import Path
 
@@ -154,6 +155,10 @@ def rewritten_captions(timeline):
     for gran in GRANULARITIES:
         data = json.loads((ARTIFACTS / f"captions/A1_JAKE_{gran}.json").read_text())
         if gran == "30sec":
+            # Two official 30sec captions are empty strings; per user decision they are dropped from the graph and the SQL tables.
+            dropped = [Path(entry["video_path"]).name for entry in data if not entry["text"].strip()]
+            print(f"dropping {len(dropped)} empty 30sec captions: {dropped}", flush=True)
+            data = [entry for entry in data if entry["text"].strip()]
             for entry in data:
                 name = Path(entry["video_path"]).name
                 entry["video_path"] = timeline.by_name[name]["path"]
@@ -325,17 +330,21 @@ def build_sql():
         facts = data["facts"]
         times = []
         for k, fact in enumerate(facts):
-            day, hm = fact["time"].split(" ")
-            hh, mm = hm.split(":")
-            ts = int(day.replace("DAY", "") + f"{int(hh):02d}{int(mm):02d}0000")
-            seconds = timeline.ts_seconds(ts)
-            times.append((fact["time"], seconds))
+            # Same parse as MAGIC unified/memory.py _fact_time_to_day_secs: leading "DAYd HH:MM"; anything else has no time.
+            match = re.match(r"DAY(\d+)\s+(\d{1,2}):(\d{2})", fact["time"])
+            if match:
+                ts = int(match.group(1) + f"{int(match.group(2)):02d}{int(match.group(3)):02d}0000")
+                seconds = timeline.ts_seconds(ts)
+                times.append((ts, seconds, fact["time"]))
+            else:
+                ts = None
+                seconds = None
             fact_id = f"topicfact_{len(fact_rows):06d}"
             fact_rows.append((fact_id, entity, fact["time"], ts, seconds, fact["fact"]))
             fact_ids.append(fact_id)
             fact_texts.append(fact["fact"])
-        chain_rows.append((entity, bool(data["has_lifecycle"]), len(facts), min(times)[0] if times else None, max(times)[0] if times else None,
-                           min(t[1] for t in times) if times else None, max(t[1] for t in times) if times else None))
+        chain_rows.append((entity, bool(data["has_lifecycle"]), len(facts), min(times)[2] if times else None, max(times)[2] if times else None,
+                           min(times)[1] if times else None, max(times)[1] if times else None))
     connection.execute("CREATE TABLE topic_chains(entity VARCHAR PRIMARY KEY, has_lifecycle BOOLEAN, fact_count INTEGER, first_time VARCHAR, last_time VARCHAR, start_s DOUBLE, end_s DOUBLE)")
     connection.executemany("INSERT INTO topic_chains VALUES (?,?,?,?,?,?,?)", chain_rows)
     connection.execute("CREATE TABLE topic_facts(fact_id VARCHAR PRIMARY KEY, entity VARCHAR, time VARCHAR, time_ts BIGINT, time_s DOUBLE, fact VARCHAR)")
