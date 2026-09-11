@@ -44,8 +44,9 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     randomizer = random.Random(0)
     client = httpx.Client(timeout=600)
-    report = {"embed_url": EMBED_URL, "text": {}, "video": {}}
-    for table in TEXT_TABLES:
+    report_path = OUT / "embedding_check.json"
+    report = json.loads(report_path.read_text()) if report_path.exists() else {"embed_url": EMBED_URL, "text": {}, "video": {}}
+    for table in ([] if "--skip-text" in sys.argv else TEXT_TABLES):
         rows = week_rows("text", table)
         sample = randomizer.sample(rows, TEXT_SAMPLE)
         cosines = []
@@ -69,6 +70,14 @@ def main():
         }
         (OUT / "embedding_check.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     if "--skip-video" not in sys.argv:
+        # The clip files the old traces point at (data/pilot/clips/stage2/week/*.mp4) no longer exist.
+        # Each week clip was one whole MM-Lifelong source file, so re-embed that source file instead.
+        import duckdb
+        week_db = duckdb.connect("/raid/wg25r/video_sql_v2/data/runtime/week/index.duckdb", read_only=True)
+        clip_times = {f"week:{row_id}": (start_s, end_s) for row_id, start_s, end_s in week_db.execute("SELECT row_id, start_s, end_s FROM visual_clips").fetchall()}
+        week_db.close()
+        sources = json.loads(Path("/raid/wg25r/video_sql_v2/data/runtime/week/media-map.json").read_text())["sources"]
+        by_start = {source["timeline_start_s"]: source for source in sources}
         rows = week_rows("video", "visual_clips")
         sample = randomizer.sample(rows, VIDEO_SAMPLE)
         cosines = []
@@ -77,11 +86,16 @@ def main():
             trace = json.loads((STAGE2 / "run/traces/embeddings/video/visual_clips" / f"{index:08d}" / "attempt-1.json").read_text())
             if trace["response"]["shard"] != str(shard):
                 raise RuntimeError(f"trace shard {trace['response']['shard']} != {shard}")
-            request = trace["request"]
+            start_s, end_s = clip_times[row_id]
+            source = by_start[start_s]
+            if abs(source["timeline_end_s"] - end_s) > 1e-6:
+                raise RuntimeError(f"{row_id} spans {start_s}-{end_s} but source {source['path']} ends at {source['timeline_end_s']}")
+            container_path = source["path"].replace("/raid/huggingface", "/hf_cache")
+            request = {"model": "qwen3-vl-embedding-8b", "input": [{"role": "user", "content": [{"type": "video_url", "video_url": {"url": f"file://{container_path}"}}]}]}
             fresh = embed(request, client)
             cosine = float(stored @ fresh / (np.linalg.norm(stored) * np.linalg.norm(fresh)))
             cosines.append(cosine)
-            details.append({"row_id": row_id, "shard_index": index, "cosine": cosine, "request_input": request["input"]})
+            details.append({"row_id": row_id, "shard_index": index, "cosine": cosine, "traced_input": trace["request"]["input"], "reembedded_source": source["path"]})
             print(f"visual_clips {row_id} cos={cosine:.6f}", flush=True)
         report["video"]["visual_clips"] = {
             "week_rows_in_shards": len(rows), "sampled": len(sample),
