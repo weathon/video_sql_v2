@@ -164,11 +164,25 @@ runs/magic-video-egolife-week/               # MAGIC + MAGIC 索引
 - 用本计划内容整体覆盖 `baselines_plan.md`（已做，并随每次决定更新）。
 - 不关闭任何 vLLM 服务。
 
-## 5. 仍需向用户确认的点（全部与索引转换有关）
+## 5. 索引转换的已定规则（用户已全部裁定）
 
-- 旧 shards 的文本向量是对小写化（normalize_text）后的原文算的（trace 里保存的输入全是小写）；而用户已定转换索引的文本向量"不做 normalize_text"。MAGIC 图 30 秒节点复用旧向量与这条决定的关系待用户裁定（复用即等于用了小写化文本的向量）。
-- MAGIC artifacts 转成我们格式时 semantic_triples 的转法（consolidation 首次出现 / extraction 文件 / 全量展开），用户表示无偏好。
-- 其余 MAGIC → 我们格式的字段映射尚未确认：entities 来源（openie ner_results）与 first/last_seen、topic_chains/event_chains 的 level、scope_id、chain_type 取值、graph_edges 的构造（按 MAGIC 建图规则生成 co_clip/contains/temporal_next/mentioned_in/appeared_in/has_property）、episodes 的 10min 层保留为 granularity 字符串 `10min`、object_states 空表、转换索引 visual_clips 向量是否也复用旧 shards 的视频向量。
+- 旧向量核对结果：文本 6 表各 50 行余弦最低 0.99947、均值 0.99995（通过）；视频 20 个片段用 MM-Lifelong 原文件在 8015 重算余弦 0.23–0.76、均值 0.53，新服务自身确定性 1.0，流复制/480p 重编码也对不上（未通过，旧 clip 文件已不在，原因无法复现）。决定：视觉向量用 8015 对 6266 个源文件全部重算（`embed_week_videos.py`，并发 8，逐文件 npz 可恢复，输出 `magic_index/visual_vectors/`）；旧视频向量不用。
+- 文本一律 normalize_text 后再嵌入（与查询侧一致）；30 秒 caption 的文本向量复用旧 shards（旧向量就是对小写化官方 caption 算的），其余文本用 8014 新算。
+- 转换索引"用和 MAGIC 完全一样的 schema，不转换内容，只把图标成 SQL"：按节点类型分表，字段名与值照 MAGIC，时间保留 DHHMMSSFF 并另加由片段映射算出的时间轴秒 `start_s`/`end_s`（截止过滤与 clip_qa 用秒）。表：
+  - `episode(id, granularity, date, start_time, end_time, start_ts, end_ts, start_s, end_s, text, video_path)`，四层 caption 全部入表，`id` 为 MAGIC 节点 id `ep_<start_ts>_<end_ts>_<gran>`，30sec 的 `video_path` 改指 MM-Lifelong week 同名文件。
+  - `entity(id, name, normalized_name, frequency, start_ts, end_ts, start_s, end_s)`，来自 openie ner_results，按 MAGIC `add_entity_nodes` 规则（person=A1_JAKE）。
+  - `semantic(id, snapshot_ts, snapshot_s, index_in_snapshot, subject, predicate, object, text, text_id)`：623 个快照的全部三元组按行入表（约 133 万行）。
+  - `semantic_texts(text_id, text, subject, predicate, object, first_snapshot_ts, last_snapshot_ts, first_snapshot_s, last_snapshot_s, snapshot_count)`：去重文本 6329 行，是 semantic 的可搜索表。
+  - `visual_clip(id, date, start_time, end_time, start_ts, end_ts, start_s, end_s, video_path, text)`，来自 30sec caption。
+  - `graph_edges(src_id, dst_id, edge_type, weight)`：用 MAGIC `MultimodalGraph` 的建图规则生成（co_clip、contains、temporal_next、mentioned_in、appeared_in、has_property）。
+  - `topic_chains(entity, has_lifecycle, fact_count, first_time, last_time, start_s, end_s)`、`topic_facts(fact_id, entity, time, time_ts, time_s, fact)`：来自 topic_chains.json。
+  - `event_chains(chain_id, name, key_entities, step_count)`、`event_steps(step_id, chain_id, name, step_index, day, start_time, end_time, start_ts, end_ts, start_s, end_s, description)`：来自 step3_enriched_chains.json。
+  - 没有 object_states。
+- 截止库过滤：episode/visual_clip/event_steps `start_s <= c`；entity `start_s <= c`，`end_s` 截到 c；semantic 保留全部 `snapshot_s <= c`；semantic_texts `first_snapshot_s <= c`；topic_facts `time_s <= c`；topic_chains/event_chains 保留还有 fact/step 的；graph_edges 两端都在。
+- 可搜索表（SEARCH_TABLES）：`episode.text`、`entity.name`、`semantic_texts.text`、`visual_clip.text`、`topic_facts.fact`、`event_steps.description`。visual_clip 的向量用 8015 重算的视频向量。
+- harness 第二处改动：`SCHEMA` 常量与 `semantic_search` 的表列表改成上述新表；`training_free/skills/initial` 里只替换表名、字段名和 SQL 示例以匹配新 schema，其余文字不动，修改前后 diff 写进 RESULTS_DETAILS.md。
+- MAGIC 图（graph.pkl）：节点文本向量与上面同一批（30sec 复用旧 shards、其余 8014、normalize_text）；semantic 节点向量在建图时按去重文本预先填好（MAGIC 原本在查询时现算，数值相同）；visual 节点向量用 8015 重算的视频向量。
+- 时钟 → 时间轴秒的映射与题目 cutoff 相同：落在片段内取片段 timeline_start + 偏移，落在空档取前一片段 timeline_end。
 
 ## 6. MAGIC-video 已知 bug（保留自原计划）
 
