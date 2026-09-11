@@ -159,16 +159,15 @@ def write_media_maps(sources, questions):
         target.write_text(json.dumps({"sources": kept}, indent=2) + "\n")
 
 
+# MAGIC-graph-as-SQL schema (see baselines_plan.md section 5). Interval tables keep rows starting at or before the cutoff.
 CUTOFF_SQL = {
-    "episodes": "SELECT * FROM src.episodes WHERE start_s <= ?",
-    "entities": "SELECT row_id, name, normalized_name, first_seen_s, least(last_seen_s, ?) AS last_seen_s, frequency FROM src.entities WHERE first_seen_s <= ?",
-    "semantic_triples": "SELECT * FROM src.semantic_triples WHERE snapshot_s <= ?",
-    "topic_chains": "SELECT * FROM src.topic_chains WHERE start_s <= ?",
-    "topic_facts": "SELECT * FROM src.topic_facts WHERE time_s <= ?",
-    "event_chains": "SELECT * FROM src.event_chains WHERE start_s <= ?",
-    "event_steps": "SELECT * FROM src.event_steps WHERE start_s <= ?",
-    "visual_clips": "SELECT * FROM src.visual_clips WHERE start_s <= ?",
-    "object_states": "SELECT * FROM src.object_states WHERE start_s <= ?",
+    "episode": ("SELECT * FROM src.episode WHERE start_s <= ?", 1),
+    "entity": ("SELECT id, name, normalized_name, frequency, start_ts, end_ts, start_s, least(end_s, ?) AS end_s FROM src.entity WHERE start_s <= ?", 2),
+    "semantic": ("SELECT * FROM src.semantic WHERE snapshot_s <= ?", 1),
+    "semantic_texts": ("SELECT * FROM src.semantic_texts WHERE first_snapshot_s <= ?", 1),
+    "visual_clip": ("SELECT * FROM src.visual_clip WHERE start_s <= ?", 1),
+    "topic_facts": ("SELECT * FROM src.topic_facts WHERE time_s <= ?", 1),
+    "event_steps": ("SELECT * FROM src.event_steps WHERE start_s <= ?", 1),
 }
 
 
@@ -184,21 +183,14 @@ def write_cutoff_databases(source_db: Path, output_root: Path, questions):
             partial.unlink()
         connection = duckdb.connect(str(partial))
         connection.execute(f"ATTACH '{source_db}' AS src (READ_ONLY)")
-        for table, sql in CUTOFF_SQL.items():
-            params = [cutoff_s, cutoff_s] if table == "entities" else [cutoff_s]
-            connection.execute(f"CREATE TABLE {table} AS {sql}", params)
+        for table, (sql, arity) in CUTOFF_SQL.items():
+            connection.execute(f"CREATE TABLE {table} AS {sql}", [cutoff_s] * arity)
+        connection.execute("CREATE TABLE topic_chains AS SELECT * FROM src.topic_chains WHERE entity IN (SELECT entity FROM topic_facts)")
+        connection.execute("CREATE TABLE event_chains AS SELECT * FROM src.event_chains WHERE chain_id IN (SELECT chain_id FROM event_steps)")
         connection.execute(
             "CREATE TABLE graph_edges AS SELECT e.* FROM src.graph_edges e WHERE "
-            "e.src_row_id IN (SELECT row_id FROM episodes UNION ALL SELECT row_id FROM entities UNION ALL SELECT row_id FROM semantic_triples UNION ALL SELECT row_id FROM visual_clips UNION ALL SELECT row_id FROM object_states) AND "
-            "e.dst_row_id IN (SELECT row_id FROM episodes UNION ALL SELECT row_id FROM entities UNION ALL SELECT row_id FROM semantic_triples UNION ALL SELECT row_id FROM visual_clips UNION ALL SELECT row_id FROM object_states)"
-        )
-        connection.execute(
-            "CREATE TABLE topic_fact_evidence AS SELECT e.* FROM src.topic_fact_evidence e "
-            "WHERE e.fact_row_id IN (SELECT row_id FROM topic_facts) AND e.caption_30sec_row_id IN (SELECT row_id FROM episodes)"
-        )
-        connection.execute(
-            "CREATE TABLE event_step_evidence AS SELECT e.* FROM src.event_step_evidence e "
-            "WHERE e.step_row_id IN (SELECT row_id FROM event_steps) AND e.caption_30sec_row_id IN (SELECT row_id FROM episodes)"
+            "e.src_id IN (SELECT id FROM episode UNION ALL SELECT id FROM entity UNION ALL SELECT id FROM semantic UNION ALL SELECT id FROM visual_clip) AND "
+            "e.dst_id IN (SELECT id FROM episode UNION ALL SELECT id FROM entity UNION ALL SELECT id FROM semantic UNION ALL SELECT id FROM visual_clip)"
         )
         connection.close()
         partial.rename(target)
