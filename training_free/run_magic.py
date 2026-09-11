@@ -331,12 +331,19 @@ def main():
             metrics.record_rollout(result)
         lock = threading.Lock()
         jobs = iter(pending)
+        abort = threading.Event()  # a non-retryable error in any worker stops the whole run
 
         def worker():
             memory = make_world_memory(metrics)
             print("worker memory ready", flush=True)
             for question in jobs:
-                answer = answer_question(memory, question, metrics)
+                if abort.is_set():
+                    return
+                try:
+                    answer = answer_question(memory, question, metrics)
+                except BaseException:
+                    abort.set()
+                    raise
                 if answer is None:
                     continue
                 CURRENT.attempt_dir = Path(answer["directory"]) / f"attempt-{answer['attempt']}"
@@ -351,6 +358,8 @@ def main():
             futures = [executor.submit(worker) for _ in range(CONCURRENCY)]
             for future in futures:
                 future.result()
+        if abort.is_set():
+            raise RuntimeError("run aborted by a non-retryable error")
         summary = summarize(questions, sorted(results, key=lambda r: int(r["question"])))
         wandb_run.log({f"{PHASE}/final_mean_score": summary["overall"]["mean_score"], f"{PHASE}/final_accuracy_score_5": summary["overall"]["accuracy_score_5"]})
         print("MAGIC COMPLETE " + json.dumps(summary["overall"]), flush=True)

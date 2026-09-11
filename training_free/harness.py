@@ -178,8 +178,7 @@ class HarnessContext:
                 mmap_mode="r",
                 allow_pickle=False,
             )
-            # The npy files cover the whole week; the database is filtered to the question's cutoff.
-            # Only rows present in the database may be returned by semantic_search.
+            # The npy files cover the whole week; the database is filtered to the question's cutoff, and only rows present in the database may be returned by semantic_search.
             allowed = {row[0] for row in connection.execute(f"SELECT {KEY_COLUMNS[table]} FROM {table}").fetchall()}
             mask = np.fromiter((str(row_id) in allowed for row_id in self.row_ids[table]), dtype=np.bool_, count=len(self.row_ids[table]))
             if int(mask.sum()) != len(allowed):

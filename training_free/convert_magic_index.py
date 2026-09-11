@@ -194,8 +194,7 @@ def build_graph():
             node.text_embedding = vector
             reused += 1
         elif node.node_type == NodeType.VISUAL_CLIP:
-            # Same caption text as the 30sec episode; build_igraph zeroes it, but UnifiedMemory.index would
-            # re-embed every node whose text_embedding is None on each question, so fill it here.
+            # Same caption text as the 30sec episode; build_igraph zeroes it, but UnifiedMemory.index re-embeds every node whose text_embedding is None on each question, so fill it here.
             name = Path(node.metadata["video_path"]).name
             text, vector = official[name]
             if text != node.text:
