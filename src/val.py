@@ -295,7 +295,8 @@ async def main_async(args: argparse.Namespace) -> None:
     ).stdout.strip()
     config_path = args.run_dir / "config.json"
     if config_path.exists():
-        wandb_id = json.loads(config_path.read_text())["wandb_id"]
+        saved_config = json.loads(config_path.read_text())
+        wandb_id = saved_config["wandb_id"]
         resume = "must"
     else:
         wandb_id = generate_id()
@@ -311,6 +312,13 @@ async def main_async(args: argparse.Namespace) -> None:
         "frame_size": list(FRAME_SIZE), "clip_image_limit": CLIP_IMAGE_LIMIT,
         "skill_dir": str(args.skill_dir), "main_git_hash": main_git_hash, "wandb_id": wandb_id,
     }
+    if resume == "must":
+        for key in config:
+            if key in ("main_agent_concurrency", "client_concurrency", "main_git_hash", "wandb_id"):
+                continue
+            if key not in saved_config or saved_config[key] != config[key]:
+                raise ValueError(f"Existing validation config differs for {key}; use a new --run-dir")
+        config["main_git_hash"] = saved_config["main_git_hash"]
     config_path.write_text(json.dumps(config, indent=2) + "\n")
     init_weave()
     wandb_run = wandb.init(

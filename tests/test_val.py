@@ -127,7 +127,8 @@ def test_judge_exhaustion_skips_without_zero_score(eval_case, tmp_path):
     assert answer.await_count == judge.await_count == 1
 
 
-def test_main_restores_completed_count_and_excludes_skips(tmp_path, monkeypatch):
+@pytest.mark.parametrize("resume_change", ["none", "model", "reasoning", "missing_protocol"])
+def test_main_restores_completed_count_and_excludes_skips(tmp_path, monkeypatch, resume_change):
     args = SimpleNamespace(api_key_env=None, run_dir=tmp_path / "run", model_name=baseline.MODEL, base_url=baseline.BASE_URL, embedding_url=baseline.EMBEDDING_URL, embedding_model="qwen3-vl-embedding-8b", attempts=3, rollouts=1, concurrency=15, clip_qa_video=True, skill_dir=tmp_path / "skills", test_file=tmp_path / "questions.json", runtime_root=tmp_path / "runtime")
     args.test_file.write_text(json.dumps([{"timeline": "day", "index": i} for i in range(3)]))
     saved = args.run_dir / "val/question-day-0/rollout-00/result.json"
@@ -158,6 +159,33 @@ def test_main_restores_completed_count_and_excludes_skips(tmp_path, monkeypatch)
     assert config["answer_context_limit"] == 128000
     val.weave.finish.assert_called_once()
     run.finish.assert_called_once()
+    if resume_change == "model":
+        args.model_name = "different-model"
+        mismatch = "model"
+    elif resume_change == "reasoning":
+        config["reasoning"] = {"effort": "medium", "context": "all_turns"}
+        mismatch = "reasoning"
+    elif resume_change == "missing_protocol":
+        del config["answer_context_limit"]
+        mismatch = "answer_context_limit"
+    config_path = args.run_dir / "config.json"
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+    original = config_path.read_bytes()
+    val.wandb.init.reset_mock()
+    if resume_change == "none":
+        args.concurrency = 20
+        val.subprocess.run.return_value.stdout = "updated-code-commit"
+        asyncio.run(val.main_async(args))
+        resumed = json.loads(config_path.read_text())
+        assert resumed["wandb_id"] == config["wandb_id"]
+        assert resumed["main_agent_concurrency"] == 20
+        assert resumed["main_git_hash"] == "unit-test-commit"
+        assert val.wandb.init.call_args.kwargs["resume"] == "must"
+    else:
+        with pytest.raises(ValueError, match=f"differs for {mismatch}"):
+            asyncio.run(val.main_async(args))
+        assert config_path.read_bytes() == original
+        val.wandb.init.assert_not_called()
 
 
 def test_cli_defaults_match_current_local_rollout(tmp_path, monkeypatch):
