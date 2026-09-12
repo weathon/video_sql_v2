@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import subprocess
+import threading
 import time
 import traceback
 from itertools import chain
@@ -13,6 +14,7 @@ from uuid import uuid4
 import httpx
 import numpy as np
 import openai
+import pynvml
 import wandb
 import weave
 from dotenv import load_dotenv
@@ -154,6 +156,89 @@ class Evaluation:
         self.semaphore = asyncio.Semaphore(1 if args.method == "latency" else args.concurrency)
         self.phase_dir = args.run_dir / "phases"
         self.phase_dir.mkdir(parents=True, exist_ok=True)
+        self.log_lock = threading.Lock()
+        self.monitor_stop = threading.Event()
+        self.monitor_ready = asyncio.Event()
+        self.progress = {f"progress/{kind}/{state}": 0 for kind in ("answer", "judge") for state in ("started", "active", "completed", "failed")}
+
+    def monitor(self, loop):
+        pynvml.nvmlInit()
+        devices = {index: pynvml.nvmlDeviceGetHandleByIndex(index) for index in (4, 5, 6)}
+        required = {*COUNTERS.values(), *GAUGES, "process_start_time_seconds"}
+        baseline_path = self.args.run_dir / "live-baseline.json"
+        baseline = json.loads(baseline_path.read_text()) if baseline_path.exists() else None
+        previous = None
+        deadline = time.monotonic()
+        print(f"LIVE_METRICS start url={PD_URL}/metrics interval_seconds=1", flush=True)
+        try:
+            with httpx.Client(timeout=10) as client, (self.args.run_dir / "live-metrics.prom").open("a", buffering=1) as raw, (self.args.run_dir / "live-metrics.jsonl").open("a", buffering=1) as history:
+                while True:
+                    response = client.get(f"{PD_URL}/metrics")
+                    timestamp, monotonic = time.time(), time.monotonic()
+                    raw.write(f"# scrape_timestamp_seconds {timestamp}\n{response.text}\n")
+                    response.raise_for_status()
+                    samples = {name: [] for name in required}
+                    for family in text_string_to_metric_families(response.text):
+                        for sample in family.samples:
+                            if sample.name in required:
+                                samples[sample.name].append({"labels": sample.labels, "value": sample.value})
+                    for name in required:
+                        if not samples[name]:
+                            raise RuntimeError(f"Required live server metric missing: {name}")
+                        samples[name].sort(key=lambda item: sorted(item["labels"].items()))
+                    current = {"timestamp": timestamp, "samples": samples}
+                    if baseline is None:
+                        baseline = current
+                        baseline_path.write_text(json.dumps(baseline, indent=2) + "\n")
+                    if samples["process_start_time_seconds"] != baseline["samples"]["process_start_time_seconds"]:
+                        raise RuntimeError("Server restarted during this run; live token accounting requires reconciliation")
+                    payload = {"monitor/timestamp": timestamp, **self.progress.copy()}
+                    totals, rates = {}, {}
+                    for key, metric in COUNTERS.items():
+                        start, now = baseline["samples"][metric], samples[metric]
+                        prior = previous["samples"][metric] if previous is not None else start
+                        if len(now) != len(start) or len(now) != len(prior) or any(a["labels"] != b["labels"] or a["labels"] != c["labels"] or b["value"] < c["value"] for a, b, c in zip(start, now, prior)):
+                            raise RuntimeError(f"Live server counter series changed or reset: {metric}")
+                        totals[key] = sum(b["value"] - a["value"] for a, b in zip(start, now))
+                        if previous is not None:
+                            rates[key] = sum(b["value"] - a["value"] for a, b in zip(prior, now)) / (monotonic - previous["monotonic"])
+                    payload.update({"tokens/in": totals["input_tokens"] - totals["cached_tokens"], "tokens/cache": totals["cached_tokens"], "tokens/out": totals["output_tokens"]})
+                    payload["tokens/fee_usd"] = (payload["tokens/in"] * 0.15 + payload["tokens/out"] * 0.47 + payload["tokens/cache"] * 0.016) / 1_000_000
+                    if previous is not None:
+                        payload.update({"throughput/in_tokens_per_second": rates["input_tokens"] - rates["cached_tokens"], "throughput/cache_tokens_per_second": rates["cached_tokens"], "throughput/out_tokens_per_second": rates["output_tokens"], "monitor/interval_seconds": monotonic - previous["monotonic"]})
+                    for metric in GAUGES:
+                        payload[f"server/{metric.removeprefix('vllm:')}"] = sum(sample["value"] for sample in samples[metric])
+                    for index, device in devices.items():
+                        payload[f"gpu/{index}/utilization_percent"] = pynvml.nvmlDeviceGetUtilizationRates(device).gpu
+                        payload[f"gpu/{index}/memory_used_bytes"] = pynvml.nvmlDeviceGetMemoryInfo(device).used
+                    history.write(json.dumps({"metrics": payload, "server": current}) + "\n")
+                    with self.log_lock:
+                        self.run.log(payload)
+                    loop.call_soon_threadsafe(self.monitor_ready.set)
+                    previous = {**current, "monotonic": monotonic}
+                    deadline += 1
+                    if self.monitor_stop.wait(max(0, deadline - time.monotonic())):
+                        break
+        except Exception as error:
+            print(f"LIVE_METRICS failed url={PD_URL}/metrics error={type(error).__name__}: {error}", flush=True)
+            raise
+        finally:
+            pynvml.nvmlShutdown()
+
+    async def execute(self):
+        try:
+            await self.monitor_ready.wait()
+            for path in sorted(self.phase_dir.glob("*.json")):
+                if path.name.endswith(".usage.json"):
+                    continue
+                phase = json.loads(path.read_text())
+                if not phase["complete"]:
+                    phase["recovered_after_interrupt"] = True
+                    await self.finish_phase(path, phase)
+            for method in ("magic", "sql") if self.args.method == "latency" else (self.args.method,):
+                await self.evaluate_method(method)
+        finally:
+            self.monitor_stop.set()
 
     async def snapshot(self, path):
         print(f"METRICS request={PD_URL}/metrics artifact={path}", flush=True)
@@ -205,7 +290,8 @@ class Evaluation:
         path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
         (path.with_suffix(".usage.json")).write_text(json.dumps(list(usage.values()), ensure_ascii=False, indent=2) + "\n")
         print(f"PHASE done={phase['name']} tokens={delta} server_minus_requests={phase['server_minus_requests']}", flush=True)
-        self.run.log({f"{phase['method']}/{phase['kind']}/{key}": value for key, value in delta.items()})
+        with self.log_lock:
+            self.run.log({f"{phase['method']}/{phase['kind']}/{key}": value for key, value in delta.items()})
 
     async def answer(self, method, question, attempt, directory):
         async with self.semaphore:
@@ -216,6 +302,8 @@ class Evaluation:
             if self.args.method == "latency":
                 await self.snapshot(directory / "before-question.prom")
             started = time.perf_counter()
+            self.progress["progress/answer/started"] += 1
+            self.progress["progress/answer/active"] += 1
             try:
                 if method == "magic":
                     candidate, answered_at = await asyncio.to_thread(run_magic, question["question"], question["query_time"], directory, self.args.artifact_root, BASE_URL, EMBEDDING_URL)
@@ -249,7 +337,9 @@ class Evaluation:
                 (directory / "error.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
                 print(f"ANSWER_FAILED method={method} id={question['id']} attempt={attempt} error={type(error).__name__}: {error} evidence={record['error_file']}", flush=True)
             finally:
+                self.progress["progress/answer/active"] -= 1
                 if "outcome" in record:
+                    self.progress["progress/answer/completed" if record["outcome"] == "answered" else "progress/answer/failed"] += 1
                     (question_root / f"answer-attempt-{attempt}.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
                 if harness is not None:
                     await harness.close()
@@ -267,6 +357,8 @@ class Evaluation:
             path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
             print(f"JUDGE request method={method} id={question['id']} attempt={attempt} trace={path}", flush=True)
             outcome = {"id": question["id"], "attempt": attempt, "trace_file": str(path)}
+            self.progress["progress/judge/started"] += 1
+            self.progress["progress/judge/active"] += 1
             try:
                 raw = await self.judge_client.chat.completions.with_raw_response.parse(model=MODEL, messages=messages, reasoning_effort="xhigh", response_format=Judgment)
                 trace["request"] = json.loads(raw.http_request.content)
@@ -290,8 +382,10 @@ class Evaluation:
                 outcome.update({"outcome": "failed", "error": trace["error"]})
                 print(f"JUDGE_FAILED method={method} id={question['id']} attempt={attempt} error={type(error).__name__}: {error} trace={path}", flush=True)
             finally:
+                self.progress["progress/judge/active"] -= 1
                 path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
                 if "outcome" in outcome:
+                    self.progress["progress/judge/completed" if outcome["outcome"] == "scored" else "progress/judge/failed"] += 1
                     (question_root / f"judge-attempt-{attempt}.json").write_text(json.dumps(outcome, ensure_ascii=False, indent=2) + "\n")
 
     async def batch(self, method, kind, attempt, questions):
@@ -351,6 +445,14 @@ class Evaluation:
             else:
                 failure = classify_failure(json.loads((root / "answer-attempt-2.json").read_text()))
                 failure["id"] = question["id"]
+                review_path = root / "failure-review.json"
+                failure["suggested_category"] = failure["category"]
+                failure["category"] = "unknown"
+                if review_path.exists():
+                    review = json.loads(review_path.read_text())
+                    if review["category"] not in ("algorithm", "maintenance") or not review["trace_evidence"].strip():
+                        raise ValueError(f"Invalid manual failure review: {review_path}")
+                    failure.update({"category": review["category"], "cause": review["cause"], "review": review})
                 (root / "failure.json").write_text(json.dumps(failure, ensure_ascii=False, indent=2) + "\n")
                 failures.append(failure)
         for attempt in (1, 2):
@@ -387,7 +489,8 @@ class Evaluation:
             total = sum(item["latency_seconds"] for item in per_question) if complete else None
             summary["latency"] = {"per_question": per_question, "total_seconds": total, "mean_seconds": total / len(per_question) if complete else None}
         (self.args.run_dir / method / "metrics.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
-        self.run.log({f"{method}/{key}": value for key, value in summary.items() if isinstance(value, (int, float))})
+        with self.log_lock:
+            self.run.log({f"{method}/{key}": value for key, value in summary.items() if isinstance(value, (int, float))})
         print(f"METHOD_COMPLETE {json.dumps(summary, ensure_ascii=False)}", flush=True)
 
     def save_token_log(self):
@@ -417,6 +520,8 @@ class Evaluation:
 async def main_async(args):
     args.artifact_root = args.artifact_root.resolve()
     args.run_dir = args.run_dir.resolve()
+    if (args.run_dir / "INVALIDATED.json").exists():
+        raise ValueError(f"Cannot resume invalidated results: {args.run_dir}")
     repository = Path(__file__).resolve().parents[1]
     load_dotenv(repository / ".env")
     if args.run_dir.is_relative_to(repository):
@@ -441,7 +546,7 @@ async def main_async(args):
         questions = [by_id[question_id] for question_id in args.ids]
     if not questions or args.concurrency < 1:
         raise ValueError("Evaluation requires questions and positive concurrency")
-    config = {"method": args.method, "artifact_root": str(args.artifact_root), "model": MODEL, "base_url": BASE_URL, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "reasoning_effort": "xhigh", "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": 2, "judge_attempts": 2, "questions": questions, "judge_rubric": RUBRIC}
+    config = {"method": args.method, "artifact_root": str(args.artifact_root), "model": MODEL, "base_url": BASE_URL, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "reasoning_effort": "xhigh", "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": 2, "judge_attempts": 2, "questions": questions, "judge_rubric": RUBRIC, "live_metrics_interval_seconds": 1}
     config_path = args.run_dir / "config.json"
     if config_path.exists():
         saved = json.loads(config_path.read_text())
@@ -453,18 +558,12 @@ async def main_async(args):
         commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
         config_path.write_text(json.dumps({"evaluation": config, "wandb_id": wandb_id, "git_commit": commit}, ensure_ascii=False, indent=2) + "\n")
     init_weave()
-    run = wandb.init(entity="3dsmile", project="video-sql-v2", id=wandb_id, name=args.run_dir.name, config=config, resume=resume, dir=str(args.run_dir))
+    run = wandb.init(entity="3dsmile", project="video-sql-v2", id=wandb_id, name=args.run_dir.name, config=config, resume=resume, dir=str(args.run_dir), settings=wandb.Settings(x_stats_sampling_interval=1.0))
     evaluation = Evaluation(args, questions, run)
     try:
-        for path in sorted(evaluation.phase_dir.glob("*.json")):
-            if path.name.endswith(".usage.json"):
-                continue
-            phase = json.loads(path.read_text())
-            if not phase["complete"]:
-                phase["recovered_after_interrupt"] = True
-                await evaluation.finish_phase(path, phase)
-        for method in ("magic", "sql") if args.method == "latency" else (args.method,):
-            await evaluation.evaluate_method(method)
+        async with asyncio.TaskGroup() as group:
+            group.create_task(asyncio.to_thread(evaluation.monitor, asyncio.get_running_loop()))
+            group.create_task(evaluation.execute())
     finally:
         try:
             evaluation.save_token_log()
