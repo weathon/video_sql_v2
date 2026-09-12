@@ -1,43 +1,57 @@
-Historical local infrastructure; archived at commit 60c84b62.
-Do not use these launch commands for the API-only baseline. See notes/TRACE2SKILL_API_HANDOFF.md.
+Current local Qwen infrastructure (disaggregated encoder)
 
-Historical formal infrastructure (disaggregated encoder)
+This configuration is implemented by infra/trace2skill_service.py and matches the trace2skill-turn12-* containers.
 
-The Qwen encoder runs on physical GPU 5. The Qwen prefill/decode service runs
-on physical GPUs 0,2. The embedding service runs on physical GPU 4. All
-containers use the project bridge network. Do not start containers with `--rm`;
-stop them after the run, inspect their logs, and remove them manually.
+Service          Physical GPU(s)  Host endpoint                  Container
+Prefill/decode   0,2 (TP=2)       http://127.0.0.1:8024           trace2skill-turn12-pd
+Encoder          3                http://127.0.0.1:8025           trace2skill-turn12-encoder
+Embedding        3                http://127.0.0.1:8014/v1        trace2skill-turn12-embedding
+Responses proxy  none             http://127.0.0.1:8003/v1        trace2skill-turn12-proxy
 
-Create the project network once:
+The encoder and embedding services share GPU 3. The proxy accepts /v1/responses and /v1/chat/completions, primes each image or video input through the encoder, then forwards the original request to prefill/decode. ECExampleConnector transfers the encoded tensors through the shared tmpfs volume mounted at /epd_shared/cache: the encoder is ec_producer and prefill/decode is ec_consumer. Native sampled-video clip QA uses /v1/chat/completions through the same proxy.
 
-docker network create video-sql-v2
+Prefill/decode uses max-num-seqs 50. MTP drafts 3 tokens and has max_model_len 314573, matching the main model. SimpleCPUOffloadConnector uses 472446402560 bytes (440 GiB) per TP rank, 880 GiB total, with eager offload. This CPU KV cache is separate from the shared encoder-cache volume. The multimodal processor cache is 4 GiB on both prefill/decode and encoder; the embedding service retains its 0 GiB setting.
 
-Create the shared encoder-cache volume backed by tmpfs:
+Trace2Skill clients use http://127.0.0.1:8003/v1 for Qwen and http://127.0.0.1:8014/v1 for embeddings. MAIN_AGENT_CONCURRENCY in src/trace2skill_baseline.py is 15; QA and embedding calls do not share a global request semaphore with those main-agent slots.
+
+Preparation
+
+Run commands from /raid/wg25r/video_sql_trace2skill. Use the existing local image video-sql-vllm-epd:ec-tp-device for all four services. The former infra/Dockerfile.vllm-epd build recipe is not present in this checkout. Model files must already be cached under /raid/huggingface because serving uses HF_HUB_OFFLINE=1.
+
+Create the network and shared tmpfs volume once, if they do not already exist:
+
+docker network create video-sql-turn12
 
 docker volume create \
     --driver local \
     --opt type=tmpfs \
     --opt device=tmpfs \
-    video-sql-ec-cache
+    video-sql-turn12-ec
 
-Build the EPD image whose ExampleConnector loads cache tensors on each TP
-worker's current CUDA device:
+Create containers with the checked-in launcher
 
-docker build \
-    -f infra/Dockerfile.vllm-epd \
-    -t video-sql-vllm-epd:ec-tp-device \
-    infra
+Run each command in its own foreground session; each remains attached to its service. Start the encoder before embedding on the shared GPU, and wait for all health checks below before starting clients. The launcher writes each exact Docker command to runs/qwen38-fp8-context128k-day-week-tree-month-val-seed0/<role>-command.json. Save service logs under that ignored run directory.
 
-Qwen/Qwen3.8-27B-FP8 encoder service:
+.venv/bin/python infra/trace2skill_service.py pd
+.venv/bin/python infra/trace2skill_service.py encoder
+.venv/bin/python infra/trace2skill_service.py embedding
+.venv/bin/python infra/trace2skill_service.py proxy
 
-docker run --name qwen38-27b-fp8-epd-encoder \
-    --network video-sql-v2 \
-    --gpus '"device=5"' \
+The equivalent explicit Docker commands are below. Use either the launcher or these commands to create each container. Existing container names must be handled using the restart/replacement instructions at the end. All services stay in the foreground and omit --rm.
+
+Qwen/Qwen3.8-27B-FP8 encoder service
+
+docker run --init --name trace2skill-turn12-encoder \
+    --network video-sql-turn12 \
+    --gpus '"device=3"' \
     --shm-size=32g \
+    -p 127.0.0.1:8025:8000 \
     -e HF_HOME=/hf_cache \
+    -e HF_HUB_CACHE=/hf_cache \
+    -e HF_HUB_OFFLINE=1 \
     -e VLLM_SERVER_DEV_MODE=1 \
     -v /raid/huggingface:/hf_cache \
-    -v video-sql-ec-cache:/epd_shared/cache \
+    -v video-sql-turn12-ec:/epd_shared/cache \
     video-sql-vllm-epd:ec-tp-device \
     Qwen/Qwen3.8-27B-FP8 \
     --host 0.0.0.0 \
@@ -47,79 +61,69 @@ docker run --name qwen38-27b-fp8-epd-encoder \
     --no-enable-prefix-caching \
     --gpu-memory-utilization 0.45 \
     --max-num-batched-tokens 114688 \
-    --max-num-seqs 24 \
+    --max-num-seqs 30 \
+    --mm-processor-cache-gb 4 \
+    --limit-mm-per-prompt '{"image":650,"video":1}' \
     --enable-request-id-headers \
     --ec-transfer-config '{"ec_connector":"ECExampleConnector","ec_role":"ec_producer","ec_connector_extra_config":{"shared_storage_path":"/epd_shared/cache"}}'
 
-Qwen/Qwen3.8-27B-FP8 prefill/decode service:
+Qwen/Qwen3.8-27B-FP8 prefill/decode service
 
-docker run --name qwen38-27b-fp8-epd-pd \
-    --network video-sql-v2 \
+docker run --init --name trace2skill-turn12-pd \
+    --network video-sql-turn12 \
     --gpus '"device=0,2"' \
     --shm-size=32g \
-    -e HF_HOME=/hf_cache \
+    -p 127.0.0.1:8024:8000 \
     -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
+    -e HF_HOME=/hf_cache \
+    -e HF_HUB_CACHE=/hf_cache \
+    -e HF_HUB_OFFLINE=1 \
     -e VLLM_SERVER_DEV_MODE=1 \
     -v /raid/huggingface:/hf_cache \
-    -v video-sql-ec-cache:/epd_shared/cache \
+    -v video-sql-turn12-ec:/epd_shared/cache \
     video-sql-vllm-epd:ec-tp-device \
     Qwen/Qwen3.8-27B-FP8 \
     --host 0.0.0.0 \
     --port 8000 \
     --max-model-len 314573 \
     --hf-overrides '{"text_config":{"rope_parameters":{"mrope_interleaved":true,"mrope_section":[11,11,10],"rope_type":"yarn","rope_theta":10000000,"partial_rotary_factor":0.25,"factor":1.2,"original_max_position_embeddings":262144}}}' \
-    --max-num-seqs 24 \
+    --max-num-seqs 50 \
     --gpu-memory-utilization 0.90 \
     --enable-prefix-caching \
     --no-enable-flashinfer-autotune \
     --tensor-parallel-size 2 \
+    --mm-processor-cache-gb 4 \
+    --limit-mm-per-prompt '{"image":650,"video":1}' \
     --enable-auto-tool-choice \
     --tool-call-parser qwen3_coder \
     --reasoning-parser qwen3 \
-    --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
-    --kv-transfer-config '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":236223201280,"lazy_offload":false}}' \
+    --speculative-config '{"method":"mtp","num_speculative_tokens":3,"max_model_len":314573}' \
+    --kv-transfer-config '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":472446402560,"lazy_offload":false}}' \
     --ec-transfer-config '{"ec_connector":"ECExampleConnector","ec_role":"ec_consumer","ec_connector_extra_config":{"shared_storage_path":"/epd_shared/cache"}}' \
     --default-chat-template-kwargs '{"enable_thinking":true,"preserve_thinking":true}'
 
-Responses EPD proxy:
+Qwen/Qwen3-VL-Embedding-8B service
 
-docker run --name qwen38-27b-fp8-epd-proxy \
-    --network video-sql-v2 \
-    -p 8002:8000 \
-    -v /raid/wg25r/video_sql_v2/infra:/video_sql_infra:ro \
-    -v video-sql-ec-cache:/epd_shared/cache \
-    --entrypoint python3 \
-    vllm/vllm-openai:qwen38-flash-next \
-    /video_sql_infra/responses_epd_proxy.py \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --encoder-url http://qwen38-27b-fp8-epd-encoder:8000 \
-    --pd-url http://qwen38-27b-fp8-epd-pd:8000 \
-    --cache-dir /epd_shared/cache
-
-Training clears the shared encoder cache at startup and after each batch's
-rollouts finish. The proxy rejects cleanup while requests are active, resets
-both servers' internal encoder caches, then removes the shared cache files.
-VLLM_SERVER_DEV_MODE exposes the reset_encoder_cache endpoint on the private
-project network. Model and sampling settings are unchanged.
-
-Qwen/Qwen3-VL-Embedding-8B service:
-
-docker run --name egolife-qwen3-vl-embedding-8b \
-    --network video-sql-v2 \
-    --gpus '"device=4"' \
+docker run --init --name trace2skill-turn12-embedding \
+    --network video-sql-turn12 \
+    --gpus '"device=3"' \
     --shm-size=8g \
-    -p 8013:8000 \
+    -p 127.0.0.1:8014:8000 \
     -e HF_HOME=/hf_cache \
+    -e HF_HUB_CACHE=/hf_cache \
+    -e HF_HUB_OFFLINE=1 \
+    -e VLLM_SERVER_DEV_MODE=1 \
     -v /raid/huggingface:/hf_cache \
+    -v video-sql-turn12-ec:/epd_shared/cache \
     -v /raid/wg25r/video_sql_v2:/workspace/video_sql_v2:ro \
-    vllm/vllm-openai:qwen38-flash-next \
+    video-sql-vllm-epd:ec-tp-device \
     Qwen/Qwen3-VL-Embedding-8B \
     --served-model-name qwen3-vl-embedding-8b \
     --runner pooling \
     --host 0.0.0.0 \
     --port 8000 \
     --gpu-memory-utilization 0.45 \
+    --max-num-seqs 30 \
     --mm-processor-cache-gb 0 \
     --trust-remote-code \
     --allowed-local-media-path /workspace/video_sql_v2/data/pilot/clips \
@@ -127,11 +131,53 @@ docker run --name egolife-qwen3-vl-embedding-8b \
     --max-num-batched-tokens 32768 \
     --media-io-kwargs '{"video":{"video_backend":"qwen3_vl","backend":"torchcodec","fps":2,"num_frames":-1,"seek_mode":"approximate","num_ffmpeg_threads":4}}'
 
-Stop after the run:
+Responses EPD proxy
 
-docker stop qwen38-27b-fp8-epd-proxy qwen38-27b-fp8-epd-encoder qwen38-27b-fp8-epd-pd egolife-qwen3-vl-embedding-8b
+docker run --init --name trace2skill-turn12-proxy \
+    --network video-sql-turn12 \
+    -p 127.0.0.1:8003:8000 \
+    -v /raid/wg25r/video_sql_trace2skill/infra:/video_sql_infra:ro \
+    -v video-sql-turn12-ec:/epd_shared/cache \
+    --entrypoint python3 \
+    video-sql-vllm-epd:ec-tp-device \
+    /video_sql_infra/responses_epd_proxy.py \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --encoder-url http://trace2skill-turn12-encoder:8000 \
+    --pd-url http://trace2skill-turn12-pd:8000 \
+    --cache-dir /epd_shared/cache
 
-After debugging and log inspection, remove the stopped containers manually:
+Health checks and cache maintenance
 
-docker rm qwen38-27b-fp8-epd-proxy qwen38-27b-fp8-epd-encoder qwen38-27b-fp8-epd-pd egolife-qwen3-vl-embedding-8b
-docker volume rm video-sql-ec-cache
+curl --fail http://127.0.0.1:8024/health
+curl --fail http://127.0.0.1:8025/health
+curl --fail http://127.0.0.1:8014/health
+curl --fail http://127.0.0.1:8003/health
+curl --fail http://127.0.0.1:8003/v1/models
+
+The proxy also implements POST /v1/responses/input_tokens using prefill/decode's /tokenize endpoint; this applies the model tokenizer/template and multimodal processor without model generation.
+
+For manual encoder-cache cleanup, stop clients and wait for in-flight requests to finish before calling:
+
+curl --fail -X POST http://127.0.0.1:8003/clear_encoder_cache
+
+The proxy returns 409 if its requests are still active. Otherwise it resets the encoder caches on both encoder and prefill/decode, then removes the shared encoder-cache files. VLLM_SERVER_DEV_MODE=1 enables the required reset_encoder_cache endpoint.
+
+Restart or replace existing containers
+
+Stop clients first, then stop the four named services:
+
+docker stop --timeout 60 trace2skill-turn12-proxy trace2skill-turn12-pd trace2skill-turn12-encoder trace2skill-turn12-embedding
+
+For an unchanged restart, attach each command in its own foreground session. docker start reuses the saved container arguments:
+
+docker start -a trace2skill-turn12-pd
+docker start -a trace2skill-turn12-encoder
+docker start -a trace2skill-turn12-embedding
+docker start -a trace2skill-turn12-proxy
+
+To change launch arguments, update infra/trace2skill_service.py, stop the services as above, inspect/save their logs, and remove the stopped containers before recreating them with the launcher. docker start does not apply changes made to the launcher:
+
+docker rm trace2skill-turn12-proxy trace2skill-turn12-pd trace2skill-turn12-encoder trace2skill-turn12-embedding
+
+Retain the named volume and /raid/huggingface mount for subsequent launches. After the run is finished, stopped containers can be removed manually with the same docker rm command.
