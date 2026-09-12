@@ -4,6 +4,7 @@ import base64
 import copy
 import json
 import pickle
+import re
 import sys
 import threading
 import time
@@ -296,6 +297,7 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
     reasoning_prompt[0]["content"] = reasoning_prompt[0]["content"].replace('If decision = "answer": Do NOT include "search_query".', 'If decision = "answer": Set "search_query" to null.').replace('"search_query": "<str>"', '"search_query": "<str>" | null').replace('"decision": "answer"\n}', '"decision": "answer",\n  "search_query": null\n}')
     final_prompt = copy.deepcopy(qa_template)
     final_prompt[0]["content"] = final_prompt[0]["content"].replace("Your task is to answer multiple choice questions based on this accumulated context. Always choose the most relevant answer from the given choices based on the evidence provided.", "Your task is to answer open-ended questions based on this accumulated context.").replace("Provide your answer as a single letter (A, B, C, or D) based on the evidence.", "Provide a direct, brief, factual answer to the question based on the evidence.")
+    final_prompt[0]["content"] = final_prompt[0]["content"].replace("Choose the answer that best matches the evidence.", "Answer the question based on the evidence.")
     full_query = f"Query: {question}\nCurrent time: {transform_timestamp(str(query_time))}"
     conversation = []
     round_history = []
@@ -361,14 +363,18 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
                 chain_facts = memory.unified_memory.get_chain_facts_for_results(new_results, query_time=query_time, query_text=question, embedding_model=api, min_hits=1, max_topic_chains=3, max_event_chains=1, topic_sim_threshold=0.7, event_chain_sim_threshold=0.7, event_chain_min_hits=1, event_chain_granularities=("30sec", "3min"))
                 trace["response"]["chain_facts"] = chain_facts
                 fresh_facts = [fact for fact in chain_facts if (fact["label"], fact["time"], fact["fact"]) not in injected_chain_facts]
-                text_parts = []
+                timed_parts = []
                 for item in new_items:
                     if item.memory_type == "episodic":
-                        text_parts.append(f"[Retrieved episode] {item.content}")
+                        day, hour, minute = map(int, re.match(r'\[DAY(\d+)\s+(\d{1,2}):(\d{2})', item.content).groups())
+                        timed_parts.append(((0, day * 100000 + hour * 3600 + minute * 60), f"[Retrieved episode] {item.content}"))
                     elif item.memory_type == "semantic":
-                        text_parts.append(f"[Retrieved semantic] {item.content}")
+                        timed_parts.append(((1, 0), f"[Retrieved semantic] {item.content}"))
                     elif item.memory_type == "visual":
-                        text_parts.append(f"[{transform_timestamp(str(item._start_ts))}] [{len(item.content)} visual frames of above episode]")
+                        day, clock = divmod(int(item._start_ts), 100000000)
+                        time_key = day * 100000 + (clock // 1000000) * 3600 + ((clock % 1000000) // 10000) * 60 + 0.5
+                        timed_parts.append(((0, time_key), f"[{transform_timestamp(str(item._start_ts))}] [{len(item.content)} visual frames of above episode]"))
+                text_parts = [text for _, text in sorted(timed_parts, key=lambda part: part[0])]
                 summary = "\n".join(memory._mix_facts_by_time(text_parts, fresh_facts) if fresh_facts else text_parts)
                 if round_frame_count:
                     summary += f"\n[{round_frame_count} image frames retrieved]"

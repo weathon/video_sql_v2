@@ -47,9 +47,6 @@ from training_free.index_schema import SCHEMA, SEARCH_TABLES, fact_interval, tim
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 REQUEST_TRACE = ContextVar("request_trace")
-CONTEXT_LIMIT = 314573
-COMPACTION_THRESHOLD = 178_000
-ANSWER_CONTEXT_LIMIT = 128_000
 FRAME_SIZE = (854, 480)
 # Keep the existing sampling allowance when switching providers; this is not a
 # model-specific image token estimate. Context accounting uses returned usage.
@@ -57,11 +54,6 @@ CLIP_IMAGE_LIMIT = 650
 TOOL_REMINDER_CHARACTERS = 10_000
 SHARED_VECTORS = {}
 SHARED_ROW_IDS = {}
-COMPACTION_INSTRUCTION = """
-Stop calling tools. Produce a trusted handoff that preserves the question, established evidence,
-unresolved branches, useful row IDs and time intervals, and the exact next investigation steps.
-Do not answer the question in this handoff.
-""".strip()
 
 
 class AgentRaised(Exception):
@@ -113,8 +105,6 @@ class HarnessContext:
     embedding_client: httpx.AsyncClient
     query_time: int
     clip_qa_video: bool = False
-    context_limit: int = CONTEXT_LIMIT
-    compaction_threshold: int = COMPACTION_THRESHOLD
     compactions: int = 0
     answer_turns: int = 0
     investigation_calls: int = 0
@@ -556,10 +546,7 @@ async def run_stream(
         "run_config": {
             "reasoning_item_id_policy": context.run_config.reasoning_item_id_policy,
             "max_turns": max_turns,
-            "answer_context_limit": ANSWER_CONTEXT_LIMIT,
             "watch_context": watch_context,
-            "context_limit": context.context_limit,
-            "compaction_threshold": context.compaction_threshold,
         },
     }
     events_path = context.run_dir / "traces" / f"{label}-events-{uuid.uuid4().hex}.jsonl"
@@ -1132,8 +1119,6 @@ class VideoSQLHarness:
         query_time: int,
         base_url: str = OPENAI_BASE_URL,
         clip_qa_video: bool = False,
-        context_limit: int = CONTEXT_LIMIT,
-        compaction_threshold: int = COMPACTION_THRESHOLD,
     ) -> None:
         client = AsyncOpenAI(
             api_key=api_key, base_url=base_url, max_retries=0,
@@ -1172,8 +1157,6 @@ class VideoSQLHarness:
                 timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
                 limits=httpx.Limits(max_connections=1000, max_keepalive_connections=256),
             ),
-            context_limit=context_limit,
-            compaction_threshold=compaction_threshold,
         )
         self.answer_tools, self.catalog = make_tools(self.context)
 
