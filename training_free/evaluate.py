@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import shutil
 import subprocess
 import threading
 import time
@@ -23,7 +24,7 @@ from pydantic import BaseModel, Field
 from wandb.sdk.lib.runid import generate_id
 
 from third_party.trace2skill.tracing_bridge import init_weave
-from training_free.harness import SHARED_ROW_IDS, SHARED_VECTORS, VideoSQLHarness, exception_chain
+from training_free.harness import INVESTIGATION_CALL_LIMIT, SHARED_ROW_IDS, SHARED_VECTORS, VideoSQLHarness, exception_chain
 from training_free.index_schema import SEARCH_TABLES
 from training_free.magic import load_magic_artifacts, run_magic
 
@@ -33,12 +34,13 @@ BASE_URL = "http://127.0.0.1:8103/v1"
 PD_URL = "http://127.0.0.1:8124"
 EMBEDDING_URL = "http://127.0.0.1:8114/v1"
 EMBEDDING_MODEL = "qwen3-vl-embedding-8b"
-RUBRIC = "Judge the candidate answer against the reference answer in the context of the question. Return an integer score from 0 through 5: 0 = wrong or no answer; 1 = a few correct details but the core question is unanswered; 2 = partially correct with major omissions or errors; 3 = the core is mostly correct but still has material omissions or errors; 4 = complete except for minor issues; 5 = fully correct and semantically equivalent, with no contradiction."
+RUBRIC = "Evaluate whether the candidate correctly answers the question, using the reference answer and authoritative metadata. The reference is a concise correct answer, not an exhaustive list of permissible wording or supporting details. Score 5 when all facts required by the question are correct and the answer has no material contradiction. Accept ordinary synonyms, paraphrases, reversed list order, and recognizable spelling variants of the same name; do not require exact wording. Additional specificity, explanations, citations, episode IDs, timestamps, formatting, verbosity, or cautious wording are not errors by themselves. Do not assume an extra detail is false merely because the short reference omits it. A genuinely wrong additional claim or unresolved alternative that changes the answer can warrant a deduction. Judge what the question asks: a who-question requires the correct people, not every incidental event in the reference. The metadata identifies the questioner: I, me, my, mine, the narrator, and the camera wearer refer to Jake / A1_JAKE / a1_jake. Use the supplied query day and clock time to compare absolute DAYn timestamps with relative expressions such as last night, yesterday, or three hours ago. DAY3 is a day label, not automatically three days ago. Respect the reference's temporal precision: approximate hours and parts of the day such as noon do not require an exact minute match. Return a brief justification and one integer score: 0 = no valid answer or the core answer is wrong; 1 = only a few relevant correct details and the core question is unanswered; 2 = partially correct with major omissions or errors; 3 = the core is mostly correct but still has material omissions or errors; 4 = essentially complete and correct, with an identifiable minor factual error or omission relevant to the question; 5 = fully correct on the required answer and semantically equivalent at the question's intended level of detail, with no material contradiction. For any score below 5, identify the actual factual error or missing required information; stylistic differences or harmless additional context are not sufficient reasons to deduct. The score must agree with the justification."
 COUNTERS = {"input_tokens": "vllm:prompt_tokens_total", "cached_tokens": "vllm:prompt_tokens_cached_total", "output_tokens": "vllm:generation_tokens_total"}
 GAUGES = ("vllm:num_requests_running", "vllm:num_requests_waiting")
 
 
 class Judgment(BaseModel):
+    justification: str = Field(min_length=1, description="Brief factual basis for the score; identify any actual error or required omission when deducting points.")
     score: int = Field(strict=True, ge=0, le=5)
 
 
@@ -338,6 +340,8 @@ class Evaluation:
                 print(f"ANSWER_FAILED method={method} id={question['id']} attempt={attempt} error={type(error).__name__}: {error} evidence={record['error_file']}", flush=True)
             finally:
                 self.progress["progress/answer/active"] -= 1
+                if harness is not None:
+                    record["model_calls"] = {"investigation": harness.context.investigation_calls, "forced_final": harness.context.final_calls, "investigation_limit": INVESTIGATION_CALL_LIMIT}
                 if "outcome" in record:
                     self.progress["progress/answer/completed" if record["outcome"] == "answered" else "progress/answer/failed"] += 1
                     (question_root / f"answer-attempt-{attempt}.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
@@ -349,7 +353,9 @@ class Evaluation:
             directory.mkdir(parents=True, exist_ok=True)
             question_root = directory.parent.parent
             answer = json.loads((question_root / "answer.json").read_text())
-            messages = [{"role": "system", "content": RUBRIC}, {"role": "user", "content": json.dumps({"question": question["question"], "reference_answer": question["reference_answer"], "candidate_answer": answer["candidate_answer"]}, ensure_ascii=False)}]
+            query_time = str(question["query_time"]).zfill(9)
+            metadata = {"questioner": "A1_JAKE", "questioner_name": "Jake", "perspective": "first-person narrator and camera wearer", "query_time_raw_DHHMMSSFF": question["query_time"], "query_day": int(query_time[0]), "query_time_of_day": f"{query_time[1:3]}:{query_time[3:5]}:{query_time[5:7]}", "query_frame_index": int(query_time[7:9])}
+            messages = [{"role": "system", "content": RUBRIC}, {"role": "user", "content": json.dumps({"question": question["question"], "metadata": metadata, "reference_answer": question["reference_answer"], "candidate_answer": answer["candidate_answer"]}, ensure_ascii=False)}]
             trace = {"request": {"model": MODEL, "messages": messages, "reasoning_effort": "xhigh", "response_format": {"type": "json_schema", "json_schema": {"name": "Judgment", "schema": Judgment.model_json_schema(), "strict": True}}}, "response": None, "error": None}
             traces = directory / "traces"
             traces.mkdir()
@@ -371,7 +377,7 @@ class Evaluation:
                 reasoning = trace["response"]["choices"][0]["message"]["reasoning"]
                 if not isinstance(reasoning, str) or not reasoning.strip():
                     raise ValueError("Judge response has no actual reasoning")
-                outcome.update({"outcome": "scored", "score": message.parsed.score})
+                outcome.update({"outcome": "scored", "score": message.parsed.score, "justification": message.parsed.justification})
                 (question_root / "judgment.json").write_text(json.dumps(outcome, ensure_ascii=False, indent=2) + "\n")
                 print(f"JUDGE method={method} id={question['id']} attempt={attempt} score={outcome['score']}", flush=True)
             except Exception as error:
@@ -437,8 +443,21 @@ class Evaluation:
                 key = str(self.args.artifact_root / "embeddings")
                 SHARED_ROW_IDS[key] = {table: np.load(Path(key) / f"{table}.row_ids.npy", mmap_mode="r", allow_pickle=False) for table in SEARCH_TABLES}
                 SHARED_VECTORS[key] = {table: np.load(Path(key) / (f"{table}.video_vectors.npy" if table == "visual_clip" else f"{table}.vectors.npy"), mmap_mode="r", allow_pickle=False) for table in SEARCH_TABLES}
-        for attempt in (1, 2):
-            await self.batch(method, "answer", attempt, self.questions)
+        if self.args.answers_from is not None:
+            for question in self.questions:
+                source = self.args.answers_from / method / "questions" / str(question["id"])
+                root = self.args.run_dir / method / "questions" / str(question["id"])
+                root.mkdir(parents=True, exist_ok=True)
+                names = ("answer.json",) if (source / "answer.json").exists() else ("answer-attempt-1.json", "answer-attempt-2.json", "failure-review.json")
+                original = json.loads((source / names[0]).read_text())
+                if original["question_input"] != {"question": question["question"], "query_time": question["query_time"]}:
+                    raise ValueError(f"Rejudge source question differs: {source}")
+                for name in names:
+                    shutil.copyfile(source / name, root / name)
+            print(f"REJUDGE reused_answers_from={self.args.answers_from} questions={len(self.questions)}", flush=True)
+        else:
+            for attempt in (1, 2):
+                await self.batch(method, "answer", attempt, self.questions)
         answerable, failures = [], []
         for question in self.questions:
             root = self.args.run_dir / method / "questions" / str(question["id"])
@@ -522,6 +541,12 @@ class Evaluation:
 async def main_async(args):
     args.artifact_root = args.artifact_root.resolve()
     args.run_dir = args.run_dir.resolve()
+    if args.answers_from is not None:
+        args.answers_from = args.answers_from.resolve()
+        if args.method == "latency" or args.answers_from == args.run_dir:
+            raise ValueError("Rejudging requires a separate output directory and method magic or sql")
+        if (args.answers_from / "INVALIDATED.json").exists():
+            raise ValueError(f"Cannot rejudge invalidated results: {args.answers_from}")
     if (args.run_dir / "INVALIDATED.json").exists():
         raise ValueError(f"Cannot resume invalidated results: {args.run_dir}")
     repository = Path(__file__).resolve().parents[1]
@@ -548,7 +573,7 @@ async def main_async(args):
         questions = [by_id[question_id] for question_id in args.ids]
     if not questions or args.concurrency < 1:
         raise ValueError("Evaluation requires questions and positive concurrency")
-    config = {"method": args.method, "artifact_root": str(args.artifact_root), "model": MODEL, "base_url": BASE_URL, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "reasoning_effort": "xhigh", "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": 2, "judge_attempts": 2, "questions": questions, "judge_rubric": RUBRIC, "live_metrics_interval_seconds": 1}
+    config = {"method": args.method, "artifact_root": str(args.artifact_root), "model": MODEL, "base_url": BASE_URL, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "reasoning_effort": "xhigh", "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": 2, "judge_attempts": 2, "questions": questions, "judge_rubric": RUBRIC, "judge_version": 2, "answer_source_run_dir": str(args.answers_from) if args.answers_from is not None else None, "investigation_call_limit": INVESTIGATION_CALL_LIMIT if args.answers_from is None else None, "live_metrics_interval_seconds": 1}
     config_path = args.run_dir / "config.json"
     if config_path.exists():
         saved = json.loads(config_path.read_text())
@@ -584,4 +609,5 @@ if __name__ == "__main__":
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--concurrency", type=int, default=20)
     parser.add_argument("--ids", nargs="+")
+    parser.add_argument("--answers-from", type=Path, help="Rejudge saved answers and reuse their final failure classifications without answering again")
     asyncio.run(main_async(parser.parse_args()))

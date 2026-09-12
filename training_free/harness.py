@@ -52,6 +52,7 @@ FRAME_SIZE = (854, 480)
 # model-specific image token estimate. Context accounting uses returned usage.
 CLIP_IMAGE_LIMIT = 650
 TOOL_REMINDER_CHARACTERS = 10_000
+INVESTIGATION_CALL_LIMIT = 30
 SHARED_VECTORS = {}
 SHARED_ROW_IDS = {}
 
@@ -167,8 +168,8 @@ class HarnessContext:
                 raise InvestigationBudgetExhausted("The single final-answer request was already used")
             self.final_calls += 1
         else:
-            if self.investigation_calls >= 10:
-                raise InvestigationBudgetExhausted("The 10 investigation model calls are exhausted; use the final-answer request")
+            if self.investigation_calls >= INVESTIGATION_CALL_LIMIT:
+                raise InvestigationBudgetExhausted(f"The {INVESTIGATION_CALL_LIMIT} investigation model calls are exhausted; use the final-answer request")
             self.investigation_calls += 1
         print(f"MODEL_CALL role={role} investigation={self.investigation_calls} final={self.final_calls}", flush=True)
 
@@ -1206,7 +1207,7 @@ class VideoSQLHarness:
                 + "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text."
                 + "\n\nSQL scope: Every run_sql query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and a QA question do not constrain SQL. Unrestricted queries will be rejected before execution; rewrite them with a real scope constraint. Do not request an entire timeline's tables to answer a question about a few events."
                 + "\n\nVisual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals."
-                + "\n\nInvestigation budget: You have 10 model calls shared across your own turns, clip_qa and optional SQL/search QA. Calling a tool does not itself consume another model call, but its QA request does. Prefer parallel independent tool calls. After these 10 calls, one final answer request is allowed with all investigation tools disabled. Replacing history never restores spent calls."
+                + f"\n\nInvestigation budget: You have {INVESTIGATION_CALL_LIMIT} model calls shared across your own turns, clip_qa and optional SQL/search QA. Calling a tool does not itself consume another model call, but its QA request does. Prefer parallel independent tool calls. After these {INVESTIGATION_CALL_LIMIT} calls, one final answer request is allowed with all investigation tools disabled. Replacing history never restores spent calls."
                 + "\n\nContext maintenance: Only the latest tool result in your context can be replaced. After reading it, use replace_tool alone before continuing if it is large, even when useful and correct, or if it is invalid. Write replacement yourself and give a brief reason. Summarize only the target result's question and evidence, preserving relevant facts, IDs, times, uncertainty, contradictions, and unresolved details. Other results may be cited explicitly by tool_id, but do not present their evidence as part of this result or substitute a summary of another question. For invalid results, replace the entire content with why it must not be used. All history after the target result through the replacement turn is removed, including reasoning, messages, and tool calls; future reasoning starts from the replacement. Do not combine replace_tool with any other tool call in the same turn. Saving add_note does not replace a tool result."
                 + "\n\nROOT-SKILL (skill loading guidance):\n"
                 + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
@@ -1232,7 +1233,7 @@ class VideoSQLHarness:
             if final_turn:
                 self.context.final_answer_mode = True
                 agent = agent.clone(
-                    instructions=agent.instructions + "\n\nThe 10 investigation model calls are exhausted. This is the single additional final-answer call. Return the final answer immediately using the supplied schema and available evidence. All tools are disabled.",
+                    instructions=agent.instructions + f"\n\nThe {INVESTIGATION_CALL_LIMIT} investigation model calls are exhausted. This is the single additional final-answer call. Return the final answer immediately using the supplied schema and available evidence. All tools are disabled.",
                     tools=[],
                     output_type=AnswerSubmission,
                     tool_use_behavior="run_llm_again",
