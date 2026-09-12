@@ -57,8 +57,6 @@ def collect_usage(trace_dirs):
                         if event["type"] in ("response.completed", "response.incomplete", "response.failed"):
                             candidates.append(event["response"])
                     for response in candidates:
-                        if response["model"] != MODEL:
-                            continue
                         response_id = response["response_id"] if "response_id" in response else response["id"]
                         usage = response["usage"]
                         record = {"response_id": response_id, "model": response["model"], "usage": usage, "input_tokens": None, "cached_tokens": None, "output_tokens": None, "trace_files": [str(path)]}
@@ -81,6 +79,13 @@ def collect_usage(trace_dirs):
                                 previous["trace_files"].append(str(path))
                         else:
                             responses[response_id] = record
+    for record in responses.values():
+        record["fee_usd"] = None
+        if all(record[key] is not None for key in COUNTERS):
+            ordinary = record["input_tokens"] - record["cached_tokens"]
+            if ordinary < 0:
+                raise ValueError(f"Invalid response cache accounting: {record}")
+            record["fee_usd"] = (ordinary * 0.15 + record["output_tokens"] * 0.47 + record["cached_tokens"] * 0.016) / 1_000_000
     return responses
 
 
@@ -100,7 +105,9 @@ def classify_failure(record):
         category, cause = "algorithm", "invalid_model_output_or_refusal"
     elif "InvalidTrace" in types and any(text in message for text in ("answer loop ended without submit_answer", "three consecutive non-reasoning completions were identical", "returned no completed structured answer")):
         category, cause = "algorithm", "invalid_model_answer"
-    elif "ValidationError" in types and any(frame["name"] in ("complete", "answer", "judge") for frame in record["error"]["frames"]) and record["trace_files"]:
+    elif "Method returned an invalid final answer:" in message and "candidate_answer" in record:
+        category, cause = "algorithm", "invalid_model_answer"
+    elif "ValidationError" in types and any((frame["file"].endswith("training_free/magic.py") and frame["name"] == "complete") or (frame["file"].endswith("training_free/harness.py") and frame["name"] == "answer") for frame in record["error"]["frames"]) and record["trace_files"]:
         category, cause = "algorithm", "invalid_structured_model_output"
     elif types & {"APIConnectionError", "APITimeoutError", "ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "RemoteProtocolError"}:
         category, cause = "maintenance", "server_connection_or_timeout"
@@ -147,7 +154,9 @@ class Evaluation:
         return {"time": time.time(), "file": str(path), "samples": samples}
 
     async def finish_phase(self, path, phase):
-        phase["after"] = await self.snapshot(path.with_suffix(".after.prom"))
+        if "after" not in phase:
+            phase["after"] = await self.snapshot(path.with_suffix(".after.prom"))
+            path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
         before, after = phase["before"]["samples"], phase["after"]["samples"]
         if before["process_start_time_seconds"] != after["process_start_time_seconds"]:
             path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
@@ -224,7 +233,8 @@ class Evaluation:
                 (directory / "error.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
                 print(f"ANSWER_FAILED method={method} id={question['id']} attempt={attempt} error={type(error).__name__}: {error} evidence={record['error_file']}", flush=True)
             finally:
-                (question_root / f"answer-attempt-{attempt}.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
+                if "outcome" in record:
+                    (question_root / f"answer-attempt-{attempt}.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
                 if harness is not None:
                     await harness.close()
 
@@ -265,7 +275,8 @@ class Evaluation:
                 print(f"JUDGE_FAILED method={method} id={question['id']} attempt={attempt} error={type(error).__name__}: {error} trace={path}", flush=True)
             finally:
                 path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
-                (question_root / f"judge-attempt-{attempt}.json").write_text(json.dumps(outcome, ensure_ascii=False, indent=2) + "\n")
+                if "outcome" in outcome:
+                    (question_root / f"judge-attempt-{attempt}.json").write_text(json.dumps(outcome, ensure_ascii=False, indent=2) + "\n")
 
     async def batch(self, method, kind, attempt, questions):
         pending = []
