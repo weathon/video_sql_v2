@@ -460,7 +460,7 @@ class UnifiedMemory:
             if topic_candidate_facts:
                 try:
                     labels = list(topic_candidate_facts.keys())
-                    texts = [" ".join(topic_candidate_facts[lbl]) for lbl in labels]
+                    texts = [" ".join(topic_candidate_facts[lbl])[:2000] for lbl in labels]
                     all_emb_texts = [query_text] + texts
                     embeddings = embedding_model.encode_text(all_emb_texts)
                     query_emb = embeddings[0]
@@ -547,7 +547,7 @@ class UnifiedMemory:
             if candidate_facts_text:
                 try:
                     labels = list(candidate_facts_text.keys())
-                    texts = [" ".join(candidate_facts_text[lbl]) for lbl in labels]
+                    texts = [" ".join(candidate_facts_text[lbl])[:2000] for lbl in labels]
                     all_texts = [query_text] + texts
                     embeddings = embedding_model.encode_text(all_texts)
                     query_emb = embeddings[0]

@@ -129,7 +129,7 @@ class Evaluation:
         self.questions = questions
         self.run = run
         self.http = httpx.AsyncClient(timeout=60)
-        self.judge_client = openai.AsyncOpenAI(api_key="EMPTY", base_url=BASE_URL, max_retries=0)
+        self.judge_client = openai.AsyncOpenAI(api_key="EMPTY", base_url=BASE_URL, max_retries=0, timeout=None)
         self.semaphore = asyncio.Semaphore(1 if args.method == "latency" else args.concurrency)
         self.phase_dir = args.run_dir / "phases"
         self.phase_dir.mkdir(parents=True, exist_ok=True)

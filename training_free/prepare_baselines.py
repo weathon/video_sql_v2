@@ -119,7 +119,7 @@ def prepare(root: Path) -> None:
         question = re.sub(r'(?:\n|\s)(?:\([Aa]\)|[Aa][.)])\s+.*?(?:\([Bb]\)|[Bb][.)])\s+.*', '', question, flags=re.S).strip()
         query_time = int(item['query_time']['date'].removeprefix('DAY') + item['query_time']['time'].zfill(8))
         reference = item['choice_' + item['answer'].lower()]
-        questions.append({'id': item['ID'], 'question': question, 'query_time': query_time, 'reference_answer': reference})
+        questions.append({'id': item['ID'], 'question': normalize_text(question), 'query_time': query_time, 'reference_answer': normalize_text(reference)})
     (root / 'questions.json').write_text(json.dumps(questions, ensure_ascii=False, indent=2))
     selected = random.Random(0).sample(range(len(questions)), 100)
     (root / 'qa-rule-audit.json').write_text(json.dumps([{'original': original[i], 'converted': questions[i]} for i in selected], ensure_ascii=False, indent=2))

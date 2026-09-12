@@ -1137,7 +1137,7 @@ class VideoSQLHarness:
     ) -> None:
         client = AsyncOpenAI(
             api_key=api_key, base_url=base_url, max_retries=0,
-            timeout=httpx2.Timeout(connect=60, read=900, write=900, pool=900),
+            timeout=None,
             http_client=DefaultAsyncHttpxClient(
                 limits=httpx2.Limits(max_connections=1000, max_keepalive_connections=256),
             ),

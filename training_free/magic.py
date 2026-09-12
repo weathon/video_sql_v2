@@ -75,8 +75,8 @@ class MagicAPI:
         self.traces.mkdir(parents=True, exist_ok=True)
         self.images = run_dir / "frames"
         self.images.mkdir(parents=True, exist_ok=True)
-        self.llm = OpenAI(api_key="EMPTY", base_url=base_url, max_retries=0)
-        self.embeddings = OpenAI(api_key="EMPTY", base_url=embedding_url, max_retries=0)
+        self.llm = OpenAI(api_key="EMPTY", base_url=base_url, max_retries=0, timeout=None)
+        self.embeddings = OpenAI(api_key="EMPTY", base_url=embedding_url, max_retries=0, timeout=None)
         self.last_assistant = None
 
     def complete(self, messages, response_format=None):
@@ -270,7 +270,7 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
     finally:
         (api.traces / f"magic-{uuid4().hex}.json").write_text(json.dumps(initialization, ensure_ascii=False))
     reasoning_prompt = copy.deepcopy(reasoning_template)
-    reasoning_prompt[0]["content"] = reasoning_prompt[0]["content"].replace('If decision = "answer": Do NOT include "search_query".', 'If decision = "answer": Set "search_query" to null.')
+    reasoning_prompt[0]["content"] = reasoning_prompt[0]["content"].replace('If decision = "answer": Do NOT include "search_query".', 'If decision = "answer": Set "search_query" to null.').replace('"search_query": "<str>"', '"search_query": "<str>" | null').replace('"decision": "answer"\n}', '"decision": "answer",\n  "search_query": null\n}')
     final_prompt = copy.deepcopy(qa_template)
     final_prompt[0]["content"] = final_prompt[0]["content"].replace("Your task is to answer multiple choice questions based on this accumulated context. Always choose the most relevant answer from the given choices based on the evidence provided.", "Your task is to answer open-ended questions based on this accumulated context.").replace("Provide your answer as a single letter (A, B, C, or D) based on the evidence.", "Provide a direct, brief, factual answer to the question based on the evidence.")
     full_query = f"Query: {question}\nCurrent time: {transform_timestamp(str(query_time))}"
@@ -285,7 +285,7 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
     try:
         for round_num in range(1, 6):
             if error_count >= 5:
-                raise RuntimeError("MAGIC exhausted max_errors=5")
+                break
             history = memory._format_round_history(round_history)
             conversation.append({"role": "user", "content": f"{full_query}\n\nRound History:\n{history}\n\nTask:\nDecide whether to 'search' (retrieve more evidence) or 'answer' (sufficient evidence accumulated)."})
             try:
@@ -295,14 +295,12 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
                     conversation.append(api.last_assistant)
                 conversation.append({"role": "user", "content": f"The reasoning response failed validation: {type(exc).__name__}: {exc}. Correct this error on the next round."})
                 error_count += 1
-                if round_num == 5:
-                    raise
                 continue
             conversation.append(api.last_assistant)
             if decision.decision == "answer":
                 break
             search_query = normalize_text(decision.search_query)
-            time_prompt = Template(_TIME_EXTRACT_TEMPLATE).substitute(query=search_query).replace("null", '{"start": null, "end": null}')
+            time_prompt = Template(_TIME_EXTRACT_TEMPLATE.replace("null", '{"start": null, "end": null}')).substitute(query=search_query)
             time_messages = [{"role": "user", "content": time_prompt}]
             try:
                 time_reference = api.complete(time_messages, TimeReference)
@@ -312,8 +310,6 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
                     conversation.append(api.last_assistant)
                 conversation.append({"role": "user", "content": f"Time extraction failed validation: {type(exc).__name__}: {exc}. Correct this error on the next round."})
                 error_count += 1
-                if round_num == 5:
-                    raise
                 continue
             conversation.extend(time_messages)
             conversation.append(api.last_assistant)
@@ -350,7 +346,7 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
                         text_parts.append(f"[Retrieved semantic] {item.content}")
                     elif item.memory_type == "visual":
                         text_parts.append(f"[{transform_timestamp(str(item._start_ts))}] [{len(item.content)} visual frames of above episode]")
-                summary = "\n".join(memory._mix_facts_by_time(text_parts, fresh_facts))
+                summary = "\n".join(memory._mix_facts_by_time(text_parts, fresh_facts) if fresh_facts else text_parts)
                 if round_frame_count:
                     summary += f"\n[{round_frame_count} image frames retrieved]"
                 for fact in fresh_facts:
