@@ -14,6 +14,7 @@ import numpy as np
 import openai
 import wandb
 import weave
+from dotenv import load_dotenv
 from prometheus_client.parser import text_string_to_metric_families
 from pydantic import BaseModel, Field
 from wandb.sdk.lib.runid import generate_id
@@ -29,7 +30,7 @@ BASE_URL = "http://127.0.0.1:8103/v1"
 PD_URL = "http://127.0.0.1:8124"
 EMBEDDING_URL = "http://127.0.0.1:8114/v1"
 EMBEDDING_MODEL = "qwen3-vl-embedding-8b"
-RUBRIC = "Judge the candidate answer against the reference answer in the context of the question. Return an integer score from 0 through 5: 0 = wrong or no answer; 1 = a few correct details but the core question is unanswered; 2 = partially correct with major omissions or errors; 3 = the core is mostly correct but contains a material error; 4 = complete except for minor issues; 5 = fully correct and semantically equivalent, with no contradiction."
+RUBRIC = "Judge the candidate answer against the reference answer in the context of the question. Return an integer score from 0 through 5: 0 = wrong or no answer; 1 = a few correct details but the core question is unanswered; 2 = partially correct with major omissions or errors; 3 = the core is mostly correct but still has material omissions or errors; 4 = complete except for minor issues; 5 = fully correct and semantically equivalent, with no contradiction."
 COUNTERS = {"input_tokens": "vllm:prompt_tokens_total", "cached_tokens": "vllm:prompt_tokens_cached_total", "output_tokens": "vllm:generation_tokens_total"}
 GAUGES = ("vllm:num_requests_running", "vllm:num_requests_waiting")
 
@@ -191,15 +192,7 @@ class Evaluation:
             record = {"id": question["id"], "method": method, "attempt": attempt, "question_input": {"question": question["question"], "query_time": question["query_time"]}, "trace_dir": str(directory)}
             harness = None
             if self.args.method == "latency":
-                await self.snapshot(directory / "before-cache-clear.prom")
-                cache_trace = []
-                for url in (f"{PD_URL}/reset_prefix_cache", f"{BASE_URL.removesuffix('/v1')}/clear_encoder_cache"):
-                    print(f"CACHE_CLEAR request=POST {url}", flush=True)
-                    response = await self.http.post(url)
-                    cache_trace.append({"request": {"method": "POST", "url": url}, "status_code": response.status_code, "response": response.text})
-                    (directory / "cache-clear.json").write_text(json.dumps(cache_trace, indent=2) + "\n")
-                    response.raise_for_status()
-                await self.snapshot(directory / "after-cache-clear.prom")
+                await self.snapshot(directory / "before-question.prom")
             started = time.perf_counter()
             try:
                 if method == "magic":
@@ -308,6 +301,17 @@ class Evaluation:
 
     async def evaluate_method(self, method):
         if self.args.method == "latency":
+            directory = self.args.run_dir / method / f"cache-clear-{uuid4().hex}"
+            directory.mkdir(parents=True)
+            await self.snapshot(directory / "before-cache-clear.prom")
+            cache_trace = []
+            for url in (f"{PD_URL}/reset_prefix_cache", f"{BASE_URL.removesuffix('/v1')}/clear_encoder_cache"):
+                print(f"CACHE_CLEAR method={method} request=POST {url}", flush=True)
+                response = await self.http.post(url)
+                cache_trace.append({"request": {"method": "POST", "url": url}, "status_code": response.status_code, "response": response.text})
+                (directory / "cache-clear.json").write_text(json.dumps(cache_trace, indent=2) + "\n")
+                response.raise_for_status()
+            await self.snapshot(directory / "after-cache-clear.prom")
             if method == "magic":
                 await asyncio.to_thread(load_magic_artifacts, self.args.artifact_root)
             else:
@@ -349,7 +353,7 @@ class Evaluation:
         included = [result for result in results if result["category"] != "maintenance"]
         if not included:
             raise RuntimeError(f"No questions remain in the denominator for {method}")
-        summary = {"method": method, "requested": len(results), "denominator": len(included), "mean_score": sum(item["score"] for item in included) / len(included), "score5_fraction": sum(item["score"] == 5 for item in included) / len(included), "algorithm_failure_count": sum(item["category"] == "algorithm" for item in results), "maintenance_failure_count": sum(item["category"] == "maintenance" for item in results)}
+        summary = {"method": method, "requested": len(results), "denominator": len(included), "mean_score": sum(item["score"] for item in included) / len(included), "score5_count": sum(item["score"] == 5 for item in included), "score5_fraction": sum(item["score"] == 5 for item in included) / len(included), "algorithm_failure_count": sum(item["category"] == "algorithm" for item in results), "maintenance_failure_count": sum(item["category"] == "maintenance" for item in results)}
         if self.args.method == "latency":
             per_question = []
             for result in results:
@@ -391,6 +395,7 @@ async def main_async(args):
     args.artifact_root = args.artifact_root.resolve()
     args.run_dir = args.run_dir.resolve()
     repository = Path(__file__).resolve().parents[1]
+    load_dotenv(repository / ".env")
     if args.run_dir.is_relative_to(repository):
         relative = str(args.run_dir.relative_to(repository)) + "/"
         ignored = subprocess.run(["git", "check-ignore", "--quiet", relative], cwd=repository)
