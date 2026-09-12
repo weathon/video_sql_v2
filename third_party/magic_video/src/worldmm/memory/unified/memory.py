@@ -118,21 +118,14 @@ class UnifiedMemory:
         # Load event chains
         if event_chain_path:
             raw = json.load(open(event_chain_path))
-            def _parse_hms(t, as_seconds=False):
-                """Parse 'HH:MM:SS' or 'HH:MM'. If as_seconds, return total seconds
-                (MM-Lifelong float-second nodes); otherwise return
-                DHHMMSSFF time-component (HH*1e6+MM*1e4+SS*100) for EgoLife nodes."""
+            def _parse_hms(t):
+                """Parse an EgoLife HH:MM[:SS] event time into its HHMMSSFF component."""
                 m = re.fullmatch(r'(\d{1,2}):(\d{2})(?::(\d{2}))?', t)
                 if not m:
                     raise ValueError(f'Invalid event step time: {t!r}')
                 h, mn, s = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
-                if as_seconds:
-                    return h * 3600 + mn * 60 + s
                 return h * 1000000 + mn * 10000 + s * 100
             for ec in raw:
-                # Detect format: EgoLife steps carry "DAY*"; livestream steps don't.
-                # When no day prefix, node.start_ts is in float seconds, so step
-                # times must also be parsed as seconds to allow comparison.
                 steps_with_ts = []
                 for step in ec["steps"]:
                     day = step["day"]

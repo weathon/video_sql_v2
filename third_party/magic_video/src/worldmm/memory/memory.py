@@ -30,22 +30,7 @@ def _get_time_extract_llm():
     return _time_extract_llm
 
 
-_TIME_EXTRACT_TEMPLATE = (
-    'Extract the specific video timestamp or time range from the query below.\n'
-    'If the query mentions a specific time (e.g., "at 13:13", "from 35:52 to 36:41", '
-    '"between 37:30 and 38:05", "around the 45 minute mark"), return a JSON object '
-    'with start and end in seconds.\n'
-    'If no specific time is mentioned, return null.\n\n'
-    'For point references (e.g., "at 13:13"), use a 30-second window around it.\n\n'
-    'Examples:\n'
-    '- "What happens from 35:52-36:41?" -> {"start": 2152, "end": 2201}\n'
-    '- "What animal are they hunting at 13:13?" -> {"start": 763, "end": 823}\n'
-    '- "Who scored the winning goal?" -> null\n'
-    '- "What happens between 1:05:30 and 1:06:00?" -> {"start": 3930, "end": 3960}\n'
-    '- "What occurs around the 45 minute mark?" -> {"start": 2670, "end": 2730}\n\n'
-    'Query: $query\n\n'
-    'Return ONLY the JSON object or null, nothing else.'
-)
+_TIME_EXTRACT_TEMPLATE = 'Extract the specific video timestamp or time range from the query below.\nIf the query mentions a specific time (e.g., "at 13:13", "from 35:52 to 36:41", "between 37:30 and 38:05", "around the 45 minute mark"), return a JSON object with start and end in seconds.\nIf no specific time is mentioned, return null.\n\nFor point references (e.g., "at 13:13"), use a 30-second window around it.\n\nExamples:\n- "What happens from 35:52-36:41?" -> {"start": 2152, "end": 2201}\n- "What animal are they hunting at 13:13?" -> {"start": 763, "end": 823}\n- "Who scored the winning goal?" -> null\n- "What happens between 1:05:30 and 1:06:00?" -> {"start": 3930, "end": 3960}\n- "What occurs around the 45 minute mark?" -> {"start": 2670, "end": 2730}\n\nQuery: $query\n\nReturn ONLY the JSON object or null, nothing else.'
 
 
 def parse_time_reference(query: str) -> Optional[Tuple[float, float]]:
