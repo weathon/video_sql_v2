@@ -2,7 +2,7 @@
 
 本 worktree 比较 A1_JAKE 全部 500 道开放题。实现尚在验证中，正式结果尚未生成。源分支起点为 `f947154c0dc1a6825bdc56f85d7ba4bf294411cb`；MAGIC 上游版本见 [UPSTREAM](third_party/magic_video/UPSTREAM)。
 
-两边所有 LLM 请求均使用 `Qwen/Qwen3.8-27B-FP8`、`xhigh` 并保留 reasoning，不设置客户端 token 上限或采样参数。SQL 每次尝试最多 10 次共享调查调用，再允许一次关闭工具的最终回答；MAGIC 保留上游 5 轮检索及截止逻辑。两边使用同一个 0–5 分 judge。每批失败题只集中重试一次。
+两边所有 LLM 请求均使用 `Qwen/Qwen3.8-27B-FP8`、`xhigh` 并保留 reasoning，不设置客户端 token 上限或采样参数。SQL 每次尝试最多 10 次共享调查调用，再允许一次关闭工具的最终回答；MAGIC 保留上游 5 轮检索及截止逻辑，时间检索修正日期和秒数单位并应用 query time 截止，chain 相似度检索保留上游前 2000 字符规则。两边使用同一个 0–5 分 judge。每批失败题只集中重试一次。
 
 ## 环境与 artifacts
 

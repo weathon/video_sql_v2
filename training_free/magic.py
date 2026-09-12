@@ -8,7 +8,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from string import Template
 from types import SimpleNamespace
 from typing import Literal
 from uuid import uuid4
@@ -19,13 +18,14 @@ from openai import APIError, ContentFilterFinishReasonError, LengthFinishReasonE
 from pydantic import BaseModel, ValidationError, model_validator
 
 from training_free.normalize import normalize_text
+from training_free.index_schema import timestamp_seconds
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "third_party/magic_video/src"))
 
 from worldmm.llm.templates.memory_reasoning_unified_egolife import prompt_template as reasoning_template
 from worldmm.llm.templates.qa_egolife_chain import prompt_template as qa_template
 from worldmm.memory.episodic.memory import CaptionEntry
-from worldmm.memory.memory import WorldMemory, _TIME_EXTRACT_TEMPLATE
+from worldmm.memory.memory import WorldMemory
 from worldmm.memory.unified.memory import UnifiedMemory
 from worldmm.memory.unified.nodes import NodeType
 from worldmm.memory.utils import RetrievedItem, transform_timestamp
@@ -240,7 +240,10 @@ def load_magic_artifacts(artifact_root):
                 if not np.array_equal(node.visual_embedding, visual_embeddings[original_path]):
                     raise ValueError(f"Graph visual embedding differs from offline visual_embeddings.pkl: {node.id}")
         clips = json.loads((artifact_root / "clip-map.json").read_text())
-        ARTIFACTS[artifact_root] = {"graph": memory._full_graph, "topics": memory._topic_facts, "events": memory._event_chains, "captions": captions, "clips": clips}
+        frame_rates = {source["fps"] for source in json.loads((artifact_root / "media-map.json").read_text())["sources"]}
+        if len(frame_rates) != 1:
+            raise ValueError(f"EgoLife caption timestamp conversion requires the verified common source frame rate: {frame_rates}")
+        ARTIFACTS[artifact_root] = {"graph": memory._full_graph, "topics": memory._topic_facts, "events": memory._event_chains, "captions": captions, "clips": clips, "fps": frame_rates.pop()}
         return ARTIFACTS[artifact_root]
 
 
@@ -249,11 +252,28 @@ class MagicMemory(WorldMemory):
 
     def __init__(self, api, artifact_root, artifacts):
         self.episodic_memory = SimpleNamespace(captions=artifacts["captions"])
+        self.fps = artifacts["fps"]
         self.unified_memory = UnifiedMemory(api, str(artifact_root / "magic/graph.pkl"), chain_mode="facts")
         self.unified_memory._full_graph = artifacts["graph"]
         self.unified_memory._topic_facts = artifacts["topics"]
         self.unified_memory._event_chains = artifacts["events"]
         self.visual_memory = MagicFrames(api, artifact_root, artifacts["clips"])
+
+    def retrieve_by_time(self, start_sec, end_sec):
+        results = []
+        self.temporal_records = []
+        cutoff = self.unified_memory.indexed_time
+        for granularity in ("30sec", "3min"):
+            for caption in self.episodic_memory.captions[granularity]:
+                start_ts, end_ts = caption.timestamp_int
+                if start_ts <= 0 or end_ts > cutoff:
+                    continue
+                start = timestamp_seconds(start_ts, self.fps)
+                end = timestamp_seconds(end_ts, self.fps)
+                if end > start_sec and start < end_sec and caption.text.strip():
+                    self.temporal_records.append({"caption_id": caption.id, "granularity": granularity, "start_ts": start_ts, "end_ts": end_ts, "start_s": start, "end_s": end, "text": caption.text})
+                    results.append(f"[{transform_timestamp(str(start_ts))} - {transform_timestamp(str(end_ts))}] ({granularity})\n{caption.text}")
+        return "\n\n".join(results)
 
 
 def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path, base_url: str, embedding_url: str) -> tuple[str, float]:
@@ -303,7 +323,7 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
             if decision.decision == "answer":
                 break
             search_query = normalize_text(decision.search_query)
-            time_prompt = Template(_TIME_EXTRACT_TEMPLATE.replace("null", '{"start": null, "end": null}')).substitute(query=search_query)
+            time_prompt = f'Extract the specific clock time or time range from this EgoLife search query. Dates are DAY1 through DAY7; HH:MM means hours and minutes. Return start and end as seconds since DAY1 00:00:00, calculated as (day - 1) * 86400 + hour * 3600 + minute * 60 + second. Resolve today and yesterday relative to the current query date; a clock time without a date refers to that date. For a point reference use 30 seconds on either side. For example, DAY2 at 00:01 gives start=86430 and end=86490; DAY3 from 09:00 to 09:01 gives start=205200 and end=205260. If there is no specific clock time or time range, return start=null and end=null. Current query time: {transform_timestamp(str(query_time))}. Search query: {search_query}'
             time_messages = [{"role": "user", "content": time_prompt}]
             try:
                 time_reference = api.complete(time_messages, TimeReference)
@@ -325,7 +345,7 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
                     if content:
                         retrieved_items.append(RetrievedItem("episodic", content, search_query, round_num))
                     round_history.append({"round_num": round_num, "decision": "search", "memory_type": "temporal", "search_query": search_query, "retrieved_content": content if content else "[No results]"})
-                    trace["response"] = {"temporal_content": content}
+                    trace["response"] = {"temporal_content": content, "captions": memory.temporal_records}
                     continue
                 raw_results = memory.unified_memory.retrieve(search_query, top_k=16, target_node_types=[NodeType.EPISODE, NodeType.SEMANTIC, NodeType.VISUAL_CLIP], alpha=0.7, seed_top_k=5, damping=0.85, bm25_weight=0.3)
                 trace["response"] = {"raw_results": [{"id": node.id, "node_type": node.node_type.value, "start_ts": node.start_ts, "end_ts": node.end_ts, "text": node.text, "metadata": node.metadata, "score": score} for node, score in raw_results]}

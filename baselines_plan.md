@@ -22,7 +22,7 @@ EgoLifeQA视频: /raid/wg25r/egolife/A1_JAKE
 
 ### 运行
 1. 参考INFRA.txt的方式, 启动一个新的vllm server，使用新的Docker容器名，不复用现有容器名, TP=2, encoder分离, encoder和embedding放在一个vram空闲计算量偏少的GPU. 服务器max num seq变成50写一个监控脚本, 监控总in/cache/out token消耗. 等效节省指这一批query如果使用API会产生的费用，包含该批query实际所有LLM请求的三种token，价格均为USD per 1M tokens：in $0.15、out $0.47、cache $0.016. in指未命中缓存的输入token，cache指缓存命中的输入token，out指输出token；若API返回的input总数包含cache，先扣除cache得到in. 费用（USD）= (in × 0.15 + out × 0.47 + cache × 0.016) / 1,000,000，记录在一个log文件里面.
-2. 修改MAGIC-Video的harness代码, 使其使用http请求embedding而不是线程内, 这样可以避免死锁. 同时修改llm端点使用本地qwen
+2. 修改MAGIC-Video的harness代码, 使其使用http请求embedding而不是线程内, 这样可以避免死锁. 同时修改llm端点使用本地qwen. 时间检索修正日期与秒数单位，并应用query time截止；保留时间检索分支. chain相似度检索保留上游前2000字符规则.
 3. 同时修改MAGIC-VIDEO的harness. 因为其并发时 egolife 会开很多线程，每个并发里 OMP/MKL/BLAS/NumExpr 又各自用满所有核心，线程数暴涨会把机器搞崩（有时还会系统 OOM，连带 NVIDIA 驱动崩掉导致 NCCL 不可用）。解决：用线程环境变量把 OMP/MKL/OPENBLAS/NUMEXPR/VECLIB 各限制到 10 线程，并记住以后使用时用 systemd 限制最大内存（本次 剩余内存的20%）。
 4. 启动MAGIC-Video的harness, 并发20, 回答每个问题, 每个问题回答1次. 用llm judge(judge获得问题, 正确答案, 和模型答案)对每个回答打分, 0-5分, 看有多对. 给出rubic每个分数代表什么确定稳定性
 5. 记录下平均分数和准确度(完全对5分的比例)
