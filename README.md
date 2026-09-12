@@ -8,6 +8,13 @@
 
 本机目录为 `/raid/wg25r/video_sql_trace2skill`，独立环境为 `.venv_baselines`，使用本目录的 `.env`。W&B/Weave 继续使用项目配置。HF cache 位于 `/raid/huggingface`。
 
+重建本次使用的 CPU 检索环境（模型推理由独立容器提供）：
+
+```bash
+uv venv .venv_baselines --python 3.13
+uv pip install --python .venv_baselines/bin/python --index https://download.pytorch.org/whl/cpu --index https://pypi.org/simple --index-strategy unsafe-best-match -r training_free/requirements.txt
+```
+
 所有数据位于 `/raid/videosql-video-artifacts`。目标 private dataset 为 [weathon/egolife-a1-jake-magic-videosql-qwen3vl8b](https://huggingface.co/datasets/weathon/egolife-a1-jake-magic-videosql-qwen3vl8b)；上传完成状态记录在 artifacts 根目录的 `upload-result.json`，不能仅凭此链接判断已上传。目录、字段和查询示例见 [索引说明](notes/index.md)。
 
 在另一个已安装本项目依赖的环境中，使用获准访问该 private repo 的项目 `HF_TOKEN` 下载普通 artifact 文件：

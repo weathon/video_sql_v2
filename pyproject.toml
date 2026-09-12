@@ -28,6 +28,7 @@ dependencies = [
     "pyarrow",
     "huggingface_hub",
     "prometheus-client",
+    "nvidia-ml-py",
 ]
 
 [dependency-groups]
