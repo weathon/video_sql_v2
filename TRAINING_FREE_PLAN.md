@@ -1,5 +1,7 @@
 # Training-free Video Understanding Harness：完整实施与交接计划
 
+本文保留旧任务的实施记录；当前 EgoLifeQA 计划见 [baselines_plan.md](baselines_plan.md)，当前 artifacts 和索引见 [notes/index.md](notes/index.md)。本文中的旧数据、模型和运行设置不用于本次评测。
+
 ## 1. 目标、已确认决策与当前状态
 
 将现有项目改为只使用初始静态 skills 的 training-free 视频问答 harness，删除训练链路，修复历史 traces 中影响推理的已确认问题，完成独立 diff 审查。

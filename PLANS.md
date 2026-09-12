@@ -1,6 +1,6 @@
 # Training-free Video Understanding Harness
 
-当前实施与接手计划见 [TRAINING_FREE_PLAN.md](TRAINING_FREE_PLAN.md)。旧训练部署、结果和事故记录见 [notes/DOCS_AND_HANDOFF.md](notes/DOCS_AND_HANDOFF.md) 的历史部分。既有实验结果及训练后 skills 只保留追溯，不作为新评测的恢复依据。
+以下为旧 MM-Lifelong 任务记录。当前 EgoLifeQA 实施计划见 [baselines_plan.md](baselines_plan.md)，使用说明和唯一当前索引说明分别见 [README](README.md) 与 [notes/index.md](notes/index.md)。以下数据路径、模型及运行设置不用于本次评测。
 
 ## 方法与运行数据
 

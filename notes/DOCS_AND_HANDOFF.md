@@ -1,6 +1,6 @@
 # 问答 Harness 与 Trace2Skill baseline
 
-当前 worktree 为 `/raid/wg25r/video_sql_2`，分支 `codex/trace2skill-baseline`。本地推理支持已在 `60c84b62` 留存快照，随后移除；当前仅保留 API 路径，暂停等待用户向下一位 agent 指定 API 配置。当前交接见 [TRACE2SKILL_API_HANDOFF.md](TRACE2SKILL_API_HANDOFF.md)；旧 NVFP4 和 Luna 记录分别保留在 [TRACE2SKILL_NVFP4_HANDOFF.md](TRACE2SKILL_NVFP4_HANDOFF.md) 和 [TRACE2SKILL_LUNA_HANDOFF.md](TRACE2SKILL_LUNA_HANDOFF.md)。
+以下为旧 Trace2Skill 任务的历史交接，路径、schema、模型和运行设置不用于当前 EgoLifeQA 评测。当前入口见 [README](../README.md)，artifacts 和索引的当前说明统一见 [index.md](index.md)。旧 API、NVFP4 和 Luna 记录分别保留在 [TRACE2SKILL_API_HANDOFF.md](TRACE2SKILL_API_HANDOFF.md)、[TRACE2SKILL_NVFP4_HANDOFF.md](TRACE2SKILL_NVFP4_HANDOFF.md) 和 [TRACE2SKILL_LUNA_HANDOFF.md](TRACE2SKILL_LUNA_HANDOFF.md)。
 
 这个 harness 使用静态检索技能回答长视频问题。主 agent 在预先构建的 DuckDB 记忆库和 embedding 索引中定位线索，按需调用视觉 agent 检查源视频，再提交开放式答案。评估入口为每道题运行多个独立 rollout，并用 judge 评分。
 
