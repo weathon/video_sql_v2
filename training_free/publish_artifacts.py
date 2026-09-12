@@ -41,12 +41,12 @@ def main():
     api.create_repo(repo_id=repo_id, repo_type='dataset', private=True, exist_ok=True)
     if not api.repo_info(repo_id, repo_type='dataset').private:
         raise RuntimeError(f'Dataset is not private: {repo_id}')
-    api.upload_large_folder(repo_id=repo_id, repo_type='dataset', folder_path=ROOT, private=True, allow_patterns=FILES + [directory + '/*' for directory in DIRECTORIES], num_workers=10, print_report_every=3600)
+    api.upload_folder(repo_id=repo_id, repo_type='dataset', folder_path=ROOT, allow_patterns=FILES + [directory + '/*' for directory in DIRECTORIES])
     remote = {item.path: item.size for item in api.list_repo_tree(repo_id, repo_type='dataset', recursive=True) if isinstance(item, RepoFile)}
     for name, path in files.items():
         if remote[name] != path.stat().st_size:
             raise ValueError(f'Uploaded size differs: {name}: local={path.stat().st_size} remote={remote[name]}')
-    for name in ('README.md', 'INDEX.md', 'questions.json', 'latency-ids.json', 'media-map.json'):
+    for name in ('README.md', 'INDEX.md', 'RESULTS.md', 'RESULTS.json', 'questions.json', 'latency-ids.json', 'media-map.json'):
         downloaded = hf_hub_download(repo_id=repo_id, repo_type='dataset', filename=name, token=token, cache_dir='/raid/huggingface')
         if Path(downloaded).read_bytes() != files[name].read_bytes():
             raise ValueError(f'Uploaded content differs: {name}')
