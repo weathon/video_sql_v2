@@ -10,13 +10,14 @@ from huggingface_hub.hf_api import RepoFile
 
 ROOT = Path('/raid/videosql-video-artifacts')
 REPOSITORY = Path(__file__).resolve().parents[1]
-FILES = ['README.md', 'INDEX.md', 'questions.json', 'qa-rule-audit.json', 'latency-ids.json', 'node-counts.json', 'media-map.json', 'index.duckdb', 'magic/graph.pkl', 'magic/visual_embeddings.pkl']
+FILES = ['README.md', 'INDEX.md', 'MAGIC_UPSTREAM.txt', 'questions.json', 'qa-rule-audit.json', 'latency-ids.json', 'node-counts.json', 'media-map.json', 'index.duckdb', 'magic/graph.pkl', 'magic/visual_embeddings.pkl']
 DIRECTORIES = ['questions', 'embeddings', 'magic', 'videos', 'video-metadata']
 
 
 def main():
-    (ROOT / 'README.md').write_text((REPOSITORY / 'README.md').read_text().replace('(notes/index.md)', '(INDEX.md)'))
-    (ROOT / 'INDEX.md').write_text((REPOSITORY / 'notes/index.md').read_text().replace('(../README.md)', '(README.md)'))
+    (ROOT / 'README.md').write_text((REPOSITORY / 'README.md').read_text().replace('(notes/index.md)', '(INDEX.md)').replace('(third_party/magic_video/UPSTREAM)', '(MAGIC_UPSTREAM.txt)'))
+    (ROOT / 'INDEX.md').write_text((REPOSITORY / 'notes/index.md').read_text().replace('(../README.md)', '(README.md)').replace('third_party/magic_video/UPSTREAM', 'MAGIC_UPSTREAM.txt'))
+    (ROOT / 'MAGIC_UPSTREAM.txt').write_text((REPOSITORY / 'third_party/magic_video/UPSTREAM').read_text())
     for name in FILES:
         if not (ROOT / name).is_file():
             raise FileNotFoundError(ROOT / name)
