@@ -110,9 +110,9 @@ class MagicAPI:
             if not trace["response"]["choices"]:
                 raise MagicOutputError("MAGIC model returned no choices")
             message = trace["response"]["choices"][0]["message"]
-            if not isinstance(message.get("reasoning_content"), str) or not message["reasoning_content"].strip():
-                raise RuntimeError("MAGIC model response is missing actual reasoning_content")
-            self.last_assistant = {"role": "assistant", "content": message["content"], "reasoning_content": message["reasoning_content"]}
+            if not isinstance(message['reasoning'], str) or not message['reasoning'].strip():
+                raise RuntimeError("MAGIC model response is missing actual reasoning")
+            self.last_assistant = {"role": "assistant", "content": message["content"], "reasoning": message["reasoning"]}
             completion = raw.parse()
             if completion.choices[0].message.refusal:
                 raise MagicOutputError(completion.choices[0].message.refusal)

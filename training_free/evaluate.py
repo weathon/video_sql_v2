@@ -118,7 +118,7 @@ def classify_failure(record):
         category, cause = "maintenance", "implementation_error"
     elif types & {"MemoryError", "OutOfMemoryError"} or any(text in lower for text in ("cuda out of memory", "cuda error", "device-side assert", "nccl error", "engine is dead")):
         category, cause = "maintenance", "hardware_or_engine_failure"
-    elif any(text in message for text in ("Database/embedding IDs differ", "Missing offline", "Graph visual embedding differs", "Invalid video frame metadata", "Frame decode failed", "missing actual reasoning_content", "completed response did not include usage")):
+    elif any(text in message for text in ("Database/embedding IDs differ", "Missing offline", "Graph visual embedding differs", "Invalid video frame metadata", "Frame decode failed", "missing actual reasoning", "completed response did not include usage")):
         category, cause = "maintenance", "invalid_required_artifact_or_service_response"
     return {"category": category, "cause": cause, "evidence": evidence}
 
@@ -254,9 +254,9 @@ class Evaluation:
                 message = response.choices[0].message
                 if response.choices[0].finish_reason != "stop" or message.refusal or message.parsed is None:
                     raise ValueError(f"Judge did not return a completed judgment: {trace['response']}")
-                reasoning = trace["response"]["choices"][0]["message"]["reasoning_content"]
+                reasoning = trace["response"]["choices"][0]["message"]["reasoning"]
                 if not isinstance(reasoning, str) or not reasoning.strip():
-                    raise ValueError("Judge response has no actual reasoning_content")
+                    raise ValueError("Judge response has no actual reasoning")
                 outcome.update({"outcome": "scored", "score": message.parsed.score})
                 (question_root / "judgment.json").write_text(json.dumps(outcome, ensure_ascii=False, indent=2) + "\n")
                 print(f"JUDGE method={method} id={question['id']} attempt={attempt} score={outcome['score']}", flush=True)
