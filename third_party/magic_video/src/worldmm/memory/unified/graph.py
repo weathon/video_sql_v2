@@ -419,7 +419,7 @@ class MultimodalGraph:
     # Step F: Build igraph (call after filter_by_time or on full graph)
     # ------------------------------------------------------------------
 
-    def build_igraph(self) -> None:
+    def build_igraph(self, cache_embeddings: bool = True) -> None:
         """
         Convert node/edge lists to an igraph Graph for PPR queries.
         Also caches text and visual embedding matrices.
@@ -491,7 +491,7 @@ class MultimodalGraph:
 
         self._text_emb_matrix = torch.tensor(
             np.stack(text_embs), dtype=torch.float32, device=device
-        )
+        ) if cache_embeddings else None
 
         vis_ids  = []
         vis_embs = []
@@ -502,7 +502,7 @@ class MultimodalGraph:
                 vis_embs.append(node.visual_embedding)
 
         self._vis_node_ids = vis_ids
-        if vis_embs:
+        if vis_embs and cache_embeddings:
             self._vis_emb_matrix = torch.tensor(
                 np.stack(vis_embs), dtype=torch.float32, device=device
             )

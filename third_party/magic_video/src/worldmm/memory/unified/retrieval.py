@@ -26,6 +26,8 @@ def build_reset_vector(
     alpha: float = 0.7,
     seed_top_k: int = 5,
     bm25_weight: float = 0.3,
+    text_sims: Optional[np.ndarray] = None,
+    vis_sims: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     Build the PPR reset vector by combining seed channels:
@@ -40,8 +42,7 @@ def build_reset_vector(
     device = graph._text_emb_matrix.device if graph._text_emb_matrix is not None else "cpu"
 
     # Pre-compute text similarities
-    text_sims = None
-    if graph._text_emb_matrix is not None:
+    if text_sims is None and graph._text_emb_matrix is not None:
         q_text = embedding_model.encode_text(query)
         if len(q_text.shape) == 1:
             q_text = q_text[None, :]
@@ -75,14 +76,15 @@ def build_reset_vector(
                     reset[idx] += bm25_weight * val
 
     # ---- Visual seeds ----
-    if graph._vis_emb_matrix is not None and alpha < 1.0 and len(graph._vis_node_ids) > 0:
-        q_vis = embedding_model.encode_vis_query(query)
-        if len(q_vis.shape) == 1:
-            q_vis = q_vis[None, :]
-        q_vis_t = torch.tensor(q_vis, dtype=torch.float32, device=device)
-        vis_sims = F.cosine_similarity(
-            q_vis_t, graph._vis_emb_matrix, dim=1
-        ).cpu().numpy()
+    if (vis_sims is not None or graph._vis_emb_matrix is not None) and alpha < 1.0 and len(graph._vis_node_ids) > 0:
+        if vis_sims is None:
+            q_vis = embedding_model.encode_vis_query(query)
+            if len(q_vis.shape) == 1:
+                q_vis = q_vis[None, :]
+            q_vis_t = torch.tensor(q_vis, dtype=torch.float32, device=device)
+            vis_sims = F.cosine_similarity(
+                q_vis_t, graph._vis_emb_matrix, dim=1
+            ).cpu().numpy()
 
         k_vis = min(seed_top_k, len(graph._vis_node_ids))
         top_vis_local = np.argsort(vis_sims)[-k_vis:]
@@ -191,15 +193,16 @@ def _baseline_retrieve(
     graph, query, embedding_model, top_k, target_node_types,
     alpha, seed_top_k, damping,
     edge_weight_attr="weight", bm25_weight=0.3,
+    text_sims=None, vis_sims=None,
 ) -> List[Tuple[GraphNode, float]]:
     """Baseline: PPR x cosine reranking."""
     reset = build_reset_vector(
         graph, query, embedding_model, alpha, seed_top_k,
-        bm25_weight=bm25_weight,
+        bm25_weight=bm25_weight, text_sims=text_sims, vis_sims=vis_sims,
     )
 
     ppr_scores = _run_ppr(graph, reset, damping, edge_weight_attr)
-    text_sims = _compute_text_sims(graph, query, embedding_model)
+    text_sims = _compute_text_sims(graph, query, embedding_model) if text_sims is None else (text_sims + 1.0) / 2.0
 
     results: List[Tuple[GraphNode, float]] = []
     for idx, score in enumerate(ppr_scores):
@@ -229,6 +232,8 @@ def cross_modal_retrieve(
     damping: float = 0.85,
     choices: Optional[Dict[str, str]] = None,
     bm25_weight: float = 0.3,
+    text_sims: Optional[np.ndarray] = None,
+    vis_sims: Optional[np.ndarray] = None,
     **kwargs,
 ) -> List[Tuple[GraphNode, float]]:
     """
@@ -239,5 +244,5 @@ def cross_modal_retrieve(
 
     return _baseline_retrieve(
         graph, query, embedding_model, top_k, target_node_types,
-        alpha, seed_top_k, damping, "weight", bm25_weight,
+        alpha, seed_top_k, damping, "weight", bm25_weight, text_sims, vis_sims,
     )
