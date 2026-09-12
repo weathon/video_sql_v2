@@ -17,7 +17,7 @@ import numpy as np
 from PIL import Image
 
 from .graph import MultimodalGraph
-from .nodes import GraphNode, NodeType
+from .nodes import GraphNode, NodeType, _fmt_ts
 from .retrieval import cross_modal_retrieve
 from ..utils import RetrievedItem
 
@@ -106,7 +106,7 @@ class UnifiedMemory:
         # Load topic chain facts
         self._topic_facts = {}   # entity → [{"time": ..., "fact": ...}]
 
-        if topic_chain_facts_path and os.path.exists(topic_chain_facts_path):
+        if topic_chain_facts_path:
             raw = json.load(open(topic_chain_facts_path))
             for entity, data in raw.items():
                 if data.get("has_lifecycle") and data.get("facts"):
@@ -115,7 +115,7 @@ class UnifiedMemory:
                         f"{sum(len(f) for f in self._topic_facts.values())} total facts")
 
         # Load event chains
-        if event_chain_path and os.path.exists(event_chain_path):
+        if event_chain_path:
             raw = json.load(open(event_chain_path))
             def _parse_hms(t, as_seconds=False):
                 """Parse 'HH:MM:SS' or 'HH:MM'. If as_seconds, return total seconds
@@ -475,7 +475,7 @@ class UnifiedMemory:
             if topic_candidate_facts:
                 try:
                     labels = list(topic_candidate_facts.keys())
-                    texts = [" ".join(topic_candidate_facts[lbl])[:2000] for lbl in labels]
+                    texts = [" ".join(topic_candidate_facts[lbl]) for lbl in labels]
                     all_emb_texts = [query_text] + texts
                     embeddings = embedding_model.encode_text(all_emb_texts)
                     query_emb = embeddings[0]
@@ -521,6 +521,7 @@ class UnifiedMemory:
 
                 except Exception as e:
                     logger.warning(f"Topic embedding filter failed: {e}")
+                    raise
 
             # Also drop candidates with no facts (nothing to embed)
             no_facts_topics = _topic_embedding_set - set(topic_candidate_facts.keys())
@@ -561,7 +562,7 @@ class UnifiedMemory:
             if candidate_facts_text:
                 try:
                     labels = list(candidate_facts_text.keys())
-                    texts = [" ".join(candidate_facts_text[lbl])[:2000] for lbl in labels]
+                    texts = [" ".join(candidate_facts_text[lbl]) for lbl in labels]
                     all_texts = [query_text] + texts
                     embeddings = embedding_model.encode_text(all_texts)
                     query_emb = embeddings[0]
@@ -632,6 +633,7 @@ class UnifiedMemory:
 
                 except Exception as e:
                     logger.warning(f"Event-chain embedding fallback failed: {e}")
+                    raise
 
         # Filter event-chain facts to only accepted chains
         all_facts = [f for f in all_facts
@@ -682,17 +684,13 @@ class UnifiedMemory:
         logger.info(f"Building active subgraph until_time={until_time}…")
         sub = self._full_graph.filter_by_time(until_time)
 
-        # Ensure all text embeddings are present (should already be pre-computed,
-        # but re-compute any that are missing).
-        # Lock protects GPU model from concurrent access by parallel workers.
+        # Offline graph construction must provide every required embedding.
         missing = [nid for nid, n in sub.nodes.items() if n.text_embedding is None]
         if missing:
-            logger.warning(f"{len(missing)} nodes missing text embeddings; computing now…")
-            texts = [sub.nodes[nid].text for nid in missing]
-            with _embed_lock:
-                embs = self.embedding_model.encode_text(texts)
-            for nid, emb in zip(missing, embs):
-                sub.nodes[nid].text_embedding = emb
+            raise ValueError(f"Missing offline text embeddings: {len(missing)} nodes; first={missing[0]}")
+        missing_visual = [nid for nid, n in sub.nodes.items() if n.node_type == NodeType.VISUAL_CLIP and n.visual_embedding is None]
+        if missing_visual:
+            raise ValueError(f"Missing offline visual embeddings: {len(missing_visual)} nodes; first={missing_visual[0]}")
 
         with _embed_lock:
             sub.build_igraph()
@@ -825,9 +823,9 @@ class UnifiedMemory:
                 remaining = max_total_frames - total_frames
                 if remaining <= 0:
                     continue
-                video_path = node.metadata.get("video_path")
+                video_path = node.metadata["video_path"]
                 if not video_path:
-                    continue
+                    raise ValueError(f"Missing video_path for visual node {node.id}")
                 clip_cap = min(max_frames_per_clip, remaining)
                 start_sec = node.metadata.get("start_sec")
                 end_sec = node.metadata.get("end_sec")

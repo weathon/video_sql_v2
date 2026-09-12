@@ -1,6 +1,7 @@
 """
 Episodic Memory module for WorldMM.
 """
+from __future__ import annotations
 
 import json
 import logging
@@ -9,8 +10,6 @@ from dataclasses import dataclass
 
 from ...llm import LLMModel, PromptTemplateManager
 from ...embedding import EmbeddingModel
-
-from hipporag import HippoRAG
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +136,8 @@ class EpisodicMemory:
     
     def _get_or_create_hipporag(self, granularity: str) -> HippoRAG:
         """Get or create HippoRAG instance for a granularity level."""
+        from hipporag import HippoRAG
+
         if granularity not in self.hipporag:
             self.hipporag[granularity] = HippoRAG(
                 save_dir=f"{self.cache_dir}/{granularity}",

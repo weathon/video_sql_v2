@@ -510,17 +510,13 @@ class MultimodalGraph:
             self._vis_emb_matrix = None
 
         # ---- BM25 index for keyword-based seed selection ----
-        try:
-            from rank_bm25 import BM25Okapi
-            corpus_tokens = []
-            for nid in node_ids:
-                node = self.nodes[nid]
-                text = node.display_text() if hasattr(node, 'display_text') else node.text
-                corpus_tokens.append(text.lower().split())
-            self._bm25 = BM25Okapi(corpus_tokens)
-        except ImportError:
-            logger.warning("rank_bm25 not installed; BM25 seeding disabled.")
-            self._bm25 = None
+        from rank_bm25 import BM25Okapi
+        corpus_tokens = []
+        for nid in node_ids:
+            node = self.nodes[nid]
+            text = node.display_text() if hasattr(node, 'display_text') else node.text
+            corpus_tokens.append(text.lower().split())
+        self._bm25 = BM25Okapi(corpus_tokens)
 
         logger.info(
             f"igraph built: {n} nodes, {len(edge_list)} edges, "
