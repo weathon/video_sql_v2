@@ -161,8 +161,12 @@ class HarnessContext:
         for source in self.sources:
             source["path"] = str(self.media_map.parent / source["relative_path"])
         source_times = [item["timeline_start_s"] for item in self.sources]
-        coarse = timestamp_seconds(self.query_time, 1e9)
-        source = self.sources[max(0, int(np.searchsorted(source_times, coarse, side="right")) - 1)]
+        time = str(self.query_time).zfill(9)
+        coarse = (int(time[0]) - 1) * 86400 + int(time[1:3]) * 3600 + int(time[3:5]) * 60 + int(time[5:7])
+        source_index = int(np.searchsorted(source_times, coarse, side="right")) - 1
+        if source_index < 0:
+            raise ValueError("Question time precedes the source media")
+        source = self.sources[source_index]
         self.query_time_s = timestamp_seconds(self.query_time, source["fps"])
 
     def reserve_model_call(self, role: str) -> None:
@@ -494,10 +498,7 @@ async def run_stream(
         async def invoke_tool(tool_context: ToolContext, arguments: str, original=tool.on_invoke_tool):
             context.tool_counter += 1
             tool_id = context.tool_counter
-            if answering and context.answer_context_reached and tool_context.tool_name != "submit_answer":
-                output = json.dumps({"error": f"Context reached {ANSWER_CONTEXT_LIMIT} tokens. This tool was not executed. Return the final answer from existing evidence immediately."})
-            else:
-                output = await original(tool_context, arguments)
+            output = await original(tool_context, arguments)
             record = {"tool_id": tool_id, "call_id": tool_context.tool_call_id,
                       "name": tool_context.tool_name, "arguments": arguments,
                       "original_output": stripped_json(output), "replacements": []}
@@ -535,7 +536,7 @@ async def run_stream(
     else:
         agent = agent.clone(tools=wrapped_tools)
     answering = agent.name == "memory-retrieval" and label == "answer"
-    max_turns = None if answering else 100
+    max_turns = None
     header = {
         "agent": {
             "name": agent.name,
@@ -589,17 +590,6 @@ async def run_stream(
                         item = {**item, "output": output}
                 items.append(item)
             latest_tool_id = next((context.tool_ids[item["call_id"]] for item in reversed(items) if item.get("type") == "function_call_output"), None)
-            if answering and watch_context:
-                count = await context.client.responses.input_tokens.count(
-                    model=context.model.model, instructions=data.model_data.instructions, input=items,
-                    reasoning=agent.model_settings.reasoning,
-                    tools=[{"type": "function", "name": tool.name, "description": tool.description, "parameters": tool.params_json_schema, "strict": tool.strict_json_schema} for tool in agent.tools],
-                )
-                context.answer_context_tokens = count.input_tokens
-                context.answer_context_reached |= count.input_tokens >= ANSWER_CONTEXT_LIMIT
-                events.write(json.dumps({"type": "answer_context_count", "input_tokens": count.input_tokens, "limit": ANSWER_CONTEXT_LIMIT}) + "\n")
-                if context.answer_context_reached:
-                    raise AnswerContextLimit(f"Investigation context reached {ANSWER_CONTEXT_LIMIT} tokens")
             request = {"agent": agent.name}
             if agent.name == "memory-retrieval":
                 # Persist the exact caller-visible image bytes used by this request.
@@ -639,6 +629,7 @@ async def run_stream(
                     events.write(json.dumps({"type": "prefix_verified", "input": snapshot["input"]}, ensure_ascii=False) + "\n")
                     context.expected_prefix = None
                 request["snapshot"] = snapshot
+            context.reserve_model_call(agent.name)
             if answering:
                 context.answer_turns += 1
             REQUEST_TRACE.set(request)
@@ -649,17 +640,10 @@ async def run_stream(
         events.write(json.dumps({
             "type": "run_start", **header, "input": stripped_json(input_items),
         }, ensure_ascii=False) + "\n")
-        class AnswerBudgetHooks(RunHooks):
-            async def on_llm_end(self, run_context, current_agent, response):
-                if answering and watch_context:
-                    context.answer_context_tokens = response.usage.input_tokens + response.usage.output_tokens
-                    context.answer_context_reached |= context.answer_context_tokens >= ANSWER_CONTEXT_LIMIT
-
         result = Runner.run_streamed(
             agent,
             input_items,
             max_turns=max_turns,
-            hooks=AnswerBudgetHooks(),
             run_config=dataclasses.replace(context.run_config, call_model_input_filter=model_input),
         )
         try:
@@ -686,22 +670,12 @@ async def run_stream(
                 response = event.data.response
                 if response.usage is None:
                     raise RuntimeError("completed response did not include usage")
-                remaining = (
-                    context.context_limit
-                    - response.usage.input_tokens
-                    - response.usage.output_tokens
-                )
-                if answering and watch_context and response.usage.input_tokens + response.usage.output_tokens >= ANSWER_CONTEXT_LIMIT:
-                    context.answer_context_reached = True
-                    result.cancel(mode="after_turn")
-                    context_triggered = True
-                elif watch_context and not answering and remaining <= context.compaction_threshold:
-                    result.cancel(mode="after_turn")
-                    context_triggered = True
-        except AnswerContextLimit:
+                context.response_usage[response.id] = {"response_id": response.id, "agent": agent.name, "model": response.model, "usage": response.usage.model_dump(mode="json"), "status": response.status}
+        except InvestigationBudgetExhausted:
             answer_limit_reached = True
             context_triggered = True
-            events.write(json.dumps({"type": "answer_context_limit", "tokens": context.answer_context_tokens, "limit": ANSWER_CONTEXT_LIMIT}) + "\n")
+            context.answer_context_reached = True
+            events.write(json.dumps({"type": "investigation_budget_exhausted", "investigation_calls": context.investigation_calls, "final_calls": context.final_calls}) + "\n")
         except BaseException as error:
             caught = error
             if isinstance(error, asyncio.CancelledError):
@@ -772,6 +746,8 @@ async def sample_frames(
     call_id: str,
     remaining_images: int,
 ) -> list[tuple[dict[str, Any], bytes]]:
+    if end_s > context.query_time_s:
+        raise ValueError(f"Video interval extends beyond query time {context.query_time_s}")
     if not context.sources[0]["timeline_start_s"] <= start_s < end_s <= context.sources[-1]["timeline_end_s"]:
         raise ValueError("sample interval extends beyond available source media")
     if not math.isfinite(fps) or fps <= 0:
@@ -1060,7 +1036,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         prompt = json.dumps({"question": normalize_text(question), "start_s": start_s, "end_s": end_s, "fps": fps, "frame_times_s": [frame["time_s"] for frame, _ in sampled]}, ensure_ascii=False)
         if context.clip_qa_video:
             content = [{"type": "text", "text": prompt}, {"type": "video_url", "video_url": {"url": "data:video/jpeg;base64," + ",".join(encoded_frames)}}]
-            request = {"model": context.model.model, "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}], "extra_body": {"media_io_kwargs": {"video": {"num_frames": -1, "fps": fps, "frames_indices": list(range(len(sampled))), "total_num_frames": len(sampled), "duration": len(sampled) / fps, "do_sample_frames": False}}, "mm_processor_kwargs": {"do_sample_frames": False}}}
+            request = {"model": context.model.model, "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}], "reasoning_effort": "xhigh", "extra_body": {"media_io_kwargs": {"video": {"num_frames": -1, "fps": fps, "frames_indices": list(range(len(sampled))), "total_num_frames": len(sampled), "duration": len(sampled) / fps, "do_sample_frames": False}}, "mm_processor_kwargs": {"do_sample_frames": False}}}
         else:
             content = [{"type": "input_text", "text": prompt}, *[{"type": "input_image", "image_url": "data:image/jpeg;base64," + encoded, "detail": "high"} for encoded in encoded_frames]]
             request = {"model": context.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": context.model_settings.reasoning, "store": context.model_settings.store, "include": context.model_settings.response_include, "extra_body": context.model_settings.extra_body}
@@ -1143,13 +1119,14 @@ class VideoSQLHarness:
         embedding_url: str,
         embedding_model: str,
         *,
+        query_time: int,
         base_url: str = OPENAI_BASE_URL,
         clip_qa_video: bool = False,
         context_limit: int = CONTEXT_LIMIT,
         compaction_threshold: int = COMPACTION_THRESHOLD,
     ) -> None:
         client = AsyncOpenAI(
-            api_key=api_key, base_url=base_url, max_retries=3,
+            api_key=api_key, base_url=base_url, max_retries=0,
             timeout=httpx2.Timeout(connect=60, read=900, write=900, pool=900),
             http_client=DefaultAsyncHttpxClient(
                 limits=httpx2.Limits(max_connections=1000, max_keepalive_connections=256),
@@ -1157,7 +1134,8 @@ class VideoSQLHarness:
         )
         model = OpenAIResponsesModel(model=model_name, openai_client=client)
         model_settings = ModelSettings(
-            reasoning={"effort": "high", "summary": "auto"},
+            reasoning={"effort": "xhigh", "summary": "auto"},
+            parallel_tool_calls=True,
             store=False,
             response_include=["reasoning.encrypted_content"],
             preserve_raw_usage=True,
@@ -1178,6 +1156,7 @@ class VideoSQLHarness:
             run_config=run_config,
             embedding_url=embedding_url,
             embedding_model=embedding_model,
+            query_time=query_time,
             clip_qa_video=clip_qa_video,
             embedding_client=httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
@@ -1234,7 +1213,7 @@ class VideoSQLHarness:
                 + "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text."
                 + "\n\nSQL scope: Every run_sql query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and a QA question do not constrain SQL. Unrestricted queries will be rejected before execution; rewrite them with a real scope constraint. Do not request an entire timeline's tables to answer a question about a few events."
                 + "\n\nVisual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals."
-                + f"\n\nInvestigation budget: There is no turn limit. Once your context reaches {ANSWER_CONTEXT_LIMIT} tokens, immediately answer using the evidence already available; further tools are disabled. An investigation that has grown this large is likely stuck, and more searching is unlikely to improve the answer. This cutoff reserves ample context for the final answer. Use focused retrieval and replace bulky results before reaching it."
+                + "\n\nInvestigation budget: You have 10 model calls shared across your own turns, clip_qa and optional SQL/search QA. Calling a tool does not itself consume another model call, but its QA request does. Prefer parallel independent tool calls. After these 10 calls, one final answer request is allowed with all investigation tools disabled. Replacing history never restores spent calls."
                 + "\n\nContext maintenance: Only the latest tool result in your context can be replaced. After reading it, use replace_tool alone before continuing if it is large, even when useful and correct, or if it is invalid. Write replacement yourself and give a brief reason. Summarize only the target result's question and evidence, preserving relevant facts, IDs, times, uncertainty, contradictions, and unresolved details. Other results may be cited explicitly by tool_id, but do not present their evidence as part of this result or substitute a summary of another question. For invalid results, replace the entire content with why it must not be used. All history after the target result through the replacement turn is removed, including reasoning, messages, and tool calls; future reasoning starts from the replacement. Do not combine replace_tool with any other tool call in the same turn. Saving add_note does not replace a tool result."
                 + "\n\nROOT-SKILL (skill loading guidance):\n"
                 + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
@@ -1253,13 +1232,14 @@ class VideoSQLHarness:
             f"- {skill['name']}: {skill['description']}" for skill in self.catalog
         )
         if input_items is None:
-            input_items = f"Question: {normalize_text(question)}\n\nAvailable skills:\n{skills}"
+            input_items = f"Question: {normalize_text(question)}\nQuery time: {self.context.query_time} (EgoLife DHHMMSSFF); {self.context.query_time_s} seconds since DAY1 00:00:00.\n\nAvailable skills:\n{skills}"
         trace_files = []
         while True:
             final_turn = self.context.answer_context_reached
             if final_turn:
+                self.context.final_answer_mode = True
                 agent = agent.clone(
-                    instructions=agent.instructions + f"\n\nThe investigation has reached the {ANSWER_CONTEXT_LIMIT}-token context cutoff. Return the final answer immediately using the supplied answer schema and the evidence already available. Further investigation is unlikely to help. All tools are disabled; do not retrieve more evidence or call any tool.",
+                    instructions=agent.instructions + "\n\nThe 10 investigation model calls are exhausted. This is the single additional final-answer call. Return the final answer immediately using the supplied schema and available evidence. All tools are disabled.",
                     tools=[],
                     output_type=AnswerSubmission,
                     tool_use_behavior="run_llm_again",
