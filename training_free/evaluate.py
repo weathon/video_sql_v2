@@ -6,6 +6,7 @@ import json
 import subprocess
 import time
 import traceback
+from itertools import chain
 from pathlib import Path
 from uuid import uuid4
 
@@ -47,20 +48,36 @@ def collect_usage(trace_dirs):
                 continue
             with path.open() as handle:
                 documents = (json.loads(line) for line in handle) if path.suffix == ".jsonl" else [json.load(handle)]
-                for document in documents:
+                pending = None
+                for line_number, document in enumerate(chain(documents, [{"type": "trace_end"}])):
                     candidates = list(document["api_usage"]) if "api_usage" in document else []
+                    if document.get("type") == "run_start":
+                        model = document["agent"]["model"]
+                    elif document.get("type") == "model_input":
+                        pending = {"id": f"unreturned-request:{path}:{line_number}", "model": model, "usage": None, "request_without_response": True}
+                    elif document.get("type") == "trace_end" and pending is not None:
+                        candidates.append(pending)
+                    if document.get("error") is not None and document.get("response") is None and document["error"]["type"] != "InvestigationBudgetExhausted":
+                        request = document["request"] if "request" in document else document["input"] if "api" in document else None
+                        if isinstance(request, dict) and request["model"] == MODEL:
+                            candidates.append({"id": f"unreturned-request:{path}", "model": request["model"], "usage": None, "request_without_response": True})
                     if isinstance(document.get("response"), dict):
                         payload = document["response"]
                         if "model" in payload and ("choices" in payload or payload.get("status") in ("completed", "incomplete", "failed", "cancelled")):
                             candidates.append(payload)
                     if document.get("type") == "raw_response_event":
                         event = document["data"]
-                        if event["type"] in ("response.completed", "response.incomplete", "response.failed"):
+                        if event["type"] == "response.created":
+                            pending = None
+                        if event["type"] in ("response.created", "response.completed", "response.incomplete", "response.failed"):
                             candidates.append(event["response"])
                     for response in candidates:
                         response_id = response["response_id"] if "response_id" in response else response["id"]
                         usage = response["usage"]
                         record = {"response_id": response_id, "model": response["model"], "usage": usage, "input_tokens": None, "cached_tokens": None, "output_tokens": None, "trace_files": [str(path)]}
+                        if response.get("request_without_response"):
+                            record["request_key"] = response_id
+                            record["response_id"] = None
                         if usage is not None:
                             input_key = "input_tokens" if "input_tokens" in usage else "prompt_tokens"
                             output_key = "output_tokens" if "output_tokens" in usage else "completion_tokens"
@@ -71,6 +88,8 @@ def collect_usage(trace_dirs):
                                 record["cached_tokens"] = usage[detail_key]["cached_tokens"]
                         if response_id in responses:
                             previous = responses[response_id]
+                            if previous["usage"] is None and usage is not None:
+                                previous["usage"] = usage
                             for key in COUNTERS:
                                 if previous[key] is not None and record[key] is not None and previous[key] != record[key]:
                                     raise ValueError(f"Conflicting usage for response {response_id}: {previous} versus {record}")
@@ -176,7 +195,8 @@ class Evaluation:
         path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
         usage = collect_usage([Path(item) for item in phase["trace_dirs"]])
         per_request = {key: sum(item[key] for item in usage.values()) if all(item[key] is not None for item in usage.values()) else None for key in COUNTERS}
-        phase["response_ids"] = sorted(usage)
+        phase["response_ids"] = sorted(record["response_id"] for record in usage.values() if record["response_id"] is not None)
+        phase["requests_without_response"] = [record["request_key"] for record in usage.values() if record["response_id"] is None]
         phase["request_tokens"] = per_request
         phase["server_minus_requests"] = {key: delta[key] - per_request[key] if per_request[key] is not None else None for key in COUNTERS}
         phase["complete"] = True
