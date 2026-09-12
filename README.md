@@ -2,7 +2,9 @@
 
 本目录的 `codex/egolife-baselines` 分支比较 A1_JAKE 全部 500 道开放题。修复实时日志后，两种方法已重新完成质量评测和串行计时；完整结果见 [结果报告](notes/egolife-baselines-results.md) 和 [机器可读结果](notes/egolife-baselines-results.json)。源分支起点为 `f947154c0dc1a6825bdc56f85d7ba4bf294411cb`；MAGIC 上游版本见 [UPSTREAM](third_party/magic_video/UPSTREAM)。
 
-两边所有 LLM 请求均使用 `Qwen/Qwen3.8-27B-FP8`、`xhigh` 并保留 reasoning，不设置客户端 token 上限或采样参数。SQL 当前每次尝试最多 30 次共享调查调用，再允许一次关闭工具的最终回答；原结果使用 10 次预算。MAGIC 保留上游 5 轮检索及截止逻辑，时间检索修正日期和秒数单位并应用 query time 截止，chain 相似度检索保留上游前 2000 字符规则。两边使用同一个 0–5 分 judge。每批失败题只集中重试一次。
+两边所有 LLM 请求均使用 `Qwen/Qwen3.8-27B-FP8`、`xhigh` 并保留 reasoning，不设置客户端 token 上限或采样参数。SQL 当前每次尝试最多 15 次共享调查调用，再允许一次关闭工具的最终回答；原结果使用 10 次预算，SQL30 已由用户停止。MAGIC 保留上游 5 轮检索及截止逻辑，时间检索修正日期和秒数单位并应用 query time 截止，chain 相似度检索保留上游前 2000 字符规则。两边使用同一个 0–5 分 judge。每批失败题只集中重试一次。
+
+当前 SQL+PPR 方法推荐 `sql_ppr_search`：用 `pre_sql` 从逐题数据库的 `memory_nodes` 联合视图选择候选 ID，再运行 MAGIC PPR；或先运行 PPR，再用 `post_sql` 查询命中节点表 `ppr_hits`。前者限定搜索范围，后者筛选、排序或提取命中内容，通常按目的只选一个 SQL 阶段；必要时两者均可使用。保留 `run_sql`、`semantic_search` 和视频取证。PPR 使用现成节点、向量和显式边，所有传播均限制在当前数据库及 pre 范围内。
 
 新版 judge 接收提问者 Jake/A1_JAKE 和 query time，按问题要求的事实判分，接受同义表达及对应的绝对/相对时间，不因正确补充、引用或篇幅扣分；扣分须在结构化 justification 中指出实际事实错误或必要信息遗漏。详细规则见 `baselines_plan.md` 和 `training_free/evaluate.py` 的 `RUBRIC`。
 
@@ -77,7 +79,7 @@ export OMP_NUM_THREADS=10 MKL_NUM_THREADS=10 OPENBLAS_NUM_THREADS=10 NUMEXPR_NUM
 baseline_memory_bytes=$(awk '/^MemAvailable:/ {printf "%.0f", $2 * 1024 / 5}' /proc/meminfo)
 systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method magic --answers-from /raid/videosql-video-artifacts/results/quality-magic-rerun --run-dir /raid/videosql-video-artifacts/results/quality-magic-judge-v2 > runs/egolife-baselines/quality-magic-judge-v2.log 2>&1
 systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method sql --answers-from /raid/videosql-video-artifacts/results/quality-sql-rerun --run-dir /raid/videosql-video-artifacts/results/quality-sql10-judge-v2 > runs/egolife-baselines/quality-sql10-judge-v2.log 2>&1
-systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method sql --run-dir /raid/videosql-video-artifacts/results/quality-sql30-judge-v2 > runs/egolife-baselines/quality-sql30-judge-v2.log 2>&1
+systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method sql --run-dir /raid/videosql-video-artifacts/results/quality-sql-ppr15-judge-v2 > runs/egolife-baselines/quality-sql-ppr15-judge-v2.log 2>&1
 ```
 
 恢复时使用原命令和原 `--run-dir`；带有 `INVALIDATED.json` 的旧结果目录禁止恢复。小范围真实调试使用独立目录并附加 `--ids 1 2`。正式时延读取 seed 0 的同一组 20 个 ID，按固定顺序、并发 1，先 MAGIC 后 SQL；每种方法开始前清 prefix/KV 和 encoder cache，每题创建独立在线查询状态，保留离线索引。时延截止于最终答案，不包含 judge 或关闭客户端。
@@ -85,6 +87,8 @@ systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines
 每题答案、judge、失败证据和全部 attempts 均即时落盘；原始 usage 与独立 PD 服务计数对账。`metrics.json` 保存均分、5 分题数、有效分母和两类失败数，`token-log.json` 保存全部实际请求及服务计数。缓存输入从总输入中扣除后，等效费用为 `(in × 0.15 + out × 0.47 + cache × 0.016) / 1,000,000 USD`。缺 usage 的请求保留未知状态，不能当作零。
 
 运行开始即以 1 Hz 拉取 PD `/metrics`，将累计 `tokens/in`、`tokens/cache`、`tokens/out`、相应每秒吞吐率、GPU 使用率和进度上传 W&B，同时写入 `live-metrics.jsonl`；原始抓取保存在 `live-metrics.prom`。实时记录不等待单次请求的 usage 或整批对账完成。进度计数表示本次进程的尝试次数，包含重试；累计 token 从本 run 的首次采集计起。
+
+SQL 每题成功回答后立即 judge。W&B 的 `overlap/count`、`overlap/sql_accuracy`、`overlap/magic_accuracy`、`overlap/accuracy_delta` 和两边均分，比较当前已完成且可评分的共同题目；准确率定义为 5 分比例，MAGIC 参考来自 `results/quality-magic-judge-v2`。未完成或未分类失败不记作 0 分，维护失败排除。最终同题 ID 和指标保存在 `overlap-comparison.json`。交错答题和 judge 的服务端总 token 记为 `answer_and_judge` 混合阶段，原始请求 usage 另行完整保留。
 
 最终失败题先保存自动建议分类，人工阅读其真实请求、工具输入输出及错误 trace 后，在该题目录写入 `failure-review.json`，包含 `category`（`algorithm` 或 `maintenance`）、`cause` 和 `trace_evidence`（实际检查的路径、调用及结论）。未审阅的失败会阻止最终汇总；审阅后用原命令恢复，已完成的答题和 judge 不重跑。
 
