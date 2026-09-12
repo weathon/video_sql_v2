@@ -66,9 +66,9 @@ mkdir -p runs/egolife-baselines/services
 ```bash
 export OMP_NUM_THREADS=10 MKL_NUM_THREADS=10 OPENBLAS_NUM_THREADS=10 NUMEXPR_NUM_THREADS=10 VECLIB_MAXIMUM_THREADS=10
 baseline_memory_bytes=$(awk '/^MemAvailable:/ {printf "%.0f", $2 * 1024 / 5}' /proc/meminfo)
-systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method magic --run-dir runs/egolife-baselines/quality-magic > runs/egolife-baselines/quality-magic.log 2>&1
-systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method sql --run-dir runs/egolife-baselines/quality-sql > runs/egolife-baselines/quality-sql.log 2>&1
-systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method latency --run-dir runs/egolife-baselines/latency > runs/egolife-baselines/latency.log 2>&1
+systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method magic --run-dir /raid/videosql-video-artifacts/results/quality-magic > runs/egolife-baselines/quality-magic.log 2>&1
+systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method sql --run-dir /raid/videosql-video-artifacts/results/quality-sql > runs/egolife-baselines/quality-sql.log 2>&1
+systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method latency --run-dir /raid/videosql-video-artifacts/results/latency > runs/egolife-baselines/latency.log 2>&1
 ```
 
 恢复时使用原命令和原 `--run-dir`。小范围真实调试可附加 `--ids 1 2`。正式时延读取 seed 0 的同一组 20 个 ID，按固定顺序、并发 1，先 MAGIC 后 SQL；每种方法开始前清 prefix/KV 和 encoder cache，每题创建独立在线查询状态，保留离线索引。时延截止于最终答案，不包含 judge 或关闭客户端。

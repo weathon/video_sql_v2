@@ -14,6 +14,7 @@
 | `magic/graph.pkl`、`magic/visual_embeddings.pkl` | MAGIC 格式完整图及视频向量映射 |
 | `magic/captions`、`magic/semantic_memory`、`magic/topic_chains`、`magic/event_chains` | 规范化后的现成内容；原始关联在规范化前完成 |
 | `videos/A1_JAKE`、`video-metadata`、`media-map.json` | 原视频缓存片段、逐片 I 帧序号/PTS、媒体与逻辑时间映射 |
+| `results` | 两种方法的质量、串行计时、全部 attempts、逐题答案、judge、usage 与完整 traces |
 
 四类节点分别为 `entity`、`episode`、`semantic`、`visual_clip`，公共字段为 `id, node_type, text, start_ts, end_ts, metadata`。边分表为 `mentioned_in`、`appeared_in`、`has_property`、`temporal_next`、`contains`、`co_clip_visual_episode` 和 `co_clip_episode_visual`，保留有向端点、类型和权重，端点均为真正的外键。
 
