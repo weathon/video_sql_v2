@@ -1,0 +1,65 @@
+"""SQL-scoped MAGIC PPR over the question's permitted graph nodes."""
+
+import json
+from types import SimpleNamespace
+
+import duckdb
+import sqlglot
+from sqlglot import exp
+
+from training_free.magic import load_magic_artifacts
+from worldmm.memory.unified.graph import MultimodalGraph
+from worldmm.memory.unified.nodes import NodeType
+from worldmm.memory.unified.retrieval import cross_modal_retrieve
+
+
+def search_graph(context, query, query_vector, n, pre_sql, post_sql, trace):
+    for name, sql in (("pre_sql", pre_sql), ("post_sql", post_sql)):
+        if sql is not None:
+            statements = sqlglot.parse(sql, read="duckdb")
+            if len(statements) != 1 or not isinstance(statements[0], exp.Query):
+                raise ValueError(f"{name} must be exactly one read-only SELECT/WITH query")
+    with duckdb.connect(str(context.database), read_only=True, config={"enable_external_access": "false", "allow_unsigned_extensions": "false"}) as connection:
+        connection.execute("CREATE TEMP VIEW memory_nodes AS SELECT * FROM entity UNION ALL SELECT * FROM episode UNION ALL SELECT * FROM semantic UNION ALL SELECT * FROM visual_clip")
+        permitted = {row[0] for row in connection.execute("SELECT id FROM memory_nodes").fetchall()}
+        if pre_sql is None:
+            selected = permitted
+        else:
+            cursor = connection.execute(pre_sql)
+            if [column[0] for column in cursor.description] != ["id"]:
+                raise ValueError("pre_sql must return exactly one column named id, containing graph node IDs")
+            selected = {row[0] for row in cursor.fetchall()}
+            if not selected <= permitted:
+                raise ValueError("pre_sql returned IDs outside this question's permitted memory_nodes")
+    trace["selected_node_ids"] = sorted(selected)
+    trace["permitted_node_count"] = len(permitted)
+    hits = []
+    if selected:
+        full_graph = load_magic_artifacts(context.embedding_index.parent)["graph"]
+        if not selected <= full_graph.nodes.keys():
+            raise RuntimeError("Question database contains node IDs missing from the MAGIC graph")
+        graph = MultimodalGraph()
+        graph.nodes = {node_id: node for node_id, node in full_graph.nodes.items() if node_id in selected}
+        graph.edges = [edge for edge in full_graph.edges if edge.src_id in selected and edge.dst_id in selected]
+        for node in graph.nodes.values():
+            if node.text_embedding is None or (node.node_type == NodeType.VISUAL_CLIP and node.visual_embedding is None):
+                raise RuntimeError(f"Missing required offline PPR embedding for {node.id}")
+        graph.build_igraph()
+        embeddings = SimpleNamespace(encode_text=lambda text: query_vector, encode_vis_query=lambda text: query_vector)
+        results = cross_modal_retrieve(graph=graph, query=query, embedding_model=embeddings, top_k=n)
+        trace["graph_stats"] = graph.stats()
+        for rank, (node, score) in enumerate(results, 1):
+            hits.append({"id": node.id, "node_type": node.node_type.value, "text": node.text, "start_ts": int(node.start_ts), "end_ts": int(node.end_ts), "metadata": node.metadata, "rank": rank, "score": float(score)})
+    trace["ppr_hits"] = hits
+    if post_sql is None:
+        return {"candidate_count": len(selected), "ppr_hit_count": len(hits), "rows": hits}
+    with duckdb.connect(config={"enable_external_access": "false", "allow_unsigned_extensions": "false"}) as connection:
+        connection.execute("CREATE TABLE ppr_hits (id VARCHAR, node_type VARCHAR, text VARCHAR, start_ts BIGINT, end_ts BIGINT, metadata JSON, rank INTEGER, score DOUBLE)")
+        if hits:
+            connection.executemany("INSERT INTO ppr_hits VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [(hit["id"], hit["node_type"], hit["text"], hit["start_ts"], hit["end_ts"], json.dumps(hit["metadata"], ensure_ascii=False), hit["rank"], hit["score"]) for hit in hits])
+        cursor = connection.execute(post_sql)
+        columns = [column[0] for column in cursor.description]
+        if len(columns) != len(set(columns)):
+            raise ValueError("post_sql must use distinct output column names")
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    return {"candidate_count": len(selected), "ppr_hit_count": len(hits), "columns": columns, "rows": rows}
