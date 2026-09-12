@@ -102,7 +102,12 @@ class MagicAPI:
                 raw = self.llm.chat.completions.with_raw_response.create(model=MODEL, messages=transport, reasoning_effort="xhigh")
             else:
                 raw = self.llm.chat.completions.with_raw_response.parse(model=MODEL, messages=transport, reasoning_effort="xhigh", response_format=response_format)
-            trace["response"] = raw.json()
+            trace["request"] = json.loads(raw.http_request.content)
+            trace["request"]["messages"] = recorded
+            trace["response"] = raw.text
+            trace["response"] = raw.http_response.json()
+            if not trace["response"]["choices"]:
+                raise MagicOutputError("MAGIC model returned no choices")
             message = trace["response"]["choices"][0]["message"]
             if not isinstance(message.get("reasoning_content"), str) or not message["reasoning_content"].strip():
                 raise RuntimeError("MAGIC model response is missing actual reasoning_content")
@@ -112,6 +117,8 @@ class MagicAPI:
                 raise MagicOutputError(completion.choices[0].message.refusal)
             if not message["content"] or not message["content"].strip():
                 raise MagicOutputError("MAGIC model returned empty content")
+            if completion.choices[0].finish_reason != "stop":
+                raise MagicOutputError(f"MAGIC generation did not finish: {completion.choices[0].finish_reason}")
             if response_format is None:
                 return message["content"]
             return completion.choices[0].message.parsed
@@ -119,6 +126,8 @@ class MagicAPI:
             trace["error"] = {"type": type(exc).__name__, "message": str(exc)}
             if isinstance(exc, APIError):
                 trace["error"]["body"] = exc.body
+                trace["request"] = json.loads(exc.request.content)
+                trace["request"]["messages"] = recorded
             print(f"MAGIC LLM error: {type(exc).__name__}: {exc}", flush=True)
             raise
         finally:
@@ -132,7 +141,9 @@ class MagicAPI:
         print(f"MAGIC embeddings request: inputs={len(inputs)}", flush=True)
         try:
             raw = self.embeddings.embeddings.with_raw_response.create(**request)
-            trace["response"] = raw.json()
+            trace["request"] = json.loads(raw.http_request.content)
+            trace["response"] = raw.text
+            trace["response"] = raw.http_response.json()
             result = raw.parse()
             vectors = sorted(result.data, key=lambda item: item.index)
             if [item.index for item in vectors] != list(range(len(inputs))):
@@ -217,7 +228,7 @@ def load_magic_artifacts(artifact_root):
         captions = {}
         for granularity in ("30sec", "3min", "10min", "1h"):
             rows = json.loads((source / "captions" / f"A1_JAKE_{granularity}.json").read_text())
-            captions[granularity] = [CaptionEntry(id=f"{granularity}_{index}", text=row["text"], start_time=str(row["start_time"]), end_time=str(row["end_time"]), date=row["date"], granularity=granularity, video_path=row["video_path"]) for index, row in enumerate(rows)]
+            captions[granularity] = [CaptionEntry(id=f"{granularity}_{index}", text=row["text"], start_time=str(row["start_time"]), end_time=str(row["end_time"]), date=row["date"], granularity=granularity, video_path=row.get("video_path")) for index, row in enumerate(rows)]
         with (source / "visual_embeddings.pkl").open("rb") as handle:
             visual_embeddings = pickle.load(handle)
         for node in memory._full_graph.nodes.values():
@@ -291,10 +302,11 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
                 break
             search_query = normalize_text(decision.search_query)
             time_prompt = Template(_TIME_EXTRACT_TEMPLATE).substitute(query=search_query).replace("null", '{"start": null, "end": null}')
-            conversation.append({"role": "user", "content": time_prompt})
+            time_messages = [{"role": "user", "content": time_prompt}]
             try:
-                time_reference = api.complete([{"role": "system", "content": "Extract the video time reference using the supplied schema."}] + conversation, TimeReference)
+                time_reference = api.complete(time_messages, TimeReference)
             except model_errors as exc:
+                conversation.extend(time_messages)
                 if api.last_assistant is not None:
                     conversation.append(api.last_assistant)
                 conversation.append({"role": "user", "content": f"Time extraction failed validation: {type(exc).__name__}: {exc}. Correct this error on the next round."})
@@ -302,6 +314,7 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
                 if round_num == 5:
                     raise
                 continue
+            conversation.extend(time_messages)
             conversation.append(api.last_assistant)
             request = {"tool": "retrieve", "query": search_query, "query_time": query_time, "time_reference": time_reference.model_dump(), "top_k": 16, "alpha": 0.7, "seed_top_k": 5, "damping": 0.85, "bm25_weight": 0.3, "chain_min_hits": 1, "chain_max_topics": 3, "chain_max_events": 1, "chain_topic_sim": 0.7, "chain_event_sim": 0.7, "chain_event_min_hits": 1, "chain_event_granularities": ["30sec", "3min"]}
             trace = {"request": request, "response": None, "error": None}
@@ -328,6 +341,17 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
                 chain_facts = memory.unified_memory.get_chain_facts_for_results(new_results, query_time=query_time, query_text=question, embedding_model=api, min_hits=1, max_topic_chains=3, max_event_chains=1, topic_sim_threshold=0.7, event_chain_sim_threshold=0.7, event_chain_min_hits=1, event_chain_granularities=("30sec", "3min"))
                 trace["response"]["chain_facts"] = chain_facts
                 fresh_facts = [fact for fact in chain_facts if (fact["label"], fact["time"], fact["fact"]) not in injected_chain_facts]
+                text_parts = []
+                for item in new_items:
+                    if item.memory_type == "episodic":
+                        text_parts.append(f"[Retrieved episode] {item.content}")
+                    elif item.memory_type == "semantic":
+                        text_parts.append(f"[Retrieved semantic] {item.content}")
+                    elif item.memory_type == "visual":
+                        text_parts.append(f"[{transform_timestamp(str(item._start_ts))}] [{len(item.content)} visual frames of above episode]")
+                summary = "\n".join(memory._mix_facts_by_time(text_parts, fresh_facts))
+                if round_frame_count:
+                    summary += f"\n[{round_frame_count} image frames retrieved]"
                 for fact in fresh_facts:
                     injected_chain_facts.add((fact["label"], fact["time"], fact["fact"]))
                     content = f"[{fact['time']} - {fact['end_time']}] {fact['fact']}" if fact["chain_type"] == "event" else f"[{fact['time']}] {fact['fact']}"
@@ -337,10 +361,6 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
                     item.round_num = round_num
                 retrieved_items.extend(new_items)
                 trace["response"]["items"] = [{"memory_type": item.memory_type, "content": item.content if isinstance(item.content, str) else [image.info["magic_image_path"] for image in item.content], "label": item.label} for item in new_items]
-                summary_parts = memory._render_retrieved_items_interleaved(new_items)
-                summary = "\n".join(part["text"] for part in summary_parts if part["type"] == "text")
-                if round_frame_count:
-                    summary += f"\n[{round_frame_count} image frames retrieved]"
                 round_history.append({"round_num": round_num, "decision": "search", "memory_type": "unified", "search_query": search_query, "retrieved_content": summary})
                 trace["response"]["round_history"] = round_history[-1]
             except Exception as exc:
