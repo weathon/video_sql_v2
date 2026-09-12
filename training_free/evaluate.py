@@ -306,7 +306,7 @@ class Evaluation:
             directory.mkdir(parents=True)
             await self.snapshot(directory / "before-cache-clear.prom")
             cache_trace = []
-            for url in (f"{PD_URL}/reset_prefix_cache", f"{BASE_URL.removesuffix('/v1')}/clear_encoder_cache"):
+            for url in (f"{PD_URL}/reset_prefix_cache", f"{EMBEDDING_URL.removesuffix('/v1')}/reset_prefix_cache", f"{EMBEDDING_URL.removesuffix('/v1')}/reset_encoder_cache", f"{BASE_URL.removesuffix('/v1')}/clear_encoder_cache"):
                 print(f"CACHE_CLEAR method={method} request=POST {url}", flush=True)
                 response = await self.http.post(url)
                 cache_trace.append({"request": {"method": "POST", "url": url}, "status_code": response.status_code, "response": response.text})
