@@ -255,7 +255,7 @@ async def embed_video(root: Path, endpoint: str) -> None:
     sources = {row['original_path']: row for row in json.loads((root / 'media-map.json').read_text())['sources']}
     captions = json.loads((root / 'magic/captions/A1_JAKE_30sec.json').read_text())
     paths = {row['video_path']: row for row in captions}
-    directory = root / 'embedding-shards/video'
+    directory = root / 'embedding-shards/video-grouped'
     directory.mkdir(parents=True, exist_ok=True)
     semaphore = asyncio.Semaphore(64)
     clip_executor = ThreadPoolExecutor(max_workers=10)
@@ -306,7 +306,7 @@ def assemble(root: Path) -> None:
             for text, vector in zip(shard['texts'], shard['vectors'], strict=True):
                 vectors[str(text)] = vector
     visual = {}
-    for path in sorted((root / 'embedding-shards/video').glob('*/*.npz')):
+    for path in sorted((root / 'embedding-shards/video-grouped').glob('*/*.npz')):
         with np.load(path, allow_pickle=False) as shard:
             visual[str(shard['video_path'])] = shard['vector']
     graph = MultimodalGraph.load(str(root / 'graph-unembedded.pkl'))
