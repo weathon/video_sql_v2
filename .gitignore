@@ -1,7 +1,7 @@
 .env
 *.db
 *.npz
-.venv/
+.venv
 .venv_codex_*/
 .venv_infra_*/
 .venv_embedding_*/

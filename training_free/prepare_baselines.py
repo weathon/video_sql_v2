@@ -98,15 +98,19 @@ def prepare(root: Path) -> None:
     (magic / 'event_chains/step3_enriched_chains.json').write_text(json.dumps(events, ensure_ascii=False))
     database = root / 'index.duckdb'
     with duckdb.connect(str(database)) as connection:
-        connection.execute('BEGIN')
-        for table, ddl in DDL.items():
-            connection.execute(ddl)
-            if rows[table]:
-                arrow_rows = pa.Table.from_pylist(rows[table])
-                connection.register('source_rows', arrow_rows)
-                connection.execute(f'INSERT INTO {table} BY NAME SELECT * FROM source_rows')
-                connection.unregister('source_rows')
-        connection.execute('COMMIT')
+        tables = {row[0] for row in connection.execute('SHOW TABLES').fetchall()}
+        if tables and tables != set(DDL):
+            raise ValueError(f'Incomplete database schema: {database}: {sorted(tables)}')
+        if not tables:
+            connection.execute('BEGIN')
+            for table, ddl in DDL.items():
+                connection.execute(ddl)
+                if rows[table]:
+                    arrow_rows = pa.Table.from_pylist(rows[table])
+                    connection.register('source_rows', arrow_rows)
+                    connection.execute(f'INSERT INTO {table} BY NAME SELECT * FROM source_rows')
+                    connection.unregister('source_rows')
+            connection.execute('COMMIT')
     graph.save(str(root / 'graph-unembedded.pkl'))
     questions = []
     original = json.loads(QA_SOURCE.read_text())
@@ -289,9 +293,13 @@ def databases(root: Path) -> None:
         intervals = [(row_id, *interval) for row_id, time in facts if (interval := fact_interval(time)) is not None]
     for question in questions:
         path = directory / (question['id'] + '.duckdb')
-        if path.exists():
-            continue
         with duckdb.connect(str(path)) as connection:
+            tables = {row[0] for row in connection.execute('SHOW TABLES').fetchall()}
+            if tables == set(DDL):
+                print(f'DATABASE_REUSE question={question["id"]} path={path.name}', flush=True)
+                continue
+            if tables:
+                raise ValueError(f'Incomplete database schema: {path}: {sorted(tables)}')
             connection.execute('ATTACH ? AS complete (READ_ONLY)', [str(root / 'index.duckdb')])
             connection.execute('BEGIN')
             for table, ddl in DDL.items():
