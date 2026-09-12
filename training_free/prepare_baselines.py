@@ -136,7 +136,7 @@ def probe_video(source: Path, root: Path) -> dict:
     output = root / 'video-metadata' / source.relative_to(VIDEO_SOURCE).with_suffix('.json')
     if output.exists():
         return json.loads(output.read_text())
-    command = ['ffprobe', '-v', 'error', '-threads', '1', '-select_streams', 'v:0', '-show_frames', '-show_streams', '-show_entries', 'frame=best_effort_timestamp_time,pict_type:stream=avg_frame_rate,duration,start_time,nb_frames,time_base', '-of', 'json', str(target)]
+    command = ['ffprobe', '-v', 'error', '-threads', '1', '-select_streams', 'v:0', '-show_streams', '-show_entries', 'stream=avg_frame_rate,duration,start_time,nb_frames,time_base', '-of', 'json', str(target)]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode:
         print(f'ffprobe input={target} error={result.stderr}', flush=True)
@@ -145,15 +145,10 @@ def probe_video(source: Path, root: Path) -> dict:
     stream = payload['streams'][0]
     numerator, denominator = map(int, stream['avg_frame_rate'].split('/'))
     fps = numerator / denominator
-    frames = payload['frames']
-    indices = [i for i, frame in enumerate(frames) if frame['pict_type'] == 'I']
-    pts = [float(frames[i]['best_effort_timestamp_time']) for i in indices]
-    if not indices or pts != sorted(pts):
-        raise ValueError(f'Invalid I-frame sequence: {target}')
     day, _, _, time = source.stem.split('_')
     timestamp = int(day.removeprefix('DAY') + time)
     start = timestamp_seconds(timestamp, fps)
-    info = {'path': str(target), 'relative_path': str(target.relative_to(root)), 'original_path': 'data/EgoLife/A1_JAKE/' + str(source.relative_to(VIDEO_SOURCE)), 'timeline_start_s': start, 'timeline_end_s': start + float(stream['duration']), 'fps': fps, 'duration': float(stream['duration']), 'total_frames': len(frames), 'iframe_indices': indices, 'iframe_pts': pts, 'command': command}
+    info = {'path': str(target), 'relative_path': str(target.relative_to(root)), 'original_path': 'data/EgoLife/A1_JAKE/' + str(source.relative_to(VIDEO_SOURCE)), 'timeline_start_s': start, 'timeline_end_s': start + float(stream['duration']), 'fps': fps, 'duration': float(stream['duration']), 'total_frames': int(stream['nb_frames']), 'command': command}
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(info, ensure_ascii=False, indent=2))
     return info
@@ -222,11 +217,11 @@ async def embed_video(root: Path, endpoint: str) -> None:
                 output = directory / f'{index:06d}.npz'
                 if output.exists():
                     with np.load(output, allow_pickle=False) as saved:
-                        if str(saved['video_path']) != path:
-                            raise ValueError(f'Video shard ID mismatch: {output}')
+                        if str(saved['video_path']) != path or str(saved['sampling']) != 'qwen3_vl_uniform':
+                            raise ValueError(f'Video shard ID or sampling mismatch: {output}')
                     return
                 info = sources[path]
-                request = {'model': 'qwen3-vl-embedding-8b', 'messages': [{'role': 'user', 'content': [{'type': 'video_url', 'video_url': {'url': Path(info['path']).as_uri()}}]}], 'media_io_kwargs': {'video': {'video_backend': 'qwen3_vl_iframes', 'backend': 'torchcodec', 'iframe_indices': info['iframe_indices'], 'num_frames': -1, 'num_ffmpeg_threads': 4, 'seek_mode': 'exact'}}, 'mm_processor_kwargs': {'do_sample_frames': False}}
+                request = {'model': 'qwen3-vl-embedding-8b', 'messages': [{'role': 'user', 'content': [{'type': 'video_url', 'video_url': {'url': Path(info['path']).as_uri()}}]}], 'media_io_kwargs': {'video': {'video_backend': 'qwen3_vl_uniform', 'backend': 'torchcodec', 'trace_path': info['path'], 'num_frames': -1, 'num_ffmpeg_threads': 4, 'seek_mode': 'exact'}}, 'mm_processor_kwargs': {'do_sample_frames': False}}
                 (directory / f'{index:06d}-request.json').write_text(json.dumps(request))
                 response = await client.post(endpoint.rstrip('/') + '/embeddings', json=request)
                 if response.is_error:
@@ -238,8 +233,8 @@ async def embed_video(root: Path, endpoint: str) -> None:
                 if vector.shape != (4096,) or not np.isfinite(vector).all() or np.linalg.norm(vector) == 0:
                     raise ValueError(f'Invalid video embedding: {path}')
                 vector /= np.linalg.norm(vector)
-                np.savez(output, video_path=np.asarray(path), vector=vector)
-                print(f'EMBED_VIDEO index={index} frames={len(info["iframe_indices"])} saved={output.name}', flush=True)
+                np.savez(output, video_path=np.asarray(path), sampling=np.asarray('qwen3_vl_uniform'), vector=vector)
+                print(f'EMBED_VIDEO index={index} sampling=qwen3_vl_uniform saved={output.name}', flush=True)
         async with asyncio.TaskGroup() as group:
             for index, path in enumerate(paths):
                 group.create_task(one(index, path))

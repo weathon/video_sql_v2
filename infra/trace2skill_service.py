@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUN = ROOT / "runs/egolife-baselines/services"
 MODEL = "Qwen/Qwen3.8-27B-FP8"
-IMAGE = "video-sql-vllm-epd:egolife-iframes"
+IMAGE = "video-sql-vllm-epd:egolife-baselines"
 NETWORK = "egolife-baselines"
 VOLUME = "egolife-baselines-ec"
 role = sys.argv[1]
@@ -37,7 +37,7 @@ elif role == "embedding":
     command += ["-v", "/raid/videosql-video-artifacts:/raid/videosql-video-artifacts:ro", IMAGE, "Qwen/Qwen3-VL-Embedding-8B", "--served-model-name", "qwen3-vl-embedding-8b", "--runner", "pooling",
                 "--host", "0.0.0.0", "--port", "8000", "--gpu-memory-utilization", "0.45", "--max-num-seqs", "30", "--mm-processor-cache-gb", "0", "--trust-remote-code",
                 "--allowed-local-media-path", "/raid/videosql-video-artifacts/videos", "--renderer-num-workers", "4", "--max-num-batched-tokens", "32768",
-                "--media-io-kwargs", json.dumps({"video": {"video_backend": "qwen3_vl_iframes", "backend": "torchcodec", "num_frames": -1, "seek_mode": "exact", "num_ffmpeg_threads": 4}})]
+                "--media-io-kwargs", json.dumps({"video": {"video_backend": "qwen3_vl_uniform", "backend": "torchcodec", "num_frames": -1, "seek_mode": "exact", "num_ffmpeg_threads": 4}})]
 elif role == "proxy":
     command += ["-p", "127.0.0.1:8103:8000", "-v", str(ROOT / "infra") + ":/video_sql_infra:ro", "-v", VOLUME + ":/epd_shared/cache", "--entrypoint", "python3", IMAGE,
                 "/video_sql_infra/responses_epd_proxy.py", "--host", "0.0.0.0", "--port", "8000", "--encoder-url", "http://egolife-baselines-encoder:8000", "--pd-url", "http://egolife-baselines-pd:8000", "--cache-dir", "/epd_shared/cache"]

@@ -42,7 +42,7 @@ export OMP_NUM_THREADS=10 MKL_NUM_THREADS=10 OPENBLAS_NUM_THREADS=10 NUMEXPR_NUM
 nvidia-smi
 free -h
 ss -ltn
-docker build -f infra/Dockerfile.baselines -t video-sql-vllm-epd:egolife-iframes infra
+docker build -f infra/Dockerfile.baselines -t video-sql-vllm-epd:egolife-baselines infra
 docker network create egolife-baselines
 docker volume create --driver local --opt type=tmpfs --opt device=tmpfs egolife-baselines-ec
 mkdir -p runs/egolife-baselines/services
@@ -57,7 +57,7 @@ mkdir -p runs/egolife-baselines/services
 .venv_baselines/bin/python infra/trace2skill_service.py proxy > runs/egolife-baselines/services/proxy.log 2>&1
 ```
 
-端口依次为 8124、8125、8114、8103。视频 embedding 通过本地文件 URL 读取任务媒体目录，使用预先提取的原视频 I 帧序号与 PTS，保留原始顺序并禁用再次采样。
+端口依次为 8124、8125、8114、8103。视频 embedding 通过本地文件 URL 读取任务媒体目录，使用 Qwen loader 的均匀采样，保留原始顺序并禁用再次采样。embedding 服务日志中的 `UNIFORM_DECODE` 记录每段视频的实际抽帧序号。
 
 ## 正式评测
 
