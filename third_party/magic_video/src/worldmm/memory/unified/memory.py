@@ -11,6 +11,7 @@ import os
 import re
 import threading
 from collections import defaultdict
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -118,13 +119,6 @@ class UnifiedMemory:
         # Load event chains
         if event_chain_path:
             raw = json.load(open(event_chain_path))
-            def _parse_hms(t):
-                """Parse an EgoLife HH:MM[:SS] event time into its HHMMSSFF component."""
-                m = re.fullmatch(r'(\d{1,2}):(\d{2})(?::(\d{2}))?', t)
-                if not m:
-                    raise ValueError(f'Invalid event step time: {t!r}')
-                h, mn, s = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
-                return h * 1000000 + mn * 10000 + s * 100
             for ec in raw:
                 steps_with_ts = []
                 for step in ec["steps"]:
@@ -133,8 +127,8 @@ class UnifiedMemory:
                     if dm is None:
                         raise ValueError(f'Invalid EgoLife event step day: {day!r}')
                     day_prefix = int(dm.group(1)) * 100000000
-                    start_ts = day_prefix + _parse_hms(step["start_time"])
-                    end_ts = day_prefix + _parse_hms(step["end_time"])
+                    times = [datetime.strptime(step[field], '%H:%M:%S') for field in ('start_time', 'end_time')]
+                    start_ts, end_ts = (day_prefix + t.hour * 1000000 + t.minute * 10000 + t.second * 100 for t in times)
                     steps_with_ts.append({
                         "day": day,
                         "start_ts": start_ts,
