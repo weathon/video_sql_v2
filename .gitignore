@@ -43,3 +43,4 @@ infra/bench_*.json
 *.tar
 *.gz
 *.zip
+.venv_baselines/
