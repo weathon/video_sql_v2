@@ -265,20 +265,22 @@ async def embed_video(root: Path, endpoint: str) -> None:
             async with semaphore:
                 info = await asyncio.get_running_loop().run_in_executor(clip_executor, cache_caption_clip, paths[path], sources[path], root)
                 clips[path] = info
-                output = directory / f'{index:06d}.npz'
+                shard_directory = directory / f'{index // 1000:03d}'
+                shard_directory.mkdir(exist_ok=True)
+                output = shard_directory / f'{index:06d}.npz'
                 if output.exists():
                     with np.load(output, allow_pickle=False) as saved:
                         if str(saved['video_path']) != path or str(saved['sampling']) != 'qwen3_vl_uniform_caption':
                             raise ValueError(f'Video shard ID or sampling mismatch: {output}')
                     return
                 request = {'model': 'qwen3-vl-embedding-8b', 'messages': [{'role': 'user', 'content': [{'type': 'video_url', 'video_url': {'url': Path(info['path']).as_uri()}}]}], 'media_io_kwargs': {'video': {'video_backend': 'qwen3_vl_uniform', 'backend': 'torchcodec', 'trace_path': info['path'], 'num_frames': -1, 'num_ffmpeg_threads': 4, 'seek_mode': 'exact'}}, 'mm_processor_kwargs': {'do_sample_frames': False}}
-                (directory / f'{index:06d}-request.json').write_text(json.dumps(request))
+                (shard_directory / f'{index:06d}-request.json').write_text(json.dumps(request))
                 response = await client.post(endpoint.rstrip('/') + '/embeddings', json=request)
                 if response.is_error:
                     print(f'EMBED_VIDEO error path={path}: {response.text}', flush=True)
                 response.raise_for_status()
                 payload = response.json()
-                (directory / f'{index:06d}-response.json').write_text(json.dumps(payload))
+                (shard_directory / f'{index:06d}-response.json').write_text(json.dumps(payload))
                 vector = np.asarray(payload['data'][0]['embedding'], dtype=np.float32)
                 if vector.shape != (4096,) or not np.isfinite(vector).all() or np.linalg.norm(vector) == 0:
                     raise ValueError(f'Invalid video embedding: {path}')
@@ -304,7 +306,7 @@ def assemble(root: Path) -> None:
             for text, vector in zip(shard['texts'], shard['vectors'], strict=True):
                 vectors[str(text)] = vector
     visual = {}
-    for path in sorted((root / 'embedding-shards/video').glob('*.npz')):
+    for path in sorted((root / 'embedding-shards/video').glob('*/*.npz')):
         with np.load(path, allow_pickle=False) as shard:
             visual[str(shard['video_path'])] = shard['vector']
     graph = MultimodalGraph.load(str(root / 'graph-unembedded.pkl'))

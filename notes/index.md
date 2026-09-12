@@ -11,6 +11,7 @@
 | `embeddings/<table>.row_ids.npy` | 向量位置对应的原生节点或 fact/step ID |
 | `embeddings/<table>.vectors.npy` | 按 ID 保存的 4096 维 float32 文本向量 |
 | `embeddings/visual_clip.video_vectors.npy` | 相同 visual_clip ID 顺序的视频向量 |
+| `embedding-shards/video/<分组>/<序号>.npz` | 每 1000 个视频一组；同目录保留 embedding 请求及响应，避免超过 HF 每目录 10000 个文件的限制 |
 | `magic/graph.pkl`、`magic/visual_embeddings.pkl` | MAGIC 格式完整图及视频向量映射 |
 | `magic/captions`、`magic/semantic_memory`、`magic/topic_chains`、`magic/event_chains` | 规范化后的现成内容；原始关联在规范化前完成 |
 | `videos/A1_JAKE`、`video-metadata`、`media-map.json` | 原视频缓存片段、逐片帧率/帧数、媒体与逻辑时间映射 |
