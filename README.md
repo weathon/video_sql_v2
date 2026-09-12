@@ -2,7 +2,9 @@
 
 本目录的 `codex/egolife-baselines` 分支比较 A1_JAKE 全部 500 道开放题。修复实时日志后，两种方法已重新完成质量评测和串行计时；完整结果见 [结果报告](notes/egolife-baselines-results.md) 和 [机器可读结果](notes/egolife-baselines-results.json)。源分支起点为 `f947154c0dc1a6825bdc56f85d7ba4bf294411cb`；MAGIC 上游版本见 [UPSTREAM](third_party/magic_video/UPSTREAM)。
 
-两边所有 LLM 请求均使用 `Qwen/Qwen3.8-27B-FP8`、`xhigh` 并保留 reasoning，不设置客户端 token 上限或采样参数。SQL 每次尝试最多 10 次共享调查调用，再允许一次关闭工具的最终回答；MAGIC 保留上游 5 轮检索及截止逻辑，时间检索修正日期和秒数单位并应用 query time 截止，chain 相似度检索保留上游前 2000 字符规则。两边使用同一个 0–5 分 judge。每批失败题只集中重试一次。
+两边所有 LLM 请求均使用 `Qwen/Qwen3.8-27B-FP8`、`xhigh` 并保留 reasoning，不设置客户端 token 上限或采样参数。SQL 当前每次尝试最多 30 次共享调查调用，再允许一次关闭工具的最终回答；原结果使用 10 次预算。MAGIC 保留上游 5 轮检索及截止逻辑，时间检索修正日期和秒数单位并应用 query time 截止，chain 相似度检索保留上游前 2000 字符规则。两边使用同一个 0–5 分 judge。每批失败题只集中重试一次。
+
+新版 judge 接收提问者 Jake/A1_JAKE 和 query time，按问题要求的事实判分，接受同义表达及对应的绝对/相对时间，不因正确补充、引用或篇幅扣分；扣分须在结构化 justification 中指出实际事实错误或必要信息遗漏。详细规则见 `baselines_plan.md` 和 `training_free/evaluate.py` 的 `RUBRIC`。
 
 ## 环境与 artifacts
 
@@ -68,14 +70,14 @@ mkdir -p runs/egolife-baselines/services
 
 ## 正式评测
 
-本次按计划完成独立 subagent 和 `claude -p` 两路全目录审查。服务全部就绪后测量可用内存，以下前台 scope 将 harness 限制为该值的 20%；两种质量评测并发均为 20。
+正式评测前完成仓库要求的独立 subagent 审查和 `claude -p` 全目录审查。服务全部就绪后测量可用内存，以下前台 scope 将 harness 限制为该值的 20%；质量评测及重新 judge 的并发均为 20。
 
 ```bash
 export OMP_NUM_THREADS=10 MKL_NUM_THREADS=10 OPENBLAS_NUM_THREADS=10 NUMEXPR_NUM_THREADS=10 VECLIB_MAXIMUM_THREADS=10
 baseline_memory_bytes=$(awk '/^MemAvailable:/ {printf "%.0f", $2 * 1024 / 5}' /proc/meminfo)
-systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method magic --run-dir /raid/videosql-video-artifacts/results/quality-magic-rerun > runs/egolife-baselines/quality-magic-rerun.log 2>&1
-systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method sql --run-dir /raid/videosql-video-artifacts/results/quality-sql-rerun > runs/egolife-baselines/quality-sql-rerun.log 2>&1
-systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method latency --run-dir /raid/videosql-video-artifacts/results/latency-rerun > runs/egolife-baselines/latency-rerun.log 2>&1
+systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method magic --answers-from /raid/videosql-video-artifacts/results/quality-magic-rerun --run-dir /raid/videosql-video-artifacts/results/quality-magic-judge-v2 > runs/egolife-baselines/quality-magic-judge-v2.log 2>&1
+systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method sql --answers-from /raid/videosql-video-artifacts/results/quality-sql-rerun --run-dir /raid/videosql-video-artifacts/results/quality-sql10-judge-v2 > runs/egolife-baselines/quality-sql10-judge-v2.log 2>&1
+systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method sql --run-dir /raid/videosql-video-artifacts/results/quality-sql30-judge-v2 > runs/egolife-baselines/quality-sql30-judge-v2.log 2>&1
 ```
 
 恢复时使用原命令和原 `--run-dir`；带有 `INVALIDATED.json` 的旧结果目录禁止恢复。小范围真实调试使用独立目录并附加 `--ids 1 2`。正式时延读取 seed 0 的同一组 20 个 ID，按固定顺序、并发 1，先 MAGIC 后 SQL；每种方法开始前清 prefix/KV 和 encoder cache，每题创建独立在线查询状态，保留离线索引。时延截止于最终答案，不包含 judge 或关闭客户端。

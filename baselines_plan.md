@@ -18,7 +18,7 @@ EgoLifeQA视频: /raid/wg25r/egolife/A1_JAKE
 3. 清理所有文档关于artifacts和index, 用一个新的简洁的文档描述我们的index的结构和方式.
 4. 校验embedding, 通过text-to-video和text-to-text验证recall是否稳定. 没有具体阈值, 这里要看的不是recall有多好, 而是recall是否合理, 即embedding是否正确. 
 5. 对于EgoLife的QA问题, 用规则修改他, 使其变成open question而不是选择题, 增加难度, 抽样验证规则处理去掉了几乎所有(不需要保证完美, 95%以上就好)的问题选项. 但是要注意排除的是MCQ的答案选项, 不是题干中的信息. 比如: 以下谁先吃蛋糕: lucy, jack, marshall, alex. 这里名字不属于选项. 
-6. 复制一份我们的src/变成training_free/修改我们的harness, 使其不做训练只做简单的一次性rollout. 修改我们的harness限制最多turn(模型调用次数)变成10, 到达10后强行输出答案. clip_qa的模型调用也计入；replace_tool自身不计入；被替换掉的历史模型调用仍计入，回退不重置累计次数. 推荐模型进行并行tool call. 提问时加入query time. 
+6. 复制一份我们的src/变成training_free/修改我们的harness, 使其不做训练只做简单的一次性rollout. 修改我们的harness限制最多turn(模型调用次数)变成30, 到达30后强行输出答案. clip_qa的模型调用也计入；replace_tool自身不计入；被替换掉的历史模型调用仍计入，回退不重置累计次数. 推荐模型进行并行tool call. 提问时加入query time. 
 
 ### 运行 
 1. 参考INFRA.txt的方式, 启动一个新的vllm server，使用新的Docker容器名，不复用现有容器名, TP=2, encoder分离, encoder和embedding放在一个vram空闲计算量偏少的GPU. 服务器max num seq变成50写一个监控脚本, 监控总in/cache/out token消耗. 等效节省指这一批query如果使用API会产生的费用，包含该批query实际所有LLM请求的三种token，价格均为USD per 1M tokens：in $0.15、out $0.47、cache $0.016. in指未命中缓存的输入token，cache指缓存命中的输入token，out指输出token；若API返回的input总数包含cache，先扣除cache得到in. 费用（USD）= (in × 0.15 + out × 0.47 + cache × 0.016) / 1,000,000，记录在一个log文件里面.
@@ -47,7 +47,7 @@ EgoLifeQA视频: /raid/wg25r/egolife/A1_JAKE
 - 在主目录 `/raid/wg25r/video_sql_trace2skill` checkout 已有分支 `codex/egolife-baselines`，继续使用已有实现和离线 artifacts。
 - 答题、MAGIC retriever/responder、子调用和 judge 均使用 `Qwen/Qwen3.8-27B-FP8`，reasoning 为 `xhigh`，保留历史 reasoning。客户端不设置采样参数或输入、输出 token 上限。
 - 两种方法分别以并发 20、每题一次运行；每批结束后，失败题集中重试一次。
-- 我们的方法每次尝试允许 **10 次调查模型调用，再额外一次强制回答**。MAGIC 保持上游检索轮数和截止逻辑。
+- 我们的方法每次尝试允许 **30 次调查模型调用，再额外一次强制回答**。MAGIC 保持上游检索轮数和截止逻辑。
 - 抽样检查与最终 20 题计时使用 seed 0，并保存抽中题目 ID。
 
 ## 2. 数据、索引与 artifacts
@@ -68,7 +68,7 @@ EgoLifeQA视频: /raid/wg25r/egolife/A1_JAKE
 - 复制当前 `src/` 为独立 training-free 实现，只运行静态 skills 和一次答题流程。适配真实 MAGIC schema、节点 ID 和时间字段，同步修改工具说明与静态 SQL skills，不补造旧 schema 的字段。
 - 保留 `run_sql`、`semantic_search`、`clip_qa`、`replace_tool`、证据帧 recipe 和完整 trace。SQL 与检索使用逐题数据库；视频工具拒绝读取 query time 之后的证据。
 - 在实际模型请求发出前统一计数：主 agent、`clip_qa`、SQL/检索结果 QA 等调查调用共享预算；并行子调用先占用剩余额度。调用 `replace_tool` 的模型轮次计数，工具执行不另计，历史回退不减计数。
-- 用完 10 次后关闭调查工具，额外调用一次生成最终答案；judge 不占调查预算。移除旧的客户端 token 阈值提前强答规则，真实 context 溢出按失败协议处理。
+- 用完 30 次后关闭调查工具，额外调用一次生成最终答案；judge 不占调查预算。移除旧的客户端 token 阈值提前强答规则，真实 context 溢出按失败协议处理。
 - MAGIC 的 embedding 接口改为 HTTP，所有查询和建索引路径使用同一规范化及向量模型。保留其 PPR、BM25、chain 检索和时间截止语义；开放题不再传入选择项。模型接口保留每题真实消息及 reasoning 历史，结构化输出使用 SDK parse。
 - 时间检索修正日期与秒数单位，并应用 query time 截止；保留时间检索分支。Chain 相似度检索保留上游前 2000 字符规则。
 - 每题隔离可变检索状态，避免串行抽样或批后重试继承其他问题的时间范围。缺失必要数据或 embedding 时明确失败，不继续运行缺失的检索分支。
@@ -84,7 +84,7 @@ EgoLifeQA视频: /raid/wg25r/egolife/A1_JAKE
 
 ## 4. 评分、重试、token 与计时
 
-两边使用同一个 judge 实现，只输入开放题、正确答案文本和模型答案，固定采用以下 rubric：
+两边使用同一个 judge 实现，输入开放题、正确答案文本、模型答案，以及提问者 A1_JAKE/Jake、第一人称身份、query time 原值、DAY 编号、时分秒和帧号，固定采用以下 rubric：
 
 | 分数 | 标准 |
 |---|---|
@@ -94,6 +94,10 @@ EgoLifeQA视频: /raid/wg25r/egolife/A1_JAKE
 | 3 | 核心内容大体正确，仍有实质遗漏或错误 |
 | 4 | 基本完整正确，仅有次要遗漏或不准确 |
 | 5 | 完整正确，与参考答案语义等价，无实质矛盾 |
+
+评分以问题要求的信息为准。接受同义表达、可识别的同一人名拼写变体、列表顺序变化以及与 query time 对应的绝对/相对时间；“我”和 Jake/A1_JAKE 指同一提问者。正确的补充细节、引用、行 ID、时间戳、格式、篇幅和谨慎措辞本身不扣分，不因简短参考答案未列出某个细节就认定该细节错误。低于 5 分须在结构化 justification 中指出实际事实错误或所需信息的遗漏；score 与 justification 应一致。
+
+本轮先统计旧 SQL 10 次预算的实际强制回答比例，再用上述 judge 重新评分两边已有答案，保留原答案、失败分类和旧评分。之后以 30 次调查调用加一次强制回答重新运行 SQL 500 题，使用同一新版 judge；新结果写入独立目录。
 
 - 保存每题答案、judge、全部尝试和完整请求/工具 trace，完成即落盘，恢复时复用已完成结果。
 - 不沿用旧评估器的三次整题重试；只执行本批结束后的那一次集中重试。模型可纠正的工具错误回传原错误，后续模型调用仍消耗预算。
@@ -108,7 +112,7 @@ EgoLifeQA视频: /raid/wg25r/egolife/A1_JAKE
 ## 5. 验证与交付
 
 - 核对原始记录到图、DuckDB 和向量 ID 的对应关系；检查截止前、截止点、跨截止及无明确时间记录，确认 SQL、向量检索和视频证据均符合各自规则。
-- 用小范围真实调用检查并行预算、10+1 强答、replacement 回退、reasoning 回传、judge、失败重试与 token 账目。逐项查看工具实际输入和返回值，不仅检查完成状态。
+- 用小范围真实调用检查并行预算、30+1 强答、replacement 回退、reasoning 回传、judge、失败重试与 token 账目。逐项查看工具实际输入和返回值，不仅检查完成状态。
 - 不新增测试套件，不运行语法检查。并行启动一个新的独立 subagent 和一个 `claude -p`，对照本计划审查整个目录，不是 diff；审查后修改 W&B 日志位置并处理审查问题，再重新运行。
 - 每次源码或文档编辑后提交。Git 只保留源码、使用说明和紧凑最终结果；原始 traces、逐题结果、大型数据库和向量保持忽略。
 - 最终交付可运行的两种方法、完整私有 HF artifacts、直接使用文档，以及质量、失败分类、token/等效费用和串行耗时对比。
