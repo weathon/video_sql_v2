@@ -162,6 +162,38 @@ class Evaluation:
         self.monitor_stop = threading.Event()
         self.monitor_ready = asyncio.Event()
         self.progress = {f"progress/{kind}/{state}": 0 for kind in ("answer", "judge") for state in ("started", "active", "completed", "failed")}
+        self.magic_scores = {}
+        self.completed_scores = {}
+        if args.method == "sql":
+            reference = args.artifact_root / "results/quality-magic-judge-v2"
+            reference_config = json.loads((reference / "config.json").read_text())["evaluation"]
+            if reference_config["judge_rubric"] != RUBRIC or reference_config["judge_version"] != 2:
+                raise ValueError("Live MAGIC comparison requires the same judge v2 rubric")
+            reference_questions = {str(question["id"]): question for question in reference_config["questions"]}
+            for question in questions:
+                qid = str(question["id"])
+                if reference_questions[qid] != question:
+                    raise ValueError(f"MAGIC comparison question differs: {qid}")
+                result = json.loads((reference / "magic/questions" / qid / "result.json").read_text())
+                if result["category"] != "maintenance":
+                    self.magic_scores[qid] = result["score"]
+                judgment = args.run_dir / "sql/questions" / qid / "judgment.json"
+                if judgment.exists():
+                    self.completed_scores[qid] = json.loads(judgment.read_text())["score"]
+            self.update_overlap()
+
+    def update_overlap(self):
+        ids = sorted(self.completed_scores.keys() & self.magic_scores.keys(), key=int)
+        payload = {"overlap/count": len(ids)}
+        if ids:
+            ours = [self.completed_scores[qid] for qid in ids]
+            magic = [self.magic_scores[qid] for qid in ids]
+            payload.update({"overlap/sql_mean_score": sum(ours) / len(ids), "overlap/magic_mean_score": sum(magic) / len(ids), "overlap/sql_accuracy": sum(score == 5 for score in ours) / len(ids), "overlap/magic_accuracy": sum(score == 5 for score in magic) / len(ids)})
+            payload["overlap/mean_score_delta"] = payload["overlap/sql_mean_score"] - payload["overlap/magic_mean_score"]
+            payload["overlap/accuracy_delta"] = payload["overlap/sql_accuracy"] - payload["overlap/magic_accuracy"]
+        self.progress.update(payload)
+        with self.log_lock:
+            self.run.log(payload)
 
     def monitor(self, loop):
         pynvml.nvmlInit()
@@ -379,6 +411,9 @@ class Evaluation:
                     raise ValueError("Judge response has no actual reasoning")
                 outcome.update({"outcome": "scored", "score": message.parsed.score, "justification": message.parsed.justification})
                 (question_root / "judgment.json").write_text(json.dumps(outcome, ensure_ascii=False, indent=2) + "\n")
+                if self.args.method == "sql":
+                    self.completed_scores[str(question["id"])] = outcome["score"]
+                    self.update_overlap()
                 print(f"JUDGE method={method} id={question['id']} attempt={attempt} score={outcome['score']}", flush=True)
             except Exception as error:
                 trace["error"] = {"type": type(error).__name__, "message": str(error), "traceback": traceback.format_exc()}
@@ -407,7 +442,8 @@ class Evaluation:
             return
         name = f"{method}-{kind}-{attempt}-{uuid4().hex}"
         path = self.phase_dir / f"{name}.json"
-        phase = {"name": name, "method": method, "kind": kind, "attempt": attempt, "ids": [question["id"] for question, _ in pending], "trace_dirs": [str(directory) for _, directory in pending], "complete": False}
+        phase_kind = "answer_and_judge" if kind == "answer" and method == "sql" and self.args.method != "latency" else kind
+        phase = {"name": name, "method": method, "kind": phase_kind, "attempt": attempt, "ids": [question["id"] for question, _ in pending], "trace_dirs": [str(directory) for _, directory in pending], "complete": False}
         phase["before"] = await self.snapshot(path.with_suffix(".before.prom"))
         path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
         print(f"PHASE start={name} questions={len(pending)} concurrency={1 if self.args.method == 'latency' else self.args.concurrency}", flush=True)
@@ -415,6 +451,22 @@ class Evaluation:
             if self.args.method == "latency":
                 for question, directory in pending:
                     await (self.answer(method, question, attempt, directory) if kind == "answer" else self.judge(method, question, attempt, directory))
+            elif phase_kind == "answer_and_judge":
+                work = iter(pending)
+
+                async def answer_and_judge_worker():
+                    for question, directory in work:
+                        await self.answer(method, question, attempt, directory)
+                        root = self.args.run_dir / method / "questions" / str(question["id"])
+                        if (root / "answer.json").exists():
+                            judge_directory = root / "judge-attempt-1" / uuid4().hex
+                            phase["trace_dirs"].append(str(judge_directory))
+                            path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
+                            await self.judge(method, question, 1, judge_directory)
+
+                async with asyncio.TaskGroup() as group:
+                    for _ in range(min(self.args.concurrency, len(pending))):
+                        group.create_task(answer_and_judge_worker())
             else:
                 async with asyncio.TaskGroup() as group:
                     for question, directory in pending:
@@ -423,6 +475,8 @@ class Evaluation:
             await self.finish_phase(path, phase)
 
     async def evaluate_method(self, method):
+        if method == "sql" and self.args.answers_from is None:
+            await asyncio.to_thread(load_magic_artifacts, self.args.artifact_root)
         if self.args.method == "latency":
             directory = self.args.run_dir / method / f"cache-clear-{uuid4().hex}"
             directory.mkdir(parents=True)
@@ -476,6 +530,10 @@ class Evaluation:
                     failure.update({"category": review["category"], "cause": review["cause"], "review": review})
                 (root / "failure.json").write_text(json.dumps(failure, ensure_ascii=False, indent=2) + "\n")
                 failures.append(failure)
+                if self.args.method == "sql" and failure["category"] == "algorithm":
+                    self.completed_scores[str(question["id"])] = 0
+        if self.args.method == "sql":
+            self.update_overlap()
         for attempt in (1, 2):
             await self.batch(method, "judge", attempt, answerable)
         unresolved_judges = [question["id"] for question in answerable if not (self.args.run_dir / method / "questions" / str(question["id"]) / "judgment.json").exists()]
@@ -510,6 +568,10 @@ class Evaluation:
             total = sum(item["latency_seconds"] for item in per_question) if complete else None
             summary["latency"] = {"per_question": per_question, "total_seconds": total, "mean_seconds": total / len(per_question) if complete else None}
         (self.args.run_dir / method / "metrics.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+        if self.args.method == "sql":
+            ids = sorted(self.completed_scores.keys() & self.magic_scores.keys(), key=int)
+            comparison = {"reference": "results/quality-magic-judge-v2", "accuracy_definition": "score == 5", "metrics": {key: value for key, value in self.progress.items() if key.startswith("overlap/")}, "ids": ids}
+            (self.args.run_dir / "overlap-comparison.json").write_text(json.dumps(comparison, ensure_ascii=False, indent=2) + "\n")
         with self.log_lock:
             self.run.log({f"{method}/{key}": value for key, value in summary.items() if isinstance(value, (int, float))})
         print(f"METHOD_COMPLETE {json.dumps(summary, ensure_ascii=False)}", flush=True)
@@ -528,7 +590,7 @@ class Evaluation:
         if complete:
             for method in sorted({phase["method"] for phase in phases}):
                 totals[method] = {}
-                for kind in ("answer", "judge", "all"):
+                for kind in (*sorted({phase["kind"] for phase in phases if phase["method"] == method}), "all"):
                     selected = [phase for phase in phases if phase["method"] == method and (kind == "all" or phase["kind"] == kind)]
                     totals[method][kind] = {key: sum(phase["server_tokens"][key] for phase in selected) for key in (*COUNTERS, "uncached_input_tokens", "fee_usd")}
         payload = {"authoritative_source": f"{PD_URL}/metrics phase counter differences", "input_tokens_include_cached": True, "rates_usd_per_million": {"uncached_input": 0.15, "output": 0.47, "cached_input": 0.016}, "complete": complete, "totals": totals, "responses": list(responses.values()), "phases": phases}
@@ -574,6 +636,8 @@ async def main_async(args):
     if not questions or args.concurrency < 1:
         raise ValueError("Evaluation requires questions and positive concurrency")
     config = {"method": args.method, "artifact_root": str(args.artifact_root), "model": MODEL, "base_url": BASE_URL, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "reasoning_effort": "xhigh", "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": 2, "judge_attempts": 2, "questions": questions, "judge_rubric": RUBRIC, "judge_version": 2, "answer_source_run_dir": str(args.answers_from) if args.answers_from is not None else None, "investigation_call_limit": INVESTIGATION_CALL_LIMIT if args.answers_from is None else None, "live_metrics_interval_seconds": 1}
+    if args.method == "sql":
+        config.update({"retrieval_method": "sql_ppr" if args.answers_from is None else "saved_answers", "live_magic_reference": str(args.artifact_root / "results/quality-magic-judge-v2"), "overlap_accuracy_definition": "score == 5"})
     config_path = args.run_dir / "config.json"
     if config_path.exists():
         saved = json.loads(config_path.read_text())

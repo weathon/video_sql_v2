@@ -850,9 +850,9 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             result = await asyncio.to_thread(search_graph, context, query, vector, n, pre_sql, post_sql, trace)
             trace["result"] = result
             print(f"PPR result candidates={result['candidate_count']} hits={result['ppr_hit_count']} rows={len(result['rows'])}", flush=True)
-            return json.dumps(result, ensure_ascii=False, default=json_value)
+            return json.dumps(result, ensure_ascii=False, default=lambda value: json_value(value, None))
         finally:
-            path.write_text(json.dumps(trace, ensure_ascii=False, indent=2, default=json_value) + "\n")
+            path.write_text(json.dumps(trace, ensure_ascii=False, indent=2, default=lambda value: json_value(value, None)) + "\n")
 
     @function_tool(failure_error_function=tool_error_json)
     async def run_sql(sql: str, question: str | None = None) -> str:
