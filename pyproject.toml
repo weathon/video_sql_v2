@@ -21,6 +21,13 @@ dependencies = [
     "tqdm>=4.70.0",
     "wandb",
     "weave",
+    "igraph",
+    "rank-bm25",
+    "torch",
+    "pandas",
+    "pyarrow",
+    "huggingface_hub",
+    "prometheus-client",
 ]
 
 [dependency-groups]
@@ -28,4 +35,3 @@ dev = ["pytest"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-
