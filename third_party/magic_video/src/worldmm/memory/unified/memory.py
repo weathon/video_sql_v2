@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
+from training_free.normalize import normalize_text
 
 from .graph import MultimodalGraph
 from .nodes import GraphNode, NodeType, _fmt_ts
@@ -121,9 +122,9 @@ class UnifiedMemory:
                 """Parse 'HH:MM:SS' or 'HH:MM'. If as_seconds, return total seconds
                 (MM-Lifelong float-second nodes); otherwise return
                 DHHMMSSFF time-component (HH*1e6+MM*1e4+SS*100) for EgoLife nodes."""
-                m = re.match(r'(\d{1,2}):(\d{2}):?(\d{2})?', t)
+                m = re.fullmatch(r'(\d{1,2}):(\d{2})(?::(\d{2}))?', t)
                 if not m:
-                    return 0
+                    raise ValueError(f'Invalid event step time: {t!r}')
                 h, mn, s = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
                 if as_seconds:
                     return h * 3600 + mn * 60 + s
@@ -133,27 +134,24 @@ class UnifiedMemory:
                 # When no day prefix, node.start_ts is in float seconds, so step
                 # times must also be parsed as seconds to allow comparison.
                 steps_with_ts = []
-                for step in ec.get("steps", []):
-                    day = step.get("day", "")
-                    dm = re.match(r'DAY(\d+)', day)
-                    day_prefix = int(dm.group(1)) * 100000000 if dm else 0
-                    as_seconds = (day_prefix == 0)
-                    st = step.get("start_time", "")
-                    et = step.get("end_time", "")
-                    start_ts = day_prefix + _parse_hms(st, as_seconds=as_seconds)
-                    end_ts = day_prefix + _parse_hms(et, as_seconds=as_seconds)
-                    if start_ts == 0 and end_ts == 0:
-                        continue
+                for step in ec["steps"]:
+                    day = step["day"]
+                    dm = re.fullmatch(r'DAY(\d+)', day)
+                    if dm is None:
+                        raise ValueError(f'Invalid EgoLife event step day: {day!r}')
+                    day_prefix = int(dm.group(1)) * 100000000
+                    start_ts = day_prefix + _parse_hms(step["start_time"])
+                    end_ts = day_prefix + _parse_hms(step["end_time"])
                     steps_with_ts.append({
                         "day": day,
                         "start_ts": start_ts,
                         "end_ts": end_ts,
-                        "description": step.get("description", ""),
+                        "description": step["description"],
                     })
                 if len(steps_with_ts) >= 2:
                     self._event_chains.append({
-                        "name": ec.get("name", ""),
-                        "key_entities": ec.get("key_entities", []),
+                        "name": ec["name"],
+                        "key_entities": ec["key_entities"],
                         "steps": steps_with_ts,
                     })
             logger.info(f"Loaded event chains: {len(self._event_chains)} chains, "
@@ -195,7 +193,7 @@ class UnifiedMemory:
         # Robust pattern matching: case-insensitive, plural (s/es), hyphen/space variants
         def _robust_pattern(entity):
             """Build a regex that matches entity with plural, case, hyphen robustness."""
-            e = entity.lower().strip()
+            e = normalize_text(entity)
             variants = [re.escape(e)]
             # Add hyphen/space variants
             if '-' in e:
@@ -212,7 +210,7 @@ class UnifiedMemory:
             for entity in self._topic_facts
         }
 
-        query_lower = query_text.lower() if query_text else ""
+        query_lower = normalize_text(query_text)
 
         # Topic chains: coarse filter — entity mentioned in retrieved 30sec episodes
         topic_hits = {}  # entity → hit count
@@ -222,7 +220,7 @@ class UnifiedMemory:
             gran = node.metadata.get("granularity", "")
             if gran != "30sec":
                 continue
-            caption = (node.text or "").lower()
+            caption = normalize_text(node.text)
             for entity, pat in topic_patterns.items():
                 if pat.search(caption):
                     topic_hits[entity] = topic_hits.get(entity, 0) + 1
