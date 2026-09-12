@@ -41,7 +41,8 @@ from openai import APIError, AsyncOpenAI, DefaultAsyncHttpxClient
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
-from src.normalize import normalize_text
+from training_free.normalize import normalize_text
+from training_free.index_schema import SCHEMA, SEARCH_TABLES, fact_interval, timestamp_seconds
 
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -54,29 +55,8 @@ FRAME_SIZE = (854, 480)
 # model-specific image token estimate. Context accounting uses returned usage.
 CLIP_IMAGE_LIMIT = 650
 TOOL_REMINDER_CHARACTERS = 10_000
-SEARCH_TABLES = {
-    "episodes": "text",
-    "entities": "name",
-    "semantic_triples": "text",
-    "topic_facts": "fact",
-    "event_steps": "description",
-    "object_states": "text",
-    "visual_clips": "text",
-}
-SCHEMA = """
-episodes(row_id, start_s, end_s, granularity, text)
-entities(row_id, name, normalized_name, first_seen_s, last_seen_s, frequency)
-semantic_triples(row_id, caption_30sec_row_id, snapshot_s, subject, predicate, object, text)
-topic_chains(row_id, entity, has_lifecycle, level, scope_id, start_s, end_s, summary)
-topic_facts(row_id, chain_row_id, caption_30sec_row_id, time_s, fact)
-event_chains(row_id, name, chain_type, level, scope_id, start_s, end_s, summary)
-event_steps(row_id, chain_row_id, caption_start_row_id, caption_end_row_id, step_index, start_s, end_s, description)
-visual_clips(row_id, start_s, end_s, text)
-object_states(row_id, episode_3min_row_id, caption_30sec_row_id, start_s, end_s, object, status, text)
-graph_edges(row_id, src_row_id, dst_row_id, edge_type, weight)
-topic_fact_evidence(row_id, fact_row_id, caption_30sec_row_id)
-event_step_evidence(row_id, step_row_id, caption_30sec_row_id)
-""".strip()
+SHARED_VECTORS = {}
+SHARED_ROW_IDS = {}
 COMPACTION_INSTRUCTION = """
 Stop calling tools. Produce a trusted handoff that preserves the question, established evidence,
 unresolved branches, useful row IDs and time intervals, and the exact next investigation steps.
@@ -93,6 +73,10 @@ class InvalidTrace(Exception):
 
 
 class AnswerContextLimit(Exception):
+    pass
+
+
+class InvestigationBudgetExhausted(Exception):
     pass
 
 
@@ -127,11 +111,16 @@ class HarnessContext:
     embedding_url: str
     embedding_model: str
     embedding_client: httpx.AsyncClient
+    query_time: int
     clip_qa_video: bool = False
     context_limit: int = CONTEXT_LIMIT
     compaction_threshold: int = COMPACTION_THRESHOLD
     compactions: int = 0
     answer_turns: int = 0
+    investigation_calls: int = 0
+    final_calls: int = 0
+    final_answer_mode: bool = False
+    eligible_positions: dict[str, np.ndarray] = field(init=False)
     answer_context_tokens: int = 0
     answer_context_reached: bool = False
     base_instructions: str = ""
@@ -154,20 +143,40 @@ class HarnessContext:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         (self.run_dir / "traces").mkdir(exist_ok=True)
         (self.run_dir / "media").mkdir(exist_ok=True)
-        self.vectors = {}
-        self.row_ids = {}
-        for table in SEARCH_TABLES:
-            self.row_ids[table] = np.load(
-                self.embedding_index / f"{table}.row_ids.npy",
-                mmap_mode="r",
-                allow_pickle=False,
-            )
-            self.vectors[table] = np.load(
-                self.embedding_index / f"{table}.vectors.npy",
-                mmap_mode="r",
-                allow_pickle=False,
-            )
+        key = str(self.embedding_index)
+        if key not in SHARED_VECTORS:
+            SHARED_ROW_IDS[key] = {table: np.load(self.embedding_index / f"{table}.row_ids.npy", mmap_mode="r", allow_pickle=False) for table in SEARCH_TABLES}
+            SHARED_VECTORS[key] = {table: np.load(self.embedding_index / (f"{table}.video_vectors.npy" if table == "visual_clip" else f"{table}.vectors.npy"), mmap_mode="r", allow_pickle=False) for table in SEARCH_TABLES}
+        self.vectors = SHARED_VECTORS[key]
+        self.row_ids = SHARED_ROW_IDS[key]
+        self.eligible_positions = {}
+        with duckdb.connect(str(self.database), read_only=True) as connection:
+            for table in SEARCH_TABLES:
+                allowed = np.asarray([row[0] for row in connection.execute(f"SELECT id FROM {table} ORDER BY id").fetchall()], dtype=self.row_ids[table].dtype)
+                positions = np.searchsorted(self.row_ids[table], allowed)
+                if (positions >= len(self.row_ids[table])).any() or not np.array_equal(self.row_ids[table][positions], allowed):
+                    raise RuntimeError(f"Database/embedding IDs differ for {table}")
+                self.eligible_positions[table] = positions
         self.sources = json.loads(self.media_map.read_text())["sources"]
+        for source in self.sources:
+            source["path"] = str(self.media_map.parent / source["relative_path"])
+        source_times = [item["timeline_start_s"] for item in self.sources]
+        coarse = timestamp_seconds(self.query_time, 1e9)
+        source = self.sources[max(0, int(np.searchsorted(source_times, coarse, side="right")) - 1)]
+        self.query_time_s = timestamp_seconds(self.query_time, source["fps"])
+
+    def reserve_model_call(self, role: str) -> None:
+        if role == "judge":
+            return
+        if self.final_answer_mode and role == "memory-retrieval":
+            if self.final_calls:
+                raise InvestigationBudgetExhausted("The single final-answer request was already used")
+            self.final_calls += 1
+        else:
+            if self.investigation_calls >= 10:
+                raise InvestigationBudgetExhausted("The 10 investigation model calls are exhausted; use the final-answer request")
+            self.investigation_calls += 1
+        print(f"MODEL_CALL role={role} investigation={self.investigation_calls} final={self.final_calls}", flush=True)
 
     async def clip_response(self, request: dict[str, Any], call_id: str, frame_files: list[str]):
         path = self.run_dir / "traces" / f"clip-{call_id}.json"
@@ -175,6 +184,7 @@ class HarnessContext:
         path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
         print(f"clip_qa model={request['model']} api={artifact['api']} frames={len(frame_files)} trace={path}", flush=True)
         try:
+            self.reserve_model_call("clip-qa")
             if self.clip_qa_video:
                 raw = await self.client.chat.completions.with_raw_response.parse(**request, response_format=ClipSubmission)
             else:
@@ -213,6 +223,7 @@ class HarnessContext:
         path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
         print(f"{name} model={request['model']} content_parts={len(content)} trace={path}", flush=True)
         try:
+            self.reserve_model_call(name)
             raw = await self.client.responses.with_raw_response.parse(**request, text_format=text_format)
             payload = json.loads(raw.content)
             artifact["response"] = payload
@@ -247,11 +258,9 @@ def exception_chain(error: BaseException) -> list[BaseException]:
 
 def tool_error_json(_context: Any, error: Exception) -> str:
     for item in exception_chain(error):
-        if isinstance(item, FileNotFoundError):
+        if isinstance(item, (FileNotFoundError, RuntimeError, httpx.HTTPError)):
             raise item
-        if isinstance(item, APIError) and (
-            item.code == "insufficient_quota" or "no credits remaining" in str(item).lower()
-        ):
+        if isinstance(item, APIError):
             raise item
     return json.dumps({"error": str(error)}, ensure_ascii=False)
 
