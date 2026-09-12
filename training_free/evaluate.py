@@ -572,6 +572,7 @@ async def main_async(args):
         finally:
             await evaluation.judge_client.close()
             await evaluation.http.aclose()
+            weave.get_client().finish(use_progress_bar=False)
             weave.finish()
             run.finish()
 
