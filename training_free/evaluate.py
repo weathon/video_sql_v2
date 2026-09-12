@@ -131,6 +131,8 @@ def classify_failure(record):
         category, cause = "algorithm", "invalid_structured_model_output"
     elif types & {"APIConnectionError", "APITimeoutError", "ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "RemoteProtocolError"}:
         category, cause = "maintenance", "server_connection_or_timeout"
+    elif "InternalServerError" in types:
+        category, cause = "maintenance", "server_http_error"
     elif types & {"FileNotFoundError", "PermissionError", "IsADirectoryError", "NotADirectoryError", "EOFError", "UnpicklingError"}:
         category, cause = "maintenance", "missing_unreadable_or_corrupt_file"
     elif types & {"ModuleNotFoundError", "ImportError", "NameError", "UnboundLocalError", "AttributeError", "TypeError", "KeyError", "IndexError", "AssertionError"}:
