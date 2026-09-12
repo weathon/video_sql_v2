@@ -196,13 +196,14 @@ class Evaluation:
             started = time.perf_counter()
             try:
                 if method == "magic":
-                    candidate = await asyncio.to_thread(run_magic, question["question"], question["query_time"], directory, self.args.artifact_root, BASE_URL, EMBEDDING_URL)
+                    candidate, answered_at = await asyncio.to_thread(run_magic, question["question"], question["query_time"], directory, self.args.artifact_root, BASE_URL, EMBEDDING_URL)
                     status = "answered"
                 else:
                     harness = VideoSQLHarness(database=self.args.artifact_root / "questions" / f"{question['id']}.duckdb", embedding_index=self.args.artifact_root / "embeddings", media_map=self.args.artifact_root / "media-map.json", skill_dir=Path(__file__).resolve().parent / "skills", run_dir=directory, model_name=MODEL, api_key="EMPTY", embedding_url=EMBEDDING_URL, embedding_model=EMBEDDING_MODEL, query_time=question["query_time"], base_url=BASE_URL, clip_qa_video=True)
                     session = await harness.answer(question["question"])
+                    answered_at = time.perf_counter()
                     candidate, status = session.answer, session.status
-                record.update({"candidate_answer": candidate, "status": status, "latency_seconds": time.perf_counter() - started})
+                record.update({"candidate_answer": candidate, "status": status, "latency_seconds": answered_at - started})
                 if status != "answered" or not isinstance(candidate, str) or not candidate.strip():
                     raise ValueError(f"Method returned an invalid final answer: status={status}, candidate={candidate!r}")
                 (directory / "candidate.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")

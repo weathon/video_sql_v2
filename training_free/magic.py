@@ -6,6 +6,7 @@ import json
 import pickle
 import sys
 import threading
+import time
 from pathlib import Path
 from string import Template
 from types import SimpleNamespace
@@ -252,7 +253,7 @@ class MagicMemory(WorldMemory):
         self.visual_memory = MagicFrames(api, artifact_root)
 
 
-def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path, base_url: str, embedding_url: str) -> str:
+def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path, base_url: str, embedding_url: str) -> tuple[str, float]:
     api = MagicAPI(Path(run_dir), base_url, embedding_url)
     artifact_root = Path(artifact_root).resolve()
     question = normalize_text(question)
@@ -371,7 +372,8 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
                 (api.traces / f"magic-{uuid4().hex}.json").write_text(json.dumps(trace, ensure_ascii=False))
         qa_content = [{"type": "text", "text": full_query + "\n\nContext:\n"}]
         qa_content.extend(memory._render_retrieved_items_interleaved(retrieved_items))
-        return api.complete(final_prompt + conversation + [{"role": "user", "content": qa_content}])
+        answer = api.complete(final_prompt + conversation + [{"role": "user", "content": qa_content}])
+        return answer, time.perf_counter()
     finally:
         memory.unified_memory.cleanup()
         api.llm.close()
