@@ -1,0 +1,722 @@
+{
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "reasoning_effort": "xhigh",
+  "embedding_model": "Qwen/Qwen3-VL-Embedding-8B",
+  "quality_concurrency": 20,
+  "investigation_calls_sql": 10,
+  "additional_forced_answer_calls_sql": 1,
+  "seed": 0,
+  "artifact_repo": "https://huggingface.co/datasets/weathon/egolife-a1-jake-magic-videosql-qwen3vl8b",
+  "quality": {
+    "magic": {
+      "method": "magic",
+      "requested": 500,
+      "denominator": 500,
+      "mean_score": 1.97,
+      "score5_count": 91,
+      "score5_fraction": 0.182,
+      "algorithm_failure_count": 20,
+      "maintenance_failure_count": 0,
+      "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/0bwm7q7z",
+      "model_call_source_commit": "c4f08c91bc493d66eed5ba6c3a1544ebc0a6ed1f",
+      "failures": [
+        {
+          "id": "32",
+          "category": "algorithm",
+          "cause": "empty_final_answer"
+        },
+        {
+          "id": "104",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "204",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "219",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "230",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "231",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "253",
+          "category": "algorithm",
+          "cause": "empty_final_answer"
+        },
+        {
+          "id": "296",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "306",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "343",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "374",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "380",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "397",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "419",
+          "category": "algorithm",
+          "cause": "empty_final_answer"
+        },
+        {
+          "id": "423",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "431",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "444",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "446",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "449",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        },
+        {
+          "id": "484",
+          "category": "algorithm",
+          "cause": "context_overflow"
+        }
+      ]
+    },
+    "sql": {
+      "method": "sql",
+      "requested": 500,
+      "denominator": 498,
+      "mean_score": 2.0903614457831323,
+      "score5_count": 94,
+      "score5_fraction": 0.18875502008032127,
+      "algorithm_failure_count": 0,
+      "maintenance_failure_count": 2,
+      "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/rkh09j0e",
+      "model_call_source_commit": "c4f08c91bc493d66eed5ba6c3a1544ebc0a6ed1f",
+      "failures": [
+        {
+          "id": "84",
+          "category": "maintenance",
+          "cause": "server_disconnected_without_response"
+        },
+        {
+          "id": "468",
+          "category": "maintenance",
+          "cause": "server_disconnected_without_response"
+        }
+      ]
+    }
+  },
+  "tokens": {
+    "magic": {
+      "quality": {
+        "by_phase": {
+          "answer": {
+            "input_tokens": 85870405,
+            "cached_tokens": 7996000,
+            "output_tokens": 2894514,
+            "uncached_input_tokens": 77874405,
+            "fee_usd": 13.169518329999999
+          },
+          "judge": {
+            "input_tokens": 100416,
+            "cached_tokens": 0,
+            "output_tokens": 223370,
+            "uncached_input_tokens": 100416,
+            "fee_usd": 0.1200463
+          },
+          "all": {
+            "input_tokens": 85970821,
+            "cached_tokens": 7996000,
+            "output_tokens": 3117884,
+            "uncached_input_tokens": 77974821,
+            "fee_usd": 13.289564629999997
+          }
+        },
+        "requests": 4226,
+        "requests_with_unknown_usage": 60,
+        "server_minus_known_usage": {
+          "input_tokens": 0,
+          "cached_tokens": 0,
+          "output_tokens": 0
+        }
+      },
+      "latency": {
+        "by_phase": {
+          "answer": {
+            "input_tokens": 2669706,
+            "cached_tokens": 144800,
+            "output_tokens": 85400,
+            "uncached_input_tokens": 2524906,
+            "fee_usd": 0.42119070000000003
+          },
+          "judge": {
+            "input_tokens": 3879,
+            "cached_tokens": 0,
+            "output_tokens": 11835,
+            "uncached_input_tokens": 3879,
+            "fee_usd": 0.0061443
+          },
+          "all": {
+            "input_tokens": 2673585,
+            "cached_tokens": 144800,
+            "output_tokens": 97235,
+            "uncached_input_tokens": 2528785,
+            "fee_usd": 0.427335
+          }
+        },
+        "requests": 144,
+        "requests_with_unknown_usage": 2,
+        "server_minus_known_usage": {
+          "input_tokens": 0,
+          "cached_tokens": 0,
+          "output_tokens": 0
+        }
+      },
+      "debug": {
+        "by_phase": {
+          "answer": {
+            "input_tokens": 184334,
+            "cached_tokens": 12800,
+            "output_tokens": 18414,
+            "uncached_input_tokens": 171534,
+            "fee_usd": 0.034589480000000006
+          },
+          "judge": {
+            "input_tokens": 436,
+            "cached_tokens": 0,
+            "output_tokens": 2415,
+            "uncached_input_tokens": 436,
+            "fee_usd": 0.00120045
+          },
+          "all": {
+            "input_tokens": 184770,
+            "cached_tokens": 12800,
+            "output_tokens": 20829,
+            "uncached_input_tokens": 171970,
+            "fee_usd": 0.035789930000000005
+          }
+        },
+        "requests": 12,
+        "requests_with_unknown_usage": 0,
+        "server_minus_known_usage": {
+          "input_tokens": 0,
+          "cached_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    },
+    "sql": {
+      "quality": {
+        "by_phase": {
+          "answer": {
+            "input_tokens": 67407766,
+            "cached_tokens": 40292800,
+            "output_tokens": 8171191,
+            "uncached_input_tokens": 27114966,
+            "fee_usd": 8.55238947
+          },
+          "judge": {
+            "input_tokens": 176523,
+            "cached_tokens": 0,
+            "output_tokens": 311245,
+            "uncached_input_tokens": 176523,
+            "fee_usd": 0.17276360000000002
+          },
+          "all": {
+            "input_tokens": 67584289,
+            "cached_tokens": 40292800,
+            "output_tokens": 8482436,
+            "uncached_input_tokens": 27291489,
+            "fee_usd": 8.72515307
+          }
+        },
+        "requests": 5645,
+        "requests_with_unknown_usage": 11,
+        "server_minus_known_usage": {
+          "input_tokens": 32193,
+          "cached_tokens": 0,
+          "output_tokens": 27187
+        }
+      },
+      "latency": {
+        "by_phase": {
+          "answer": {
+            "input_tokens": 2406030,
+            "cached_tokens": 1464800,
+            "output_tokens": 264811,
+            "uncached_input_tokens": 941230,
+            "fee_usd": 0.28908247
+          },
+          "judge": {
+            "input_tokens": 6515,
+            "cached_tokens": 0,
+            "output_tokens": 16402,
+            "uncached_input_tokens": 6515,
+            "fee_usd": 0.008686189999999998
+          },
+          "all": {
+            "input_tokens": 2412545,
+            "cached_tokens": 1464800,
+            "output_tokens": 281213,
+            "uncached_input_tokens": 947745,
+            "fee_usd": 0.29776865999999996
+          }
+        },
+        "requests": 222,
+        "requests_with_unknown_usage": 0,
+        "server_minus_known_usage": {
+          "input_tokens": 0,
+          "cached_tokens": 0,
+          "output_tokens": 0
+        }
+      },
+      "debug": {
+        "by_phase": {
+          "answer": {
+            "input_tokens": 186978,
+            "cached_tokens": 108800,
+            "output_tokens": 43321,
+            "uncached_input_tokens": 78178,
+            "fee_usd": 0.03382837
+          },
+          "judge": {
+            "input_tokens": 3331,
+            "cached_tokens": 0,
+            "output_tokens": 3017,
+            "uncached_input_tokens": 3331,
+            "fee_usd": 0.00191764
+          },
+          "all": {
+            "input_tokens": 190309,
+            "cached_tokens": 108800,
+            "output_tokens": 46338,
+            "uncached_input_tokens": 81509,
+            "fee_usd": 0.03574601
+          }
+        },
+        "requests": 23,
+        "requests_with_unknown_usage": 0,
+        "server_minus_known_usage": {
+          "input_tokens": 0,
+          "cached_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    }
+  },
+  "latency": {
+    "magic": {
+      "per_question": [
+        {
+          "id": "433",
+          "category": "answered",
+          "latency_seconds": 114.68968412000686,
+          "attempt_seconds": [
+            114.68968412000686
+          ]
+        },
+        {
+          "id": "198",
+          "category": "answered",
+          "latency_seconds": 28.437983640935272,
+          "attempt_seconds": [
+            28.437983640935272
+          ]
+        },
+        {
+          "id": "389",
+          "category": "answered",
+          "latency_seconds": 20.211662802030332,
+          "attempt_seconds": [
+            20.211662802030332
+          ]
+        },
+        {
+          "id": "456",
+          "category": "answered",
+          "latency_seconds": 53.16555785306264,
+          "attempt_seconds": [
+            53.16555785306264
+          ]
+        },
+        {
+          "id": "216",
+          "category": "algorithm",
+          "latency_seconds": null,
+          "attempt_seconds": [
+            89.66804065799806,
+            45.92592794401571
+          ]
+        },
+        {
+          "id": "21",
+          "category": "answered",
+          "latency_seconds": 75.30009885900654,
+          "attempt_seconds": [
+            75.30009885900654
+          ]
+        },
+        {
+          "id": "133",
+          "category": "answered",
+          "latency_seconds": 105.47211520501878,
+          "attempt_seconds": [
+            105.47211520501878
+          ]
+        },
+        {
+          "id": "495",
+          "category": "answered",
+          "latency_seconds": 30.586898811045103,
+          "attempt_seconds": [
+            30.586898811045103
+          ]
+        },
+        {
+          "id": "262",
+          "category": "answered",
+          "latency_seconds": 58.3406627390068,
+          "attempt_seconds": [
+            58.3406627390068
+          ]
+        },
+        {
+          "id": "249",
+          "category": "answered",
+          "latency_seconds": 91.72328908601776,
+          "attempt_seconds": [
+            91.72328908601776
+          ]
+        },
+        {
+          "id": "208",
+          "category": "answered",
+          "latency_seconds": 103.83246186596807,
+          "attempt_seconds": [
+            103.83246186596807
+          ]
+        },
+        {
+          "id": "471",
+          "category": "answered",
+          "latency_seconds": 53.99107150302734,
+          "attempt_seconds": [
+            53.99107150302734
+          ]
+        },
+        {
+          "id": "402",
+          "category": "answered",
+          "latency_seconds": 152.5768410449382,
+          "attempt_seconds": [
+            152.5768410449382
+          ]
+        },
+        {
+          "id": "425",
+          "category": "answered",
+          "latency_seconds": 19.132251636008732,
+          "attempt_seconds": [
+            19.132251636008732
+          ]
+        },
+        {
+          "id": "156",
+          "category": "answered",
+          "latency_seconds": 26.006275068037212,
+          "attempt_seconds": [
+            26.006275068037212
+          ]
+        },
+        {
+          "id": "496",
+          "category": "answered",
+          "latency_seconds": 49.305360152968206,
+          "attempt_seconds": [
+            49.305360152968206
+          ]
+        },
+        {
+          "id": "245",
+          "category": "answered",
+          "latency_seconds": 91.4270325480029,
+          "attempt_seconds": [
+            91.4270325480029
+          ]
+        },
+        {
+          "id": "184",
+          "category": "answered",
+          "latency_seconds": 59.42937648005318,
+          "attempt_seconds": [
+            59.42937648005318
+          ]
+        },
+        {
+          "id": "299",
+          "category": "answered",
+          "latency_seconds": 49.10036775097251,
+          "attempt_seconds": [
+            49.10036775097251
+          ]
+        },
+        {
+          "id": "457",
+          "category": "answered",
+          "latency_seconds": 71.57154056301806,
+          "attempt_seconds": [
+            71.57154056301806
+          ]
+        }
+      ],
+      "total_seconds": null,
+      "mean_seconds": null,
+      "answered_count": 19,
+      "first_attempt_processing_total_seconds": 1343.9685723871225,
+      "first_attempt_processing_mean_seconds": 67.19842861935612,
+      "all_attempts_processing_total_seconds": 1389.8945003311383
+    },
+    "sql": {
+      "per_question": [
+        {
+          "id": "433",
+          "category": "answered",
+          "latency_seconds": 68.18919822096359,
+          "attempt_seconds": [
+            68.18919822096359
+          ]
+        },
+        {
+          "id": "198",
+          "category": "answered",
+          "latency_seconds": 82.96851996798068,
+          "attempt_seconds": [
+            82.96851996798068
+          ]
+        },
+        {
+          "id": "389",
+          "category": "answered",
+          "latency_seconds": 66.07018098700792,
+          "attempt_seconds": [
+            66.07018098700792
+          ]
+        },
+        {
+          "id": "456",
+          "category": "answered",
+          "latency_seconds": 64.19377692695707,
+          "attempt_seconds": [
+            64.19377692695707
+          ]
+        },
+        {
+          "id": "216",
+          "category": "answered",
+          "latency_seconds": 88.74290741910227,
+          "attempt_seconds": [
+            88.74290741910227
+          ]
+        },
+        {
+          "id": "21",
+          "category": "answered",
+          "latency_seconds": 34.44079223892186,
+          "attempt_seconds": [
+            34.44079223892186
+          ]
+        },
+        {
+          "id": "133",
+          "category": "answered",
+          "latency_seconds": 17.887144217034802,
+          "attempt_seconds": [
+            17.887144217034802
+          ]
+        },
+        {
+          "id": "495",
+          "category": "answered",
+          "latency_seconds": 19.370443124091253,
+          "attempt_seconds": [
+            19.370443124091253
+          ]
+        },
+        {
+          "id": "262",
+          "category": "answered",
+          "latency_seconds": 103.1281007429352,
+          "attempt_seconds": [
+            103.1281007429352
+          ]
+        },
+        {
+          "id": "249",
+          "category": "answered",
+          "latency_seconds": 29.56543027109001,
+          "attempt_seconds": [
+            29.56543027109001
+          ]
+        },
+        {
+          "id": "208",
+          "category": "answered",
+          "latency_seconds": 45.66081054706592,
+          "attempt_seconds": [
+            45.66081054706592
+          ]
+        },
+        {
+          "id": "471",
+          "category": "answered",
+          "latency_seconds": 32.24174746603239,
+          "attempt_seconds": [
+            32.24174746603239
+          ]
+        },
+        {
+          "id": "402",
+          "category": "answered",
+          "latency_seconds": 47.09973462705966,
+          "attempt_seconds": [
+            47.09973462705966
+          ]
+        },
+        {
+          "id": "425",
+          "category": "answered",
+          "latency_seconds": 132.24876671889797,
+          "attempt_seconds": [
+            132.24876671889797
+          ]
+        },
+        {
+          "id": "156",
+          "category": "answered",
+          "latency_seconds": 70.874217068078,
+          "attempt_seconds": [
+            70.874217068078
+          ]
+        },
+        {
+          "id": "496",
+          "category": "answered",
+          "latency_seconds": 38.44263316807337,
+          "attempt_seconds": [
+            38.44263316807337
+          ]
+        },
+        {
+          "id": "245",
+          "category": "answered",
+          "latency_seconds": 33.80750516499393,
+          "attempt_seconds": [
+            33.80750516499393
+          ]
+        },
+        {
+          "id": "184",
+          "category": "answered",
+          "latency_seconds": 58.501095933956094,
+          "attempt_seconds": [
+            58.501095933956094
+          ]
+        },
+        {
+          "id": "299",
+          "category": "answered",
+          "latency_seconds": 46.426421827985905,
+          "attempt_seconds": [
+            46.426421827985905
+          ]
+        },
+        {
+          "id": "457",
+          "category": "answered",
+          "latency_seconds": 38.375990247004665,
+          "attempt_seconds": [
+            38.375990247004665
+          ]
+        }
+      ],
+      "total_seconds": 1118.2354168852326,
+      "mean_seconds": 55.911770844261625,
+      "answered_count": 20,
+      "first_attempt_processing_total_seconds": 1118.2354168852326,
+      "first_attempt_processing_mean_seconds": 55.911770844261625,
+      "all_attempts_processing_total_seconds": 1118.2354168852326
+    },
+    "question_ids": [
+      "433",
+      "198",
+      "389",
+      "456",
+      "216",
+      "21",
+      "133",
+      "495",
+      "262",
+      "249",
+      "208",
+      "471",
+      "402",
+      "425",
+      "156",
+      "496",
+      "245",
+      "184",
+      "299",
+      "457"
+    ],
+    "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/qgyz10hz"
+  },
+  "monitoring": {
+    "interval_seconds": 1,
+    "source": "PD /metrics; NVML for GPU utilization"
+  },
+  "invalidated_runs": [
+    "quality-magic",
+    "quality-sql"
+  ]
+}
