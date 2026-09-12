@@ -59,7 +59,7 @@ def collect_usage(trace_dirs):
                         candidates.append(pending)
                     if document.get("error") is not None and document.get("response") is None and document["error"]["type"] != "InvestigationBudgetExhausted":
                         request = document["request"] if "request" in document else document["input"] if "api" in document else None
-                        if isinstance(request, dict) and request["model"] == MODEL:
+                        if isinstance(request, dict) and request.get("model") == MODEL:
                             candidates.append({"id": f"unreturned-request:{path}", "model": request["model"], "usage": None, "request_without_response": True})
                     if isinstance(document.get("response"), dict):
                         payload = document["response"]
