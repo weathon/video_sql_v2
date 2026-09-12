@@ -300,7 +300,8 @@ def databases(root: Path) -> None:
                 continue
             if tables:
                 raise ValueError(f'Incomplete database schema: {path}: {sorted(tables)}')
-            connection.execute('ATTACH ? AS complete (READ_ONLY)', [str(root / 'index.duckdb')])
+            source_path = str(root / 'index.duckdb').replace("'", "''")
+            connection.execute(f"ATTACH '{source_path}' AS complete (READ_ONLY)")
             connection.execute('BEGIN')
             for table, ddl in DDL.items():
                 connection.execute(ddl)
