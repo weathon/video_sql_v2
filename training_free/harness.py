@@ -889,8 +889,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
     async def semantic_search(
         query: str,
         table: Literal[
-            "episodes", "entities", "semantic_triples", "topic_facts",
-            "event_steps", "object_states", "visual_clips",
+            "episode", "entity", "semantic", "topic_facts", "event_steps", "visual_clip",
         ],
         n: int,
         rank_start: int,
@@ -924,46 +923,57 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         query_vector = np.asarray(data[0]["embedding"], dtype=np.float32)
         if query_vector.shape != (4096,) or not np.isfinite(query_vector).all():
             raise RuntimeError(f"invalid query vector shape or values: {query_vector.shape}")
-        scores = context.vectors[table] @ query_vector
+        allowed = context.eligible_positions[table]
+        scores = np.empty(len(allowed), dtype=np.float32)
+        for start in range(0, len(allowed), 4096):
+            end = min(start + 4096, len(allowed))
+            scores[start:end] = context.vectors[table][allowed[start:end]] @ query_vector
         positions = np.argsort(-scores)
         if min_score is not None:
             positions = positions[scores[positions] >= min_score]
         if max_score is not None:
             positions = positions[scores[positions] <= max_score]
         selected = positions[rank_start - 1 : rank_start - 1 + n]
-        selected_ids = [str(context.row_ids[table][position]) for position in selected]
+        selected_ids = [str(context.row_ids[table][allowed[position]]) for position in selected]
         hits = []
         if selected_ids:
             placeholders = ",".join("?" for _ in selected_ids)
             rows = execute_sql(
                 context.database,
-                f"SELECT * FROM {table} WHERE row_id IN ({placeholders})",
+                f"SELECT * FROM {table} WHERE id IN ({placeholders})",
                 None,
                 selected_ids,
                 500 if question is None else None,
             )
-            by_id = {row["row_id"]: row for row in rows["rows"]}
+            by_id = {row["id"]: row for row in rows["rows"]}
             for position, row_id in zip(selected, selected_ids):
                 row = by_id[row_id]
                 preview_field = SEARCH_TABLES[table]
-                if table == "entities":
-                    start_s = row["first_seen_s"]
-                    end_s = row["last_seen_s"]
-                elif table == "semantic_triples":
-                    start_s = row["snapshot_s"]
-                    end_s = row["snapshot_s"]
-                elif table == "topic_facts":
-                    start_s = row["time_s"]
-                    end_s = row["time_s"]
+                if table == "topic_facts":
+                    start_ts, end_ts = fact_interval(row["time"])
+                elif table == "event_steps":
+                    day = row["day"].removeprefix("DAY")
+                    start_ts = int(day + row["start_time"].replace(":", "") + "00")
+                    end_ts = int(day + row["end_time"].replace(":", "") + "00")
                 else:
-                    start_s = row["start_s"]
-                    end_s = row["end_s"]
+                    start_ts, end_ts = row["start_ts"], row["end_ts"]
+                source_times = [source["timeline_start_s"] for source in context.sources]
+                bounds = []
+                for timestamp in (start_ts, end_ts):
+                    time = str(timestamp).zfill(9)
+                    coarse = (int(time[0]) - 1) * 86400 + int(time[1:3]) * 3600 + int(time[3:5]) * 60 + int(time[5:7])
+                    source_index = int(np.searchsorted(source_times, coarse, side="right")) - 1
+                    if source_index < 0:
+                        raise ValueError(f"Index timestamp precedes media: {timestamp}")
+                    bounds.append(timestamp_seconds(timestamp, context.sources[source_index]["fps"]))
                 hits.append(
                     {
                         "table": table,
-                        "row_id": row_id,
-                        "start_s": start_s,
-                        "end_s": end_s,
+                        "id": row_id,
+                        "start_ts": start_ts,
+                        "end_ts": end_ts,
+                        "start_s": bounds[0],
+                        "end_s": bounds[1],
                         "preview": json_value(row[preview_field], 500 if question is None else None),
                         "score": float(scores[position]),
                     }
