@@ -10,8 +10,8 @@ from huggingface_hub.hf_api import RepoFile
 
 ROOT = Path('/raid/videosql-video-artifacts')
 REPOSITORY = Path(__file__).resolve().parents[1]
-FILES = ['README.md', 'INDEX.md', 'MAGIC_UPSTREAM.txt', 'questions.json', 'qa-rule-audit.json', 'latency-ids.json', 'node-counts.json', 'media-map.json', 'index.duckdb', 'magic/graph.pkl', 'magic/visual_embeddings.pkl']
-DIRECTORIES = ['questions', 'embeddings', 'magic', 'videos', 'video-metadata', 'results', 'validation']
+FILES = ['README.md', 'INDEX.md', 'MAGIC_UPSTREAM.txt', 'questions.json', 'qa-rule-audit.json', 'latency-ids.json', 'node-counts.json', 'media-map.json', 'clip-map.json', 'index.duckdb', 'magic/graph.pkl', 'magic/visual_embeddings.pkl']
+DIRECTORIES = ['questions', 'embeddings', 'embedding-shards', 'magic', 'videos', 'video-metadata', 'clip-metadata', 'results', 'validation']
 
 
 def main():

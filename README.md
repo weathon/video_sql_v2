@@ -57,7 +57,7 @@ mkdir -p runs/egolife-baselines/services
 .venv_baselines/bin/python infra/trace2skill_service.py proxy > runs/egolife-baselines/services/proxy.log 2>&1
 ```
 
-端口依次为 8124、8125、8114、8103。视频 embedding 通过本地文件 URL 读取任务媒体目录，使用 Qwen loader 的均匀采样，保留原始顺序并禁用再次采样。embedding 服务日志中的 `UNIFORM_DECODE` 记录每段视频的实际抽帧序号。
+端口依次为 8124、8125、8114、8103。`embed-video` 按 caption 的明确时间区间生成缓存片段，通过本地文件 URL 请求 Qwen loader 均匀采样，保留原始顺序并禁用再次采样。两边共享同一视频向量；MAGIC 的视频证据也读取对应缓存片段。原视频留给按实际时间取证的 `clip_qa`。embedding 服务日志中的 `UNIFORM_DECODE` 记录每段视频的实际抽帧序号。
 
 ## 正式评测
 

@@ -166,15 +166,17 @@ class MagicAPI:
 
 
 class MagicFrames:
-    def __init__(self, api, artifact_root):
+    def __init__(self, api, artifact_root, clips):
         self.api = api
         self.artifact_root = artifact_root
+        self.clips = clips
 
     def _extract_frames(self, video_path, fps=1.0, max_frames=64, start_sec=None, end_sec=None):
         trace = {"request": {"tool": "extract_frames", "video_path": video_path, "fps": fps, "max_frames": max_frames, "start_sec": start_sec, "end_sec": end_sec}, "response": None, "error": None}
         print(f"MAGIC frames request: {video_path}, max_frames={max_frames}", flush=True)
         try:
-            physical_path = self.artifact_root / "videos" / Path(video_path).relative_to("data/EgoLife")
+            clip = self.clips[video_path]
+            physical_path = self.artifact_root / clip["relative_path"]
             with av.open(str(physical_path)) as container:
                 stream = container.streams.video[0]
                 video_fps = float(stream.average_rate)
@@ -204,7 +206,7 @@ class MagicFrames:
                         image.save(image_path, format="JPEG", quality=90)
                         image.info["magic_image_path"] = str(image_path)
                         decoded[frame_index] = FrameEntry(video_path=video_path, frame_index=frame_index, timestamp_sec=frame_index / video_fps, frame=image)
-                        metadata[frame_index] = {"frame_index": frame_index, "timestamp_sec": frame_index / video_fps, "pts": frame.pts, "time_base": str(frame.time_base), "image_path": str(image_path), "size": list(image.size)}
+                        metadata[frame_index] = {"frame_index": frame_index, "source_frame_index": clip["source_first_frame"] + frame_index, "timestamp_sec": frame_index / video_fps, "time_s": clip["timeline_start_s"] + float(frame.pts * frame.time_base), "pts": frame.pts, "time_base": str(frame.time_base), "image_path": str(image_path), "size": list(image.size)}
                     if frame_index == frame_indices[-1]:
                         break
                 frames = [decoded[index] for index in frame_indices]
@@ -237,7 +239,8 @@ def load_magic_artifacts(artifact_root):
                 original_path = node.metadata["video_path"]
                 if not np.array_equal(node.visual_embedding, visual_embeddings[original_path]):
                     raise ValueError(f"Graph visual embedding differs from offline visual_embeddings.pkl: {node.id}")
-        ARTIFACTS[artifact_root] = {"graph": memory._full_graph, "topics": memory._topic_facts, "events": memory._event_chains, "captions": captions}
+        clips = json.loads((artifact_root / "clip-map.json").read_text())
+        ARTIFACTS[artifact_root] = {"graph": memory._full_graph, "topics": memory._topic_facts, "events": memory._event_chains, "captions": captions, "clips": clips}
         return ARTIFACTS[artifact_root]
 
 
@@ -250,7 +253,7 @@ class MagicMemory(WorldMemory):
         self.unified_memory._full_graph = artifacts["graph"]
         self.unified_memory._topic_facts = artifacts["topics"]
         self.unified_memory._event_chains = artifacts["events"]
-        self.visual_memory = MagicFrames(api, artifact_root)
+        self.visual_memory = MagicFrames(api, artifact_root, artifacts["clips"])
 
 
 def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path, base_url: str, embedding_url: str) -> tuple[str, float]:

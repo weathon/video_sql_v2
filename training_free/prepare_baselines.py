@@ -204,23 +204,73 @@ async def embed_text(root: Path, endpoint: str) -> None:
     print(f'TEXT_COMPLETE unique_texts={len(texts)}', flush=True)
 
 
+def cache_caption_clip(caption: dict, source: dict, root: Path) -> dict:
+    from worldmm.memory.unified.nodes import caption_to_timestamps, make_visual_id
+
+    start_ts, end_ts = caption_to_timestamps(caption)
+    start_s = timestamp_seconds(start_ts, source['fps'])
+    end_s = timestamp_seconds(end_ts, source['fps'])
+    first = max(0, round((start_s - source['timeline_start_s']) * source['fps']))
+    stop = min(source['total_frames'], round((end_s - source['timeline_start_s']) * source['fps']))
+    if first >= stop:
+        raise ValueError(f'Caption has no frames in its associated video: {caption}')
+    relative = Path(source['relative_path']).relative_to('videos')
+    clip = root / 'videos/caption-clips' / relative
+    metadata_path = root / 'clip-metadata' / relative.with_suffix('.json')
+    if metadata_path.exists():
+        info = json.loads(metadata_path.read_text())
+        clip.stat()
+        if info['caption_start_ts'] != start_ts or info['caption_end_ts'] != end_ts:
+            raise ValueError(f'Cached caption interval changed: {metadata_path}')
+        return info
+    clip.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    if first == 0 and stop == source['total_frames']:
+        if not clip.exists():
+            os.link(source['path'], clip)
+        command = None
+    else:
+        command = ['ffmpeg', '-hide_banner', '-nostdin', '-y', '-v', 'error', '-threads', '1', '-i', source['path'], '-map', '0:v:0', '-an', '-vf', f'trim=start_frame={first}:end_frame={stop},setpts=PTS-STARTPTS', '-filter_threads', '1', '-fps_mode', 'passthrough', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '0', '-threads', '1', str(clip)]
+        print(f'CACHE_CLIP source={source["path"]} frames={first}:{stop} output={clip}', flush=True)
+        metadata_path.with_suffix('.command.json').write_text(json.dumps(command))
+        result = subprocess.run(command, capture_output=True, text=True)
+        metadata_path.with_suffix('.log').write_text(result.stderr)
+        if result.returncode:
+            print(f'CACHE_CLIP error source={source["path"]}: {result.stderr}', flush=True)
+            result.check_returncode()
+    probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate,nb_frames,duration,width,height,pix_fmt', '-of', 'json', str(clip)], capture_output=True, text=True)
+    if probe.returncode:
+        print(f'CACHE_CLIP ffprobe error path={clip}: {probe.stderr}', flush=True)
+        probe.check_returncode()
+    stream = json.loads(probe.stdout)['streams'][0]
+    numerator, denominator = map(int, stream['avg_frame_rate'].split('/'))
+    if int(stream['nb_frames']) != stop - first or numerator / denominator != source['fps']:
+        raise ValueError(f'Cached clip frame count or fps differs: {clip}: {stream}')
+    info = {'node_id': make_visual_id(caption['date'], str(caption['start_time'])), 'original_path': caption['video_path'], 'path': str(clip), 'relative_path': str(clip.relative_to(root)), 'source_relative_path': source['relative_path'], 'caption_start_ts': start_ts, 'caption_end_ts': end_ts, 'caption_start_s': start_s, 'caption_end_s': end_s, 'source_first_frame': first, 'source_stop_frame': stop, 'timeline_start_s': source['timeline_start_s'] + first / source['fps'], 'timeline_end_s': source['timeline_start_s'] + stop / source['fps'], 'fps': source['fps'], 'total_frames': stop - first, 'stream': stream, 'command': command}
+    metadata_path.write_text(json.dumps(info, ensure_ascii=False, indent=2))
+    return info
+
+
 async def embed_video(root: Path, endpoint: str) -> None:
     sources = {row['original_path']: row for row in json.loads((root / 'media-map.json').read_text())['sources']}
     captions = json.loads((root / 'magic/captions/A1_JAKE_30sec.json').read_text())
-    paths = list(dict.fromkeys(row['video_path'] for row in captions))
+    paths = {row['video_path']: row for row in captions}
     directory = root / 'embedding-shards/video'
     directory.mkdir(parents=True, exist_ok=True)
     semaphore = asyncio.Semaphore(64)
+    clip_executor = ThreadPoolExecutor(max_workers=10)
+    clips = {}
     async with httpx.AsyncClient(timeout=None, limits=httpx.Limits(max_connections=64)) as client:
         async def one(index: int, path: str) -> None:
             async with semaphore:
+                info = await asyncio.get_running_loop().run_in_executor(clip_executor, cache_caption_clip, paths[path], sources[path], root)
+                clips[path] = info
                 output = directory / f'{index:06d}.npz'
                 if output.exists():
                     with np.load(output, allow_pickle=False) as saved:
-                        if str(saved['video_path']) != path or str(saved['sampling']) != 'qwen3_vl_uniform':
+                        if str(saved['video_path']) != path or str(saved['sampling']) != 'qwen3_vl_uniform_caption':
                             raise ValueError(f'Video shard ID or sampling mismatch: {output}')
                     return
-                info = sources[path]
                 request = {'model': 'qwen3-vl-embedding-8b', 'messages': [{'role': 'user', 'content': [{'type': 'video_url', 'video_url': {'url': Path(info['path']).as_uri()}}]}], 'media_io_kwargs': {'video': {'video_backend': 'qwen3_vl_uniform', 'backend': 'torchcodec', 'trace_path': info['path'], 'num_frames': -1, 'num_ffmpeg_threads': 4, 'seek_mode': 'exact'}}, 'mm_processor_kwargs': {'do_sample_frames': False}}
                 (directory / f'{index:06d}-request.json').write_text(json.dumps(request))
                 response = await client.post(endpoint.rstrip('/') + '/embeddings', json=request)
@@ -233,11 +283,15 @@ async def embed_video(root: Path, endpoint: str) -> None:
                 if vector.shape != (4096,) or not np.isfinite(vector).all() or np.linalg.norm(vector) == 0:
                     raise ValueError(f'Invalid video embedding: {path}')
                 vector /= np.linalg.norm(vector)
-                np.savez(output, video_path=np.asarray(path), sampling=np.asarray('qwen3_vl_uniform'), vector=vector)
-                print(f'EMBED_VIDEO index={index} sampling=qwen3_vl_uniform saved={output.name}', flush=True)
-        async with asyncio.TaskGroup() as group:
-            for index, path in enumerate(paths):
-                group.create_task(one(index, path))
+                np.savez(output, video_path=np.asarray(path), sampling=np.asarray('qwen3_vl_uniform_caption'), vector=vector)
+                print(f'EMBED_VIDEO index={index} sampling=qwen3_vl_uniform_caption saved={output.name}', flush=True)
+        try:
+            async with asyncio.TaskGroup() as group:
+                for index, path in enumerate(paths):
+                    group.create_task(one(index, path))
+        finally:
+            clip_executor.shutdown(wait=True, cancel_futures=True)
+    (root / 'clip-map.json').write_text(json.dumps(clips, ensure_ascii=False))
     print(f'VIDEO_COMPLETE videos={len(paths)}', flush=True)
 
 

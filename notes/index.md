@@ -14,6 +14,7 @@
 | `magic/graph.pkl`、`magic/visual_embeddings.pkl` | MAGIC 格式完整图及视频向量映射 |
 | `magic/captions`、`magic/semantic_memory`、`magic/topic_chains`、`magic/event_chains` | 规范化后的现成内容；原始关联在规范化前完成 |
 | `videos/A1_JAKE`、`video-metadata`、`media-map.json` | 原视频缓存片段、逐片帧率/帧数、媒体与逻辑时间映射 |
+| `videos/caption-clips/A1_JAKE`、`clip-metadata`、`clip-map.json` | 按 caption 区间保留的实际视频帧、原视频帧序号与时间映射；两边 embedding 及 MAGIC 视频证据共用 |
 | `results` | 两种方法的质量、串行计时、全部 attempts、逐题答案、judge、usage 与完整 traces |
 
 四类节点分别为 `entity`、`episode`、`semantic`、`visual_clip`，公共字段为 `id, node_type, text, start_ts, end_ts, metadata`。边分表为 `mentioned_in`、`appeared_in`、`has_property`、`temporal_next`、`contains`、`co_clip_visual_episode` 和 `co_clip_episode_visual`，保留有向端点、类型和权重，端点均为真正的外键。
@@ -38,4 +39,4 @@ positions = np.searchsorted(ids, allowed)
 rows = db.execute("SELECT id, start_ts, end_ts, text FROM episode ORDER BY start_ts LIMIT 3").fetchall()
 ```
 
-查询文本使用 `training_free.normalize.normalize_text` 后请求 `Qwen/Qwen3-VL-Embedding-8B`，served model name 为 `qwen3-vl-embedding-8b`。`episode` 检索 caption 文本，`visual_clip` 检索视频向量；空 caption 的文本向量为全零，视频仍正常生成向量。文本每批 512 条，视频每请求一个缓存片段、最多 64 个在途请求，使用 Qwen loader 均匀采样并保留帧顺序，禁止二次采样。
+查询文本使用 `training_free.normalize.normalize_text` 后请求 `Qwen/Qwen3-VL-Embedding-8B`，served model name 为 `qwen3-vl-embedding-8b`。`episode` 检索 caption 文本，`visual_clip` 检索视频向量；空 caption 的文本向量为全零，视频仍正常生成向量。文本每批 512 条，视频每请求一个 caption 区间缓存片段、最多 64 个在途请求，使用 Qwen loader 均匀采样并保留帧顺序，禁止二次采样。缓存裁剪保留源帧率和分辨率；需要重编码时使用无损 H.264，完整落在 caption 区间内的原片直接复用。原始节点 ID、时间和路径字段不变，缓存路径另存于 `clip-map.json`。
