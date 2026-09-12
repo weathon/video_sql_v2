@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "egolife-iframe-loader"
+version = "0.1.0"
+
+[project.entry-points."vllm.general_plugins"]
+egolife_iframes = "egolife_iframes:register"
+
+[tool.setuptools]
+py-modules = ["egolife_iframes"]

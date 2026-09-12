@@ -1,0 +1,3 @@
+FROM video-sql-vllm-epd:ec-tp-device
+COPY infra/iframe_plugin /opt/egolife-iframe-loader
+RUN python3 -m pip install --no-build-isolation --no-deps /opt/egolife-iframe-loader
