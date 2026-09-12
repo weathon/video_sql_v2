@@ -31,3 +31,15 @@ infra_test/*_checkpoints/
 infra/curl_sgl*.err
 infra/bench_*.json
 .analysis/
+*.duckdb
+*.npy
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.pkl
+*.mp4
+*.mkv
+*.tar
+*.gz
+*.zip
