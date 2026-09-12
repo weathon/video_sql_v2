@@ -422,12 +422,14 @@ class Evaluation:
             directory.mkdir(parents=True)
             await self.snapshot(directory / "before-cache-clear.prom")
             cache_trace = []
-            for url in (f"{PD_URL}/reset_prefix_cache", f"{EMBEDDING_URL.removesuffix('/v1')}/reset_prefix_cache", f"{EMBEDDING_URL.removesuffix('/v1')}/reset_encoder_cache", f"{BASE_URL.removesuffix('/v1')}/clear_encoder_cache"):
+            for url in (f"{PD_URL}/reset_prefix_cache?reset_external=true", f"{EMBEDDING_URL.removesuffix('/v1')}/reset_prefix_cache", f"{EMBEDDING_URL.removesuffix('/v1')}/reset_encoder_cache", f"{BASE_URL.removesuffix('/v1')}/clear_encoder_cache"):
                 print(f"CACHE_CLEAR method={method} request=POST {url}", flush=True)
                 response = await self.http.post(url)
                 cache_trace.append({"request": {"method": "POST", "url": url}, "status_code": response.status_code, "response": response.text})
                 (directory / "cache-clear.json").write_text(json.dumps(cache_trace, indent=2) + "\n")
                 response.raise_for_status()
+                if "/reset_prefix_cache" in url and response.json()["success"] is not True:
+                    raise RuntimeError(f"Cache reset failed: {url}: {response.text}")
             await self.snapshot(directory / "after-cache-clear.prom")
             if method == "magic":
                 await asyncio.to_thread(load_magic_artifacts, self.args.artifact_root)
