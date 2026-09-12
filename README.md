@@ -1,12 +1,12 @@
 # EgoLifeQA：MAGIC 与 SQL 无训练基线
 
-本 worktree 比较 A1_JAKE 全部 500 道开放题。实现尚在验证中，正式结果尚未生成。源分支起点为 `f947154c0dc1a6825bdc56f85d7ba4bf294411cb`；MAGIC 上游版本见 [UPSTREAM](third_party/magic_video/UPSTREAM)。
+本目录的 `codex/egolife-baselines` 分支比较 A1_JAKE 全部 500 道开放题。上次运行结果已作废，当前修复实时日志后重新验证和运行。源分支起点为 `f947154c0dc1a6825bdc56f85d7ba4bf294411cb`；MAGIC 上游版本见 [UPSTREAM](third_party/magic_video/UPSTREAM)。
 
 两边所有 LLM 请求均使用 `Qwen/Qwen3.8-27B-FP8`、`xhigh` 并保留 reasoning，不设置客户端 token 上限或采样参数。SQL 每次尝试最多 10 次共享调查调用，再允许一次关闭工具的最终回答；MAGIC 保留上游 5 轮检索及截止逻辑，时间检索修正日期和秒数单位并应用 query time 截止，chain 相似度检索保留上游前 2000 字符规则。两边使用同一个 0–5 分 judge。每批失败题只集中重试一次。
 
 ## 环境与 artifacts
 
-本机目录为 `/raid/wg25r/video_sql_baselines`，独立环境为 `.venv_baselines`，`.env` 链接原项目配置。W&B/Weave 继续使用项目配置。HF cache 位于 `/raid/huggingface`。
+本机目录为 `/raid/wg25r/video_sql_trace2skill`，独立环境为 `.venv_baselines`，使用本目录的 `.env`。W&B/Weave 继续使用项目配置。HF cache 位于 `/raid/huggingface`。
 
 所有数据位于 `/raid/videosql-video-artifacts`。目标 private dataset 为 [weathon/egolife-a1-jake-magic-videosql-qwen3vl8b](https://huggingface.co/datasets/weathon/egolife-a1-jake-magic-videosql-qwen3vl8b)；上传完成状态记录在 artifacts 根目录的 `upload-result.json`，不能仅凭此链接判断已上传。目录、字段和查询示例见 [索引说明](notes/index.md)。
 
@@ -61,19 +61,23 @@ mkdir -p runs/egolife-baselines/services
 
 ## 正式评测
 
-按仓库流程完成独立 diff review 和正式运行前的 Claude 全仓库 review。服务全部就绪后测量可用内存，以下前台 scope 将 harness 限制为该值的 20%；两种质量评测并发均为 20。
+本次按计划完成独立 subagent 和 `claude -p` 两路全目录审查。服务全部就绪后测量可用内存，以下前台 scope 将 harness 限制为该值的 20%；两种质量评测并发均为 20。
 
 ```bash
 export OMP_NUM_THREADS=10 MKL_NUM_THREADS=10 OPENBLAS_NUM_THREADS=10 NUMEXPR_NUM_THREADS=10 VECLIB_MAXIMUM_THREADS=10
 baseline_memory_bytes=$(awk '/^MemAvailable:/ {printf "%.0f", $2 * 1024 / 5}' /proc/meminfo)
-systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method magic --run-dir /raid/videosql-video-artifacts/results/quality-magic > runs/egolife-baselines/quality-magic.log 2>&1
-systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method sql --run-dir /raid/videosql-video-artifacts/results/quality-sql > runs/egolife-baselines/quality-sql.log 2>&1
-systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method latency --run-dir /raid/videosql-video-artifacts/results/latency > runs/egolife-baselines/latency.log 2>&1
+systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method magic --run-dir /raid/videosql-video-artifacts/results/quality-magic-rerun > runs/egolife-baselines/quality-magic-rerun.log 2>&1
+systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method sql --run-dir /raid/videosql-video-artifacts/results/quality-sql-rerun > runs/egolife-baselines/quality-sql-rerun.log 2>&1
+systemd-run --user --scope -p MemoryMax="$baseline_memory_bytes" .venv_baselines/bin/python -m training_free.evaluate --method latency --run-dir /raid/videosql-video-artifacts/results/latency-rerun > runs/egolife-baselines/latency-rerun.log 2>&1
 ```
 
-恢复时使用原命令和原 `--run-dir`。小范围真实调试可附加 `--ids 1 2`。正式时延读取 seed 0 的同一组 20 个 ID，按固定顺序、并发 1，先 MAGIC 后 SQL；每种方法开始前清 prefix/KV 和 encoder cache，每题创建独立在线查询状态，保留离线索引。时延截止于最终答案，不包含 judge 或关闭客户端。
+恢复时使用原命令和原 `--run-dir`；带有 `INVALIDATED.json` 的旧结果目录禁止恢复。小范围真实调试使用独立目录并附加 `--ids 1 2`。正式时延读取 seed 0 的同一组 20 个 ID，按固定顺序、并发 1，先 MAGIC 后 SQL；每种方法开始前清 prefix/KV 和 encoder cache，每题创建独立在线查询状态，保留离线索引。时延截止于最终答案，不包含 judge 或关闭客户端。
 
 每题答案、judge、失败证据和全部 attempts 均即时落盘；原始 usage 与独立 PD 服务计数对账。`metrics.json` 保存均分、5 分题数、有效分母和两类失败数，`token-log.json` 保存全部实际请求及服务计数。缓存输入从总输入中扣除后，等效费用为 `(in × 0.15 + out × 0.47 + cache × 0.016) / 1,000,000 USD`。缺 usage 的请求保留未知状态，不能当作零。
+
+运行开始即以 1 Hz 拉取 PD `/metrics`，将累计 `tokens/in`、`tokens/cache`、`tokens/out`、相应每秒吞吐率、GPU 使用率和进度上传 W&B，同时写入 `live-metrics.jsonl`；原始抓取保存在 `live-metrics.prom`。实时记录不等待单次请求的 usage 或整批对账完成。进度计数表示本次进程的尝试次数，包含重试；累计 token 从本 run 的首次采集计起。
+
+最终失败题先保存自动建议分类，人工阅读其真实请求、工具输入输出及错误 trace 后，在该题目录写入 `failure-review.json`，包含 `category`（`algorithm` 或 `maintenance`）、`cause` 和 `trace_evidence`（实际检查的路径、调用及结论）。未审阅的失败会阻止最终汇总；审阅后用原命令恢复，已完成的答题和 judge 不重跑。
 
 完成后上传 artifacts，并停止及手动删除本任务容器：
 
