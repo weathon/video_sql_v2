@@ -12,7 +12,7 @@ The encoder and embedding services share GPU 6. The proxy accepts /v1/responses 
 
 Prefill/decode uses max-num-seqs 50. MTP drafts 3 tokens and has max_model_len 314573, matching the main model. SimpleCPUOffloadConnector uses 137438953472 bytes (128 GiB) per TP rank, 256 GiB total, with eager offload. This CPU KV cache is separate from the shared encoder-cache volume. The multimodal processor cache is 4 GiB on both prefill/decode and encoder; the embedding service retains its 0 GiB setting.
 
-The training_free harness uses http://127.0.0.1:8103/v1 for Qwen and http://127.0.0.1:8114/v1 for embeddings. Each quality method runs 20 questions concurrently. SQL main and child investigation calls share each attempt's 10-call budget, followed by one forced final call.
+The training_free harness uses http://127.0.0.1:8103/v1 for Qwen and http://127.0.0.1:8114/v1 for embeddings. Each quality method runs 20 questions concurrently. SQL main and child investigation calls share each attempt's 30-call budget, followed by one forced final call.
 
 Preparation
 

@@ -5,6 +5,16 @@
   "quality_concurrency": 20,
   "investigation_calls_sql": 10,
   "additional_forced_answer_calls_sql": 1,
+  "sql10_forced_final_audit": {
+    "final_answer_count": 498,
+    "final_forced_answer_count": 351,
+    "final_forced_fraction": 0.7048192771084337,
+    "first_attempt_count": 500,
+    "first_attempt_forced_count": 348,
+    "all_attempt_count": 511,
+    "all_attempt_forced_count": 354,
+    "evidence": "results/turn-budget-audit/sql10.json"
+  },
   "seed": 0,
   "artifact_repo": "https://huggingface.co/datasets/weathon/egolife-a1-jake-magic-videosql-qwen3vl8b",
   "quality": {
