@@ -10,13 +10,16 @@ from huggingface_hub.hf_api import RepoFile
 
 ROOT = Path('/raid/videosql-video-artifacts')
 REPOSITORY = Path(__file__).resolve().parents[1]
-FILES = ['README.md', 'INDEX.md', 'MAGIC_UPSTREAM.txt', 'questions.json', 'qa-rule-audit.json', 'latency-ids.json', 'node-counts.json', 'media-map.json', 'clip-map.json', 'index.duckdb', 'magic/graph.pkl', 'magic/visual_embeddings.pkl']
+FILES = ['README.md', 'INDEX.md', 'RESULTS.md', 'RESULTS.json', 'requirements.txt', 'MAGIC_UPSTREAM.txt', 'questions.json', 'qa-rule-audit.json', 'latency-ids.json', 'node-counts.json', 'media-map.json', 'clip-map.json', 'index.duckdb', 'magic/graph.pkl', 'magic/visual_embeddings.pkl']
 DIRECTORIES = ['questions', 'embeddings', 'embedding-shards', 'magic', 'videos', 'video-metadata', 'clip-metadata', 'results', 'validation']
 
 
 def main():
-    (ROOT / 'README.md').write_text((REPOSITORY / 'README.md').read_text().replace('(notes/index.md)', '(INDEX.md)').replace('(third_party/magic_video/UPSTREAM)', '(MAGIC_UPSTREAM.txt)'))
+    (ROOT / 'README.md').write_text((REPOSITORY / 'README.md').read_text().replace('(notes/index.md)', '(INDEX.md)').replace('(notes/egolife-baselines-results.md)', '(RESULTS.md)').replace('(notes/egolife-baselines-results.json)', '(RESULTS.json)').replace('training_free/requirements.txt', 'requirements.txt').replace('(third_party/magic_video/UPSTREAM)', '(MAGIC_UPSTREAM.txt)'))
     (ROOT / 'INDEX.md').write_text((REPOSITORY / 'notes/index.md').read_text().replace('(../README.md)', '(README.md)').replace('third_party/magic_video/UPSTREAM', 'MAGIC_UPSTREAM.txt'))
+    (ROOT / 'RESULTS.md').write_text((REPOSITORY / 'notes/egolife-baselines-results.md').read_text().replace('training_free/requirements.txt', 'requirements.txt'))
+    (ROOT / 'RESULTS.json').write_text((REPOSITORY / 'notes/egolife-baselines-results.json').read_text())
+    (ROOT / 'requirements.txt').write_text((REPOSITORY / 'training_free/requirements.txt').read_text())
     (ROOT / 'MAGIC_UPSTREAM.txt').write_text((REPOSITORY / 'third_party/magic_video/UPSTREAM').read_text())
     for name in FILES:
         if not (ROOT / name).is_file():
@@ -38,7 +41,7 @@ def main():
     api.create_repo(repo_id=repo_id, repo_type='dataset', private=True, exist_ok=True)
     if not api.repo_info(repo_id, repo_type='dataset').private:
         raise RuntimeError(f'Dataset is not private: {repo_id}')
-    api.upload_large_folder(repo_id=repo_id, repo_type='dataset', folder_path=ROOT, private=True, allow_patterns=list(files), num_workers=10, print_report_every=3600)
+    api.upload_large_folder(repo_id=repo_id, repo_type='dataset', folder_path=ROOT, private=True, allow_patterns=FILES + [directory + '/*' for directory in DIRECTORIES], num_workers=10, print_report_every=3600)
     remote = {item.path: item.size for item in api.list_repo_tree(repo_id, repo_type='dataset', recursive=True) if isinstance(item, RepoFile)}
     for name, path in files.items():
         if remote[name] != path.stat().st_size:
