@@ -869,7 +869,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         return submission.model_dump_json()
 
     def semantic_search_error(tool_context: Any, error: Exception) -> str:
-        if isinstance(error, (httpx.HTTPError, RuntimeError, FileNotFoundError)):
+        if isinstance(error, (httpx.HTTPError, RuntimeError, FileNotFoundError, APIError)):
             raise error
         return json.dumps(
             {
@@ -897,7 +897,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         max_score: float | None = None,
         question: str | None = None,
     ) -> str:
-        """Search one embedded table and return raw hits when question is null. Optionally supply question to request a separate QA answer from the selected hits. rank_start is one-based and n is the number of ranks.
+        """Search one embedded table and return raw hits when question is null. visual_clip matches the video embedding; episode matches caption text. Optionally supply question to request a separate QA answer from selected hits. rank_start is one-based and n is the number of ranks.
 
         Args:
             query: Semantic search text.
@@ -1277,35 +1277,7 @@ class VideoSQLHarness:
                 continue
             if not needs_compaction:
                 raise InvalidTrace("answer loop ended without submit_answer")
-            self.context.compactions += 1
-            original_tools = agent.tools
-            original_behavior = agent.tool_use_behavior
-            agent.tools = []
-            agent.tool_use_behavior = "run_llm_again"
-            compact_result, _, compact_trace = await run_stream(
-                self.context,
-                agent,
-                history
-                + [{"role": "user", "content": COMPACTION_INSTRUCTION}],
-                "compaction",
-                False,
-            )
-            trace_files.append(compact_trace)
-            handoff = str(compact_result.final_output)
-            if self.context.compactions == 3:
-                return RolloutSession(
-                    answer=None,
-                    status="compaction_limit",
-                    trace_files=trace_files,
-                )
-            agent.tools = original_tools
-            agent.tool_use_behavior = original_behavior
-            agent.instructions = (
-                base_instructions
-                + "\n\nTrusted handoff from the same agent's earlier context:\n"
-                + handoff
-            )
-            input_items = "Continue the investigation from the trusted handoff."
+            raise InvalidTrace("Investigation ended without an answer or an exhausted call budget")
 
     async def close(self) -> None:
         await self.context.client.close()
