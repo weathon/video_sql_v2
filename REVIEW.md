@@ -80,3 +80,6 @@ Anti-perfect research code: offensive programming, direct and purpose-built impl
 
 ## Report format
 List only genuine plain-yes violations (or behavioral regressions), each with `file:line`, a one-line reason, and its **Axis B label (TRUST-FATAL / ANNOYING)**. If none, say **"no blocking issues"**. Do not edit anything. Only report what you can point to concrete evidence for — do not manufacture findings, and do not flag a correct idiom as a bug (that causes needless reruns).
+## 日志必须实时记录
+
+日志必须在运行过程中实时记录和上传，不能等到整批或整次运行结束后才记录或上传。审查时必须检查这一要求。
