@@ -475,6 +475,8 @@ class Evaluation:
             await self.finish_phase(path, phase)
 
     async def evaluate_method(self, method):
+        if method == "sql" and self.args.answers_from is None:
+            await asyncio.to_thread(load_magic_artifacts, self.args.artifact_root)
         if self.args.method == "latency":
             directory = self.args.run_dir / method / f"cache-clear-{uuid4().hex}"
             directory.mkdir(parents=True)
@@ -635,7 +637,7 @@ async def main_async(args):
         raise ValueError("Evaluation requires questions and positive concurrency")
     config = {"method": args.method, "artifact_root": str(args.artifact_root), "model": MODEL, "base_url": BASE_URL, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "reasoning_effort": "xhigh", "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": 2, "judge_attempts": 2, "questions": questions, "judge_rubric": RUBRIC, "judge_version": 2, "answer_source_run_dir": str(args.answers_from) if args.answers_from is not None else None, "investigation_call_limit": INVESTIGATION_CALL_LIMIT if args.answers_from is None else None, "live_metrics_interval_seconds": 1}
     if args.method == "sql":
-        config.update({"retrieval_method": "sql" if args.answers_from is None else "saved_answers", "live_magic_reference": str(args.artifact_root / "results/quality-magic-judge-v2"), "overlap_accuracy_definition": "score == 5"})
+        config.update({"retrieval_method": "sql_ppr_semantic" if args.answers_from is None else "saved_answers", "live_magic_reference": str(args.artifact_root / "results/quality-magic-judge-v2"), "overlap_accuracy_definition": "score == 5"})
     config_path = args.run_dir / "config.json"
     if config_path.exists():
         saved = json.loads(config_path.read_text())

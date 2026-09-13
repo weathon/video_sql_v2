@@ -15,7 +15,9 @@ Read this skill before complex joins, aggregations, or evidence tracing.
 
 With question=null, run_sql returns at most 100 raw rows and shortens long text cells. Supplying question optionally requests a separate QA answer from the complete query result with supporting row IDs and times.
 
-Every query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and the QA question are not restrictions. Unrestricted queries are rejected before execution and must be rewritten.
+Every run_sql query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and the QA question are not restrictions. Unrestricted queries are rejected before execution and must be rewritten.
+
+For semantic_search only, pre_sql returns exactly one id column from the question database; its temporary memory_nodes view unions entity, episode, semantic, and visual_clip. post_sql queries only ppr_hits(id, node_type, text, start_ts, end_ts, start_s, end_s, metadata JSON, rank, score) after PPR. Usually choose pre to constrain search scope or post to refine retrieved evidence; neither stage is required. These temporary tables do not change the stored database.
 
 Available tables and columns:
 

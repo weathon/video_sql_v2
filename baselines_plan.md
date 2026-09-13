@@ -69,7 +69,7 @@ EgoLifeQA视频: /raid/wg25r/egolife/A1_JAKE
 - 保留 `run_sql`、`semantic_search`、`clip_qa`、`replace_tool`、证据帧 recipe 和完整 trace。SQL 与检索使用逐题数据库；视频工具拒绝读取 query time 之后的证据。
 - 已停止的 SQL+PPR 方案（保留 idea 记录，当前运行不启用）：组合工具 `sql_ppr_search`：自然语言 query 通过 MAGIC 的文本向量、BM25、视频向量种子及 PPR 检索。可用前置 SQL 在逐题数据库的 `memory_nodes` 视图中选择候选 ID，再在这些节点及其显式边构成的子图上检索；也可先检索，再用后置 SQL 在 `ppr_hits` 表上筛选、排序或提取所需信息。`memory_nodes` 是 entity、episode、semantic、visual_clip 的联合视图；`ppr_hits` 保留节点原字段及 rank、score。前置 SQL 用于硬性限定证据范围（如昨天），后置 SQL 用于整理语义命中结果，不能节省前面的检索工作。告诉模型通常只做一次 SQL，按目的选择 pre 或 post；需要时仍可使用两者。原 SQL 和向量检索工具保留。
 - 上述已停止方案的组合检索只使用当前逐题数据库允许的节点和显式边，前置范围外的节点不参与种子选择或图传播。保留 MAGIC 上游 PPR、BM25 权重及多尺度筛选；SQL 方法继续保留截止前的 semantic 快照。组合工具不增加隐式 LLM 子调用。
-- 当前恢复原本 SQL 方法：使用 `semantic_search` 定位候选，再用 `run_sql` 查询相邻记录及显式关联，保留 `clip_qa`、`replace_tool` 和原静态 skills；答题模型不提供 `sql_ppr_search`。
+- 原本 SQL60 运行已完成并记录结果。下一阶段保留 `run_sql`、`clip_qa`、`replace_tool`，以支持 pre/post SQL 的 PPR 替换 `semantic_search`；仅在需要语义匹配时使用，不默认或优先推荐，没有单独的 `sql_ppr_search` 工具。
 - 在实际模型请求发出前统一计数：主 agent、`clip_qa`、SQL/检索结果 QA 等调查调用共享预算；并行子调用先占用剩余额度。调用 `replace_tool` 的模型轮次计数，工具执行不另计，历史回退不减计数。
 - 用完 60 次后关闭调查工具，额外调用一次生成最终答案；judge 不占调查预算。移除旧的客户端 token 阈值提前强答规则，真实 context 溢出按失败协议处理。
 - MAGIC 的 embedding 接口改为 HTTP，所有查询和建索引路径使用同一规范化及向量模型。保留其 PPR、BM25、chain 检索和时间截止语义；开放题不再传入选择项。模型接口保留每题真实消息及 reasoning 历史，结构化输出使用 SDK parse。
@@ -126,6 +126,6 @@ EgoLifeQA视频: /raid/wg25r/egolife/A1_JAKE
 
 ## 6. 下一阶段
 
-- 继续监控当前原 SQL 60 次调查预算的运行，完成后先记录结果。
+- 原 SQL 60 次调查预算的运行已完成，结果已先记录于 `notes/egolife-baselines-results.md` 和同名 JSON，提交为 `acd5cf0`。
 - 然后将当前 `semantic_search` 替换为支持 pre/post SQL 的 PPR 检索。
 - PPR 仅作为语义搜索工具使用，不设为默认工具，不提示模型优先使用它；保留原本的 SQL 工具。

@@ -42,6 +42,7 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel
 
 from training_free.normalize import normalize_text
+from training_free.ppr import search_graph
 from training_free.index_schema import SCHEMA, SEARCH_TABLES, fact_interval, timestamp_seconds
 
 
@@ -856,125 +857,33 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         )
         return submission.model_dump_json()
 
-    def semantic_search_error(tool_context: Any, error: Exception) -> str:
-        if isinstance(error, (httpx.HTTPError, RuntimeError, FileNotFoundError, APIError)):
-            raise error
-        return json.dumps(
-            {
-                "error": str(error),
-                "arguments": tool_context.tool_arguments,
-                "expected_schema": semantic_search.params_json_schema,
-                "correction": (
-                    "For argument validation errors, correct the arguments and retry semantic_search. "
-                    "Use JSON null for unbounded min_score/max_score, not the string 'None'. "
-                    "Use one of the table names in the schema."
-                ),
-            },
-            ensure_ascii=False,
-        )
-
-    @function_tool(failure_error_function=semantic_search_error)
-    async def semantic_search(
-        query: str,
-        table: Literal[
-            "episode", "entity", "semantic", "topic_facts", "event_steps", "visual_clip",
-        ],
-        n: int,
-        rank_start: int,
-        min_score: float | None = None,
-        max_score: float | None = None,
-        question: str | None = None,
-    ) -> str:
-        """Search one embedded table and return raw hits when question is null. visual_clip matches the video embedding; episode matches caption text. Optionally supply question to request a separate QA answer from selected hits. rank_start is one-based and n is the number of ranks.
-
-        Args:
-            query: Semantic search text.
-            table: One of the embedded tables listed in the schema.
-            n: Number of ranks to return, greater than zero.
-            rank_start: First rank to return, starting at one.
-            min_score: Inclusive lower score bound; JSON null means no lower bound.
-            max_score: Inclusive upper score bound; JSON null means no upper bound.
-            question: Question to answer from the selected hits, preserving evidence IDs and times. JSON null returns raw hits.
-        """
-        if table not in SEARCH_TABLES:
-            raise ValueError(f"table must be one of {sorted(SEARCH_TABLES)}")
-        if n <= 0 or rank_start <= 0:
-            raise ValueError("n and rank_start must be positive")
-        response = await context.embedding_client.post(
-            context.embedding_url.rstrip("/") + "/embeddings",
-            json={"model": context.embedding_model, "input": [normalize_text(query)]},
-        )
-        response.raise_for_status()
-        data = response.json()["data"]
-        if len(data) != 1 or data[0]["index"] != 0:
-            raise RuntimeError(f"invalid embedding response indexes: {data}")
-        query_vector = np.asarray(data[0]["embedding"], dtype=np.float32)
-        if query_vector.shape != (4096,) or not np.isfinite(query_vector).all():
-            raise RuntimeError(f"invalid query vector shape or values: {query_vector.shape}")
-        allowed = context.eligible_positions[table]
-        scores = np.empty(len(allowed), dtype=np.float32)
-        for start in range(0, len(allowed), 4096):
-            end = min(start + 4096, len(allowed))
-            scores[start:end] = context.vectors[table][allowed[start:end]] @ query_vector
-        positions = np.argsort(-scores)
-        if min_score is not None:
-            positions = positions[scores[positions] >= min_score]
-        if max_score is not None:
-            positions = positions[scores[positions] <= max_score]
-        selected = positions[rank_start - 1 : rank_start - 1 + n]
-        selected_ids = [str(context.row_ids[table][allowed[position]]) for position in selected]
-        hits = []
-        if selected_ids:
-            placeholders = ",".join("?" for _ in selected_ids)
-            rows = execute_sql(
-                context.database,
-                f"SELECT * FROM {table} WHERE id IN ({placeholders})",
-                None,
-                selected_ids,
-                500 if question is None else None,
-            )
-            by_id = {row["id"]: row for row in rows["rows"]}
-            for position, row_id in zip(selected, selected_ids):
-                row = by_id[row_id]
-                preview_field = SEARCH_TABLES[table]
-                if table == "topic_facts":
-                    start_ts, end_ts = fact_interval(row["time"])
-                elif table == "event_steps":
-                    day = row["day"].removeprefix("DAY")
-                    start_ts = int(day + row["start_time"].replace(":", "") + "00")
-                    end_ts = int(day + row["end_time"].replace(":", "") + "00")
-                else:
-                    start_ts, end_ts = row["start_ts"], row["end_ts"]
-                source_times = [source["timeline_start_s"] for source in context.sources]
-                bounds = []
-                for timestamp in (start_ts, end_ts):
-                    time = str(timestamp).zfill(9)
-                    coarse = (int(time[0]) - 1) * 86400 + int(time[1:3]) * 3600 + int(time[3:5]) * 60 + int(time[5:7])
-                    source_index = int(np.searchsorted(source_times, coarse, side="right")) - 1
-                    if source_index < 0:
-                        raise ValueError(f"Index timestamp precedes media: {timestamp}")
-                    bounds.append(timestamp_seconds(timestamp, context.sources[source_index]["fps"]))
-                hits.append(
-                    {
-                        "table": table,
-                        "id": row_id,
-                        "start_ts": start_ts,
-                        "end_ts": end_ts,
-                        "start_s": bounds[0],
-                        "end_s": bounds[1],
-                        "preview": json_value(row[preview_field], 500 if question is None else None),
-                        "score": float(scores[position]),
-                    }
-                )
-        if question is not None:
-            submission, _ = await context.summary_response(
-                "semantic-qa",
-                "Answer the question concisely using only the supplied search hits. The question and search query select the task; they are not evidence. Similarity scores rank candidates, not factual correctness. Preserve supporting row IDs and times, uncertainty, and contradictions. Do not add facts from other results or outside knowledge. State explicitly when the supplied hits do not establish the answer.",
-                [{"type": "input_text", "text": json.dumps({"question": question, "query": query, "table": table, "hits": hits}, ensure_ascii=False)}],
-                AnswerSubmission,
-            )
-            return submission.model_dump_json()
-        return json.dumps({"table": table, "hits": hits}, ensure_ascii=False)
+    @function_tool(failure_error_function=tool_error_json)
+    async def semantic_search(query: str, n: int, pre_sql: str | None = None, post_sql: str | None = None) -> str:
+        """Retrieve evidence by semantic meaning using MAGIC PPR. Use this when semantic matching is needed, not as a default first step. run_sql handles direct SQL queries. query is the natural-language clue; n is the maximum PPR hit count before post SQL. Optional pre_sql selects exactly one id column from the question database; memory_nodes unions entity, episode, semantic, and visual_clip. It limits seeds and graph propagation to those IDs, for example yesterday. Optional post_sql instead queries only ppr_hits(id, node_type, text, start_ts, end_ts, start_s, end_s, metadata JSON, rank, score) to filter, order, project, or aggregate the retrieved nodes. Usually choose one SQL stage according to purpose: pre limits search scope, post refines semantic hits. Both are allowed when necessary. Null means no SQL at that stage. Returns evidence rows directly without an additional LLM QA call. Multiscale quotas may return fewer than n hits."""
+        if n <= 0:
+            raise ValueError("n must be positive")
+        query = normalize_text(query)
+        request = {"model": context.embedding_model, "input": [query]}
+        trace = {"query": query, "n": n, "pre_sql": pre_sql, "post_sql": post_sql, "query_time": context.query_time, "embedding_request": request}
+        path = context.run_dir / "traces" / f"ppr-{uuid.uuid4().hex}.json"
+        print(f"PPR request query={query!r} n={n} pre_sql={pre_sql!r} post_sql={post_sql!r} trace={path}", flush=True)
+        try:
+            response = await context.embedding_client.post(context.embedding_url.rstrip("/") + "/embeddings", json=request)
+            trace["embedding_status"] = response.status_code
+            trace["embedding_response"] = response.text
+            response.raise_for_status()
+            data = response.json()["data"]
+            if len(data) != 1 or data[0]["index"] != 0:
+                raise RuntimeError(f"Invalid PPR embedding response indexes: {data}")
+            vector = np.asarray(data[0]["embedding"], dtype=np.float32)
+            if vector.shape != (4096,) or not np.isfinite(vector).all() or np.linalg.norm(vector) == 0:
+                raise RuntimeError(f"Invalid PPR query embedding: {vector.shape}")
+            result = await asyncio.to_thread(search_graph, context, query, vector, n, pre_sql, post_sql, trace)
+            trace["result"] = result
+            print(f"PPR result candidates={result['candidate_count']} hits={result['ppr_hit_count']} rows={len(result['rows'])}", flush=True)
+            return json.dumps(result, ensure_ascii=False, default=lambda value: json_value(value, None))
+        finally:
+            path.write_text(json.dumps(trace, ensure_ascii=False, indent=2, default=lambda value: json_value(value, None)) + "\n")
 
     @function_tool(failure_error_function=tool_error_json)
     async def add_note(note: str) -> str:
@@ -1204,10 +1113,10 @@ class VideoSQLHarness:
             base_instructions = instructions if instructions is not None else (
                 "Answer the user's question by retrieving evidence from the memory database. "
                 "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
-                + "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text."
+                + "\n\nRetrieval: Use run_sql for known SQL filters, joins, and aggregates. Use semantic_search when retrieving by meaning is needed; it is not the default first step. semantic_search uses MAGIC PPR and optional pre/post SQL, and returns raw evidence without an extra QA call. Its query specifies the semantic clue. run_sql returns raw results with question=null; only its optional question parameter requests a separate QA answer from the SQL result."
                 + "\n\nSQL scope: Every run_sql query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and a QA question do not constrain SQL. Unrestricted queries will be rejected before execution; rewrite them with a real scope constraint. Do not request an entire timeline's tables to answer a question about a few events."
                 + "\n\nVisual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals."
-                + f"\n\nInvestigation budget: You have {INVESTIGATION_CALL_LIMIT} model calls shared across your own turns, clip_qa and optional SQL/search QA. Calling a tool does not itself consume another model call, but its QA request does. Prefer parallel independent tool calls. After these {INVESTIGATION_CALL_LIMIT} calls, one final answer request is allowed with all investigation tools disabled. Replacing history never restores spent calls."
+                + f"\n\nInvestigation budget: You have {INVESTIGATION_CALL_LIMIT} model calls shared across your own turns, clip_qa and optional SQL QA. Calling a tool does not itself consume another model call, but its QA request does. Prefer parallel independent tool calls. After these {INVESTIGATION_CALL_LIMIT} calls, one final answer request is allowed with all investigation tools disabled. Replacing history never restores spent calls."
                 + "\n\nContext maintenance: Only the latest tool result in your context can be replaced. After reading it, use replace_tool alone before continuing if it is large, even when useful and correct, or if it is invalid. Write replacement yourself and give a brief reason. Summarize only the target result's question and evidence, preserving relevant facts, IDs, times, uncertainty, contradictions, and unresolved details. Other results may be cited explicitly by tool_id, but do not present their evidence as part of this result or substitute a summary of another question. For invalid results, replace the entire content with why it must not be used. All history after the target result through the replacement turn is removed, including reasoning, messages, and tool calls; future reasoning starts from the replacement. Do not combine replace_tool with any other tool call in the same turn. Saving add_note does not replace a tool result."
                 + "\n\nROOT-SKILL (skill loading guidance):\n"
                 + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
