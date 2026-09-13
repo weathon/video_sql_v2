@@ -890,6 +890,99 @@
           "overlap/accuracy_delta": 0.07815631262525052
         }
       }
+    },
+    "sql60_ppr_semantic": {
+      "quality": {
+        "method": "sql",
+        "requested": 500,
+        "denominator": 499,
+        "mean_score": 2.661322645290581,
+        "score5_count": 222,
+        "score5_fraction": 0.44488977955911824,
+        "algorithm_failure_count": 1,
+        "maintenance_failure_count": 1
+      },
+      "tokens_this_run": {
+        "answer_and_judge": {
+          "input_tokens": 266270326,
+          "cached_tokens": 210875200,
+          "output_tokens": 29109102,
+          "uncached_input_tokens": 55395126,
+          "fee_usd": 25.364550039999997
+        },
+        "all": {
+          "input_tokens": 266270326,
+          "cached_tokens": 210875200,
+          "output_tokens": 29109102,
+          "uncached_input_tokens": 55395126,
+          "fee_usd": 25.364550039999997
+        }
+      },
+      "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/ue7d0mwh",
+      "artifact_directory": "results/quality-sql60-ppr-semantic-judge-v2",
+      "investigation_call_limit": 60,
+      "additional_forced_answer_call_limit": 1,
+      "source_commit": "99078ceef2dda6f1956d2121bd22137e07111140",
+      "retrieval_method": "SQL with semantic_search replaced by MAGIC PPR and optional pre/post SQL; not default or preferred",
+      "forced_answer_audit": {
+        "all_attempt_count": 519,
+        "all_attempt_forced_count": 9,
+        "first_attempt_count": 500,
+        "first_attempt_forced_count": 8,
+        "final_answer_count": 498,
+        "final_forced_answer_count": 9,
+        "final_forced_fraction": 0.018072289156626505,
+        "maximum_investigation_calls": 60
+      },
+      "token_audit": {
+        "requests": 11800,
+        "requests_with_unknown_usage": 6,
+        "known_usage": {
+          "input_tokens": 266261574,
+          "cached_tokens": 210872800,
+          "output_tokens": 29106850
+        },
+        "distinct_response_ids": 11795,
+        "requests_without_response": 5,
+        "server_minus_known_usage": {
+          "input_tokens": 8752,
+          "cached_tokens": 2400,
+          "output_tokens": 2252
+        },
+        "harness_reserved_answer_calls_plus_judges": 11800
+      },
+      "failures": [
+        {
+          "id": "74",
+          "category": "algorithm",
+          "cause": "model_selected_uncovered_video_interval"
+        },
+        {
+          "id": "473",
+          "category": "maintenance",
+          "cause": "server_disconnected_without_response"
+        }
+      ],
+      "paired_magic_comparison": {
+        "reference": "results/quality-magic-judge-v2",
+        "accuracy_definition": "score == 5",
+        "metrics": {
+          "overlap/count": 499,
+          "overlap/sql_mean_score": 2.661322645290581,
+          "overlap/magic_mean_score": 2.2905811623246493,
+          "overlap/sql_accuracy": 0.44488977955911824,
+          "overlap/magic_accuracy": 0.37675350701402804,
+          "overlap/mean_score_delta": 0.3707414829659319,
+          "overlap/accuracy_delta": 0.06813627254509019
+        }
+      },
+      "paired_original_sql60_comparison": {
+        "count": 498,
+        "ppr_score5_count": 222,
+        "original_score5_count": 227,
+        "ppr_mean_score": 2.6666666666666665,
+        "original_mean_score": 2.819277108433735
+      }
     }
   }
 }
