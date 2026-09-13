@@ -727,6 +727,169 @@
   },
   "invalidated_runs": [
     "quality-magic",
-    "quality-sql"
-  ]
+    "quality-sql",
+    "quality-sql30-judge-v2",
+    "quality-sql-ppr15-judge-v2"
+  ],
+  "judge_v2": {
+    "magic": {
+      "quality": {
+        "method": "magic",
+        "requested": 500,
+        "denominator": 500,
+        "mean_score": 2.286,
+        "score5_count": 188,
+        "score5_fraction": 0.376,
+        "algorithm_failure_count": 20,
+        "maintenance_failure_count": 0
+      },
+      "tokens_this_run": {
+        "answer": {
+          "input_tokens": 0,
+          "cached_tokens": 0,
+          "output_tokens": 0,
+          "uncached_input_tokens": 0,
+          "fee_usd": 0
+        },
+        "judge": {
+          "input_tokens": 295065,
+          "cached_tokens": 0,
+          "output_tokens": 279793,
+          "uncached_input_tokens": 295065,
+          "fee_usd": 0.17576245999999998
+        },
+        "all": {
+          "input_tokens": 295065,
+          "cached_tokens": 0,
+          "output_tokens": 279793,
+          "uncached_input_tokens": 295065,
+          "fee_usd": 0.17576245999999998
+        }
+      },
+      "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/mu0lvo1y",
+      "artifact_directory": "results/quality-magic-judge-v2"
+    },
+    "sql10": {
+      "quality": {
+        "method": "sql",
+        "requested": 500,
+        "denominator": 498,
+        "mean_score": 2.1947791164658637,
+        "score5_count": 171,
+        "score5_fraction": 0.3433734939759036,
+        "algorithm_failure_count": 0,
+        "maintenance_failure_count": 2
+      },
+      "tokens_this_run": {
+        "answer": {
+          "input_tokens": 0,
+          "cached_tokens": 0,
+          "output_tokens": 0,
+          "uncached_input_tokens": 0,
+          "fee_usd": 0
+        },
+        "judge": {
+          "input_tokens": 378475,
+          "cached_tokens": 0,
+          "output_tokens": 460403,
+          "uncached_input_tokens": 378475,
+          "fee_usd": 0.27316066
+        },
+        "all": {
+          "input_tokens": 378475,
+          "cached_tokens": 0,
+          "output_tokens": 460403,
+          "uncached_input_tokens": 378475,
+          "fee_usd": 0.27316066
+        }
+      },
+      "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/s10wp9nx",
+      "artifact_directory": "results/quality-sql10-judge-v2"
+    },
+    "sql60": {
+      "quality": {
+        "method": "sql",
+        "requested": 500,
+        "denominator": 499,
+        "mean_score": 2.813627254509018,
+        "score5_count": 227,
+        "score5_fraction": 0.45490981963927857,
+        "algorithm_failure_count": 1,
+        "maintenance_failure_count": 1
+      },
+      "tokens_this_run": {
+        "answer_and_judge": {
+          "input_tokens": 275797667,
+          "cached_tokens": 229426400,
+          "output_tokens": 22972725,
+          "uncached_input_tokens": 46371267,
+          "fee_usd": 21.423693200000002
+        },
+        "all": {
+          "input_tokens": 275797667,
+          "cached_tokens": 229426400,
+          "output_tokens": 22972725,
+          "uncached_input_tokens": 46371267,
+          "fee_usd": 21.423693200000002
+        }
+      },
+      "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/way68ll5",
+      "artifact_directory": "results/quality-sql60-judge-v2",
+      "investigation_call_limit": 60,
+      "additional_forced_answer_call_limit": 1,
+      "source_commit": "783d3101c1be134deb53e5f8a7be9a1aa9fbc5ee",
+      "retrieval_method": "original SQL",
+      "forced_answer_audit": {
+        "all_attempt_count": 515,
+        "all_attempt_forced_count": 15,
+        "first_attempt_count": 500,
+        "first_attempt_forced_count": 15,
+        "final_answer_count": 498,
+        "final_forced_answer_count": 14,
+        "final_forced_fraction": 0.028112449799196786,
+        "maximum_investigation_calls": 60
+      },
+      "token_audit": {
+        "requests": 11665,
+        "requests_with_unknown_usage": 8,
+        "known_usage": {
+          "input_tokens": 275797667,
+          "cached_tokens": 229426400,
+          "output_tokens": 22972725
+        },
+        "distinct_response_ids": 11657,
+        "requests_without_response": 8,
+        "server_minus_known_usage": {
+          "input_tokens": 0,
+          "cached_tokens": 0,
+          "output_tokens": 0
+        }
+      },
+      "failures": [
+        {
+          "id": "131",
+          "category": "maintenance",
+          "cause": "server_http_error"
+        },
+        {
+          "id": "346",
+          "category": "algorithm",
+          "cause": "model_selected_uncovered_video_interval"
+        }
+      ],
+      "paired_magic_comparison": {
+        "reference": "results/quality-magic-judge-v2",
+        "accuracy_definition": "score == 5",
+        "metrics": {
+          "overlap/count": 499,
+          "overlap/sql_mean_score": 2.813627254509018,
+          "overlap/magic_mean_score": 2.2905811623246493,
+          "overlap/sql_accuracy": 0.45490981963927857,
+          "overlap/magic_accuracy": 0.37675350701402804,
+          "overlap/mean_score_delta": 0.5230460921843689,
+          "overlap/accuracy_delta": 0.07815631262525052
+        }
+      }
+    }
+  }
 }
