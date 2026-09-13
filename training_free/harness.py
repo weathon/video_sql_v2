@@ -43,7 +43,6 @@ from pydantic import BaseModel
 
 from training_free.normalize import normalize_text
 from training_free.index_schema import SCHEMA, SEARCH_TABLES, fact_interval, timestamp_seconds
-from training_free.ppr import search_graph
 
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -53,7 +52,7 @@ FRAME_SIZE = (854, 480)
 # model-specific image token estimate. Context accounting uses returned usage.
 CLIP_IMAGE_LIMIT = 650
 TOOL_REMINDER_CHARACTERS = 10_000
-INVESTIGATION_CALL_LIMIT = 15
+INVESTIGATION_CALL_LIMIT = 60
 SHARED_VECTORS = {}
 SHARED_ROW_IDS = {}
 
@@ -827,34 +826,6 @@ async def sample_frames(
 
 def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
     @function_tool(failure_error_function=tool_error_json)
-    async def sql_ppr_search(query: str, n: int, pre_sql: str | None = None, post_sql: str | None = None) -> str:
-        """Recommended retrieval: combine natural-language MAGIC PPR with SQL. Usually use one SQL stage, either pre or post. pre_sql selects exactly one id column from the question database (including memory_nodes, the union of entity/episode/semantic/visual_clip) to impose a hard scope before seeds and graph propagation, such as yesterday. post_sql instead queries only ppr_hits after PPR to filter, order, project, or aggregate semantic matches. ppr_hits columns are id, node_type, text, start_ts, end_ts, metadata JSON, rank, score. Pre limits where to search; post refines what to return and does not limit prior search. n is a positive maximum number of PPR hits before post SQL; MAGIC's multiscale quotas can return fewer. Null means no SQL at that stage. Both stages are allowed when necessary. Returns evidence rows directly with no extra LLM call. Original run_sql remains available for direct database queries."""
-        if n <= 0:
-            raise ValueError("n must be positive")
-        query = normalize_text(query)
-        request = {"model": context.embedding_model, "input": [query]}
-        trace = {"query": query, "n": n, "pre_sql": pre_sql, "post_sql": post_sql, "query_time": context.query_time, "embedding_request": request}
-        path = context.run_dir / "traces" / f"ppr-{uuid.uuid4().hex}.json"
-        print(f"PPR request query={query!r} n={n} pre_sql={pre_sql!r} post_sql={post_sql!r} trace={path}", flush=True)
-        try:
-            response = await context.embedding_client.post(context.embedding_url.rstrip("/") + "/embeddings", json=request)
-            trace["embedding_status"] = response.status_code
-            trace["embedding_response"] = response.text
-            response.raise_for_status()
-            data = response.json()["data"]
-            if len(data) != 1 or data[0]["index"] != 0:
-                raise RuntimeError(f"Invalid PPR embedding response indexes: {data}")
-            vector = np.asarray(data[0]["embedding"], dtype=np.float32)
-            if vector.shape != (4096,) or not np.isfinite(vector).all() or np.linalg.norm(vector) == 0:
-                raise RuntimeError(f"Invalid PPR query embedding: {vector.shape}")
-            result = await asyncio.to_thread(search_graph, context, query, vector, n, pre_sql, post_sql, trace)
-            trace["result"] = result
-            print(f"PPR result candidates={result['candidate_count']} hits={result['ppr_hit_count']} rows={len(result['rows'])}", flush=True)
-            return json.dumps(result, ensure_ascii=False, default=lambda value: json_value(value, None))
-        finally:
-            path.write_text(json.dumps(trace, ensure_ascii=False, indent=2, default=lambda value: json_value(value, None)) + "\n")
-
-    @function_tool(failure_error_function=tool_error_json)
     async def run_sql(sql: str, question: str | None = None) -> str:
         """Execute one read-only SQL query scoped by an outer WHERE, LIMIT, HAVING, QUALIFY, or sampling clause, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Unrestricted queries are rejected before execution; rewrite them with a relevant time, entity, row-ID filter, or finite LIMIT. ORDER BY alone is not a restriction. With question=null, return up to 100 raw rows with long text cells shortened. Optionally supply question to request a separate QA answer from the complete scoped result, with supporting row IDs and times."""
         statements = sqlglot.parse(sql, read="duckdb")
@@ -1121,7 +1092,6 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         return outputs
 
     answer_tools = [
-        sql_ppr_search,
         run_sql,
         semantic_search,
         clip_qa,
@@ -1234,7 +1204,7 @@ class VideoSQLHarness:
             base_instructions = instructions if instructions is not None else (
                 "Answer the user's question by retrieving evidence from the memory database. "
                 "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
-                + "\n\nRetrieval: Prefer sql_ppr_search to combine MAGIC PPR with SQL. Usually use one SQL stage: pre_sql to restrict where graph search may look (for example yesterday), or post_sql to select useful information from ppr_hits after semantic retrieval. Both stages are available when necessary. The memory_nodes view for pre_sql contains the four node tables; post_sql can access only ppr_hits with all node fields plus rank and score. The original run_sql and semantic_search remain available and return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text."
+                + "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text."
                 + "\n\nSQL scope: Every run_sql query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and a QA question do not constrain SQL. Unrestricted queries will be rejected before execution; rewrite them with a real scope constraint. Do not request an entire timeline's tables to answer a question about a few events."
                 + "\n\nVisual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals."
                 + f"\n\nInvestigation budget: You have {INVESTIGATION_CALL_LIMIT} model calls shared across your own turns, clip_qa and optional SQL/search QA. Calling a tool does not itself consume another model call, but its QA request does. Prefer parallel independent tool calls. After these {INVESTIGATION_CALL_LIMIT} calls, one final answer request is allowed with all investigation tools disabled. Replacing history never restores spent calls."

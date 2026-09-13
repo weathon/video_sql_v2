@@ -15,9 +15,7 @@ Read this skill before complex joins, aggregations, or evidence tracing.
 
 With question=null, run_sql returns at most 100 raw rows and shortens long text cells. Supplying question optionally requests a separate QA answer from the complete query result with supporting row IDs and times.
 
-Every run_sql query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and the QA question are not restrictions. Unrestricted queries are rejected before execution and must be rewritten.
-
-For the recommended sql_ppr_search, pre_sql returns exactly one column named id from this database. Its temporary memory_nodes view unions entity, episode, semantic, and visual_clip with the same columns. Example for yesterday when the query is on DAY6: SELECT id FROM memory_nodes WHERE start_ts >= 500000000 AND end_ts < 600000000. Only selected nodes and edges between them participate in PPR. Alternatively, post_sql runs after PPR against only ppr_hits(id, node_type, text, start_ts, end_ts, metadata JSON, rank, score), for example SELECT id, text, start_ts, end_ts FROM ppr_hits WHERE node_type = 'episode' ORDER BY start_ts DESC. Post SQL cannot query the original tables; use run_sql for those. Usually select one SQL stage according to purpose: pre limits evidence scope, post refines semantic hits. Both are available when needed. Neither temporary table changes the stored database.
+Every query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and the QA question are not restrictions. Unrestricted queries are rejected before execution and must be rewritten.
 
 Available tables and columns:
 
