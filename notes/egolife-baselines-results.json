@@ -1263,5 +1263,66 @@
         ]
       }
     }
+  },
+  "mm_lifelong_openai_terra_judge": {
+    "date": "2026-09-13",
+    "judge_model": "gpt-5.6-terra",
+    "judge_api": "openai",
+    "reasoning_effort": "xhigh",
+    "rubric_source": "MM-Lifelong/MM-Lifelong@248aa82039a574e63a2e524746a7cd8f32330443/eval_acc.py",
+    "metadata": "EgoLife questioner Jake / A1_JAKE and query day/time",
+    "score_mapping": {
+      "0": 0,
+      "1": 0,
+      "2": 0,
+      "3": 0.5,
+      "4": 1,
+      "5": 1
+    },
+    "methods": {
+      "magic": {
+        "run_dir": "/raid/videosql-video-artifacts/results/quality-magic-mm-lifelong-openai-terra-judge",
+        "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/rznvkjjm",
+        "denominator": 500,
+        "one_count": 206,
+        "one_fraction": 0.412,
+        "mapped_mean_score": 0.454,
+        "raw_mean_score": 2.442,
+        "score_distribution": [188, 36, 28, 42, 27, 179],
+        "algorithm_failure_count": 20,
+        "maintenance_failure_count": 0,
+        "judge_responses": 480,
+        "usage": {
+          "input_tokens": 284349,
+          "cached_tokens": 0,
+          "output_tokens": 57372,
+          "complete": true
+        }
+      },
+      "sql60_ppr_semantic": {
+        "run_dir": "/raid/videosql-video-artifacts/results/quality-sql60-ppr-mm-lifelong-openai-terra-judge",
+        "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/890ic2hd",
+        "denominator": 500,
+        "one_count": 239,
+        "one_fraction": 0.478,
+        "mapped_mean_score": 0.515,
+        "raw_mean_score": 2.806,
+        "score_distribution": [150, 35, 39, 37, 16, 223],
+        "algorithm_failure_count": 1,
+        "maintenance_failure_count": 0,
+        "judge_responses": 499,
+        "usage": {
+          "input_tokens": 365096,
+          "cached_tokens": 0,
+          "output_tokens": 75046,
+          "complete": true
+        }
+      }
+    },
+    "paired_comparison": {
+      "overlap_count": 500,
+      "one_fraction_delta": 0.066,
+      "mapped_mean_delta": 0.061
+    }
   }
 }

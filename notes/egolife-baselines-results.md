@@ -25,6 +25,20 @@ MM-Lifelong 官方映射为：原始 4、5 分计 1，3 分计 0.5，0、1、2 �
 
 双方按同一 500 题比较，SQL60+PPR 的映射平均分高 0.074，4–5 分比例高 8.40 个百分点。MAGIC 原始 0–5 分分布为 `[172, 82, 37, 22, 51, 136]`，SQL60+PPR 为 `[123, 87, 49, 12, 50, 179]`。ID 473 在本次 MM-Lifelong rubric 下得 0 分，包含在结果中。
 
+### OpenAI gpt-5.6-terra 重评
+
+使用同一 MM-Lifelong rubric、Jake / A1_JAKE 与 query day/time metadata，将上述两组已保存答案改由 OpenAI API 的 `gpt-5.6-terra`、`xhigh`、并发 20 重新 judge。官方映射中的 1 分对应原始 4 或 5 分。
+
+| 方法 | 1 分题数 / 分母 | 1 分率 | 映射平均分 / 1 | 原始平均分 / 5 |
+|---|---:|---:|---:|---:|
+| MAGIC | 206/500 | 41.20% | 0.4540 | 2.4420 |
+| SQL60 + PPR | 239/500 | 47.80% | 0.5150 | 2.8060 |
+
+MAGIC 原始 0–5 分分布为 `[188, 36, 28, 42, 27, 179]`，SQL60+PPR 为 `[150, 35, 39, 37, 16, 223]`。两边最终分母均为 500，维护失败均为 0。MAGIC 的 480 次 judge 使用 284,349 输入、0 缓存输入、57,372 输出 token；SQL60+PPR 的 499 次 judge 使用 365,096 输入、0 缓存输入、75,046 输出 token。所有 979 个响应均返回完整 usage，逐响应合计与 phase 计数一致。
+
+- [MAGIC OpenAI 重评 W&B](https://wandb.ai/3dsmile/video-sql-v2/runs/rznvkjjm)：`results/quality-magic-mm-lifelong-openai-terra-judge`。
+- [SQL60+PPR OpenAI 重评 W&B](https://wandb.ai/3dsmile/video-sql-v2/runs/890ic2hd)：`results/quality-sql60-ppr-mm-lifelong-openai-terra-judge`。
+
 本次新增调用与费用如下，token 以独立服务端 `/metrics` 的阶段差值为准，输入列已扣除缓存。1,067 次新增 LLM 请求均返回完整 usage，逐请求合计与服务端三类计数的差均为 0。
 
 | 阶段 | LLM 请求 | in | cache | out | 等效 USD |
