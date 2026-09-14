@@ -70,7 +70,7 @@ class MagicOutputError(ValueError):
 
 
 class MagicAPI:
-    def __init__(self, run_dir, base_url, embedding_url, model=MODEL, reasoning_effort="xhigh"):
+    def __init__(self, run_dir, base_url, embedding_url):
         self.run_dir = run_dir
         self.traces = run_dir / "traces"
         self.traces.mkdir(parents=True, exist_ok=True)
@@ -78,8 +78,6 @@ class MagicAPI:
         self.images.mkdir(parents=True, exist_ok=True)
         self.llm = OpenAI(api_key="EMPTY", base_url=base_url, max_retries=0, timeout=None)
         self.embeddings = OpenAI(api_key="EMPTY", base_url=embedding_url, max_retries=0, timeout=None)
-        self.model = model
-        self.reasoning_effort = reasoning_effort
         self.last_assistant = None
 
     def complete(self, messages, response_format=None):
@@ -96,20 +94,16 @@ class MagicAPI:
                     image_bytes = image_path.read_bytes()
                     sent["content"][index] = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii")}}
                     saved["content"][index] = {"type": "image_url", "image_url": {"url": str(image_path)}, "transport": "data:image/jpeg;base64"}
-        request = {"model": self.model, "messages": recorded}
-        transport_request = {"model": self.model, "messages": transport}
-        if self.reasoning_effort is not None:
-            request["reasoning_effort"] = self.reasoning_effort
-            transport_request["reasoning_effort"] = self.reasoning_effort
+        request = {"model": MODEL, "messages": recorded, "reasoning_effort": "xhigh"}
         if response_format is not None:
             request["response_format"] = {"type": "json_schema", "json_schema": {"name": response_format.__name__, "schema": response_format.model_json_schema(), "strict": True}}
         trace = {"request": request, "response": None, "error": None}
-        print(f"MAGIC LLM request: model={self.model}, messages={len(messages)}, schema={response_format.__name__ if response_format else None}", flush=True)
+        print(f"MAGIC LLM request: model={MODEL}, messages={len(messages)}, schema={response_format.__name__ if response_format else None}", flush=True)
         try:
             if response_format is None:
-                raw = self.llm.chat.completions.with_raw_response.create(**transport_request)
+                raw = self.llm.chat.completions.with_raw_response.create(model=MODEL, messages=transport, reasoning_effort="xhigh")
             else:
-                raw = self.llm.chat.completions.with_raw_response.parse(**transport_request, response_format=response_format)
+                raw = self.llm.chat.completions.with_raw_response.parse(model=MODEL, messages=transport, reasoning_effort="xhigh", response_format=response_format)
             trace["request"] = json.loads(raw.http_request.content)
             trace["request"]["messages"] = recorded
             trace["response"] = raw.text
@@ -283,8 +277,8 @@ class MagicMemory(WorldMemory):
         return "\n\n".join(results)
 
 
-def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path, base_url: str, embedding_url: str, model: str = MODEL, reasoning_effort: str | None = "xhigh") -> tuple[str, float]:
-    api = MagicAPI(Path(run_dir), base_url, embedding_url, model, reasoning_effort)
+def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path, base_url: str, embedding_url: str) -> tuple[str, float]:
+    api = MagicAPI(Path(run_dir), base_url, embedding_url)
     artifact_root = Path(artifact_root).resolve()
     question = normalize_text(question)
     initialization = {"request": {"tool": "index", "artifact_root": str(artifact_root), "query_time": query_time}, "response": None, "error": None}
