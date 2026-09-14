@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -30,6 +31,7 @@ from training_free.magic import load_magic_artifacts, run_magic
 
 
 MODEL = "Qwen/Qwen3.8-27B-FP8"
+OPENAI_JUDGE_MODEL = "gpt-5.6-terra"
 BASE_URL = "http://127.0.0.1:8103/v1"
 PD_URL = "http://127.0.0.1:8124"
 EMBEDDING_URL = "http://127.0.0.1:8114/v1"
@@ -38,6 +40,7 @@ RUBRIC = "Evaluate whether the candidate correctly answers the question, using t
 JUDGE_VERSION = 2
 COUNTERS = {"input_tokens": "vllm:prompt_tokens_total", "cached_tokens": "vllm:prompt_tokens_cached_total", "output_tokens": "vllm:generation_tokens_total"}
 GAUGES = ("vllm:num_requests_running", "vllm:num_requests_waiting")
+LOCAL_TOKEN_RATES = {"uncached_input": 0.15, "output": 0.47, "cached_input": 0.016}
 
 
 class Judgment(BaseModel):
@@ -50,7 +53,7 @@ class SimilarityJudgment(BaseModel):
     score: int = Field(strict=True, ge=0, le=5)
 
 
-def collect_usage(trace_dirs):
+def collect_usage(trace_dirs, rates=LOCAL_TOKEN_RATES):
     responses = {}
     for directory in trace_dirs:
         for path in sorted(directory.rglob("*")):
@@ -69,7 +72,7 @@ def collect_usage(trace_dirs):
                         candidates.append(pending)
                     if document.get("error") is not None and document.get("response") is None and document["error"]["type"] != "InvestigationBudgetExhausted":
                         request = document["request"] if "request" in document else document["input"] if "api" in document else None
-                        if isinstance(request, dict) and request.get("model") == MODEL:
+                        if isinstance(request, dict) and request.get("model") in (MODEL, OPENAI_JUDGE_MODEL):
                             candidates.append({"id": f"unreturned-request:{path}", "model": request["model"], "usage": None, "request_without_response": True})
                     if isinstance(document.get("response"), dict):
                         payload = document["response"]
@@ -111,11 +114,11 @@ def collect_usage(trace_dirs):
                             responses[response_id] = record
     for record in responses.values():
         record["fee_usd"] = None
-        if all(record[key] is not None for key in COUNTERS):
+        if rates is not None and all(record[key] is not None for key in COUNTERS):
             ordinary = record["input_tokens"] - record["cached_tokens"]
             if ordinary < 0:
                 raise ValueError(f"Invalid response cache accounting: {record}")
-            record["fee_usd"] = (ordinary * 0.15 + record["output_tokens"] * 0.47 + record["cached_tokens"] * 0.016) / 1_000_000
+            record["fee_usd"] = (ordinary * rates["uncached_input"] + record["output_tokens"] * rates["output"] + record["cached_tokens"] * rates["cached_input"]) / 1_000_000
     return responses
 
 
@@ -160,7 +163,8 @@ class Evaluation:
         self.questions = questions
         self.run = run
         self.http = httpx.AsyncClient(timeout=60)
-        self.judge_client = openai.AsyncOpenAI(api_key="EMPTY", base_url=BASE_URL, max_retries=0, timeout=None)
+        self.judge_model = OPENAI_JUDGE_MODEL if args.openai_judge else MODEL
+        self.judge_client = openai.AsyncOpenAI(api_key=os.environ["SHARED_OPENAI_KEY"], max_retries=0, timeout=None) if args.openai_judge else openai.AsyncOpenAI(api_key="EMPTY", base_url=BASE_URL, max_retries=0, timeout=None)
         self.judgment_type = SimilarityJudgment if args.mm_lifelong_judge else Judgment
         self.semaphore = asyncio.Semaphore(1 if args.method == "latency" else args.concurrency)
         self.phase_dir = args.run_dir / "phases"
@@ -169,6 +173,12 @@ class Evaluation:
         self.monitor_stop = threading.Event()
         self.monitor_ready = asyncio.Event()
         self.progress = {f"progress/{kind}/{state}": 0 for kind in ("answer", "judge") for state in ("started", "active", "completed", "failed")}
+        existing_usage = collect_usage([args.run_dir], rates=None) if args.openai_judge else {}
+        incomplete_responses = [record for record in existing_usage.values() if record["response_id"] is not None and any(record[key] is None for key in COUNTERS)]
+        if incomplete_responses:
+            raise ValueError(f"Completed OpenAI responses have incomplete usage: {incomplete_responses}")
+        self.cloud_usage = {key: sum(record[key] for record in existing_usage.values() if record["response_id"] is not None) for key in COUNTERS}
+        self.cloud_requests_without_response = sum(record["response_id"] is None for record in existing_usage.values())
         self.magic_scores = {}
         self.completed_scores = {}
         if args.method == "sql":
@@ -207,6 +217,29 @@ class Evaluation:
             self.run.log(payload)
 
     def monitor(self, loop):
+        if self.args.openai_judge:
+            previous = None
+            deadline = time.monotonic()
+            stopped = False
+            print("LIVE_METRICS start source=openai_response_usage interval_seconds=1", flush=True)
+            with (self.args.run_dir / "live-metrics.jsonl").open("a", buffering=1) as history:
+                while True:
+                    timestamp, monotonic = time.time(), time.monotonic()
+                    with self.log_lock:
+                        current = self.cloud_usage.copy()
+                        payload = {"monitor/timestamp": timestamp, **self.progress.copy(), "tokens/in": current["input_tokens"] - current["cached_tokens"], "tokens/cache": current["cached_tokens"], "tokens/out": current["output_tokens"], "usage/requests_without_response": self.cloud_requests_without_response, "usage/complete": int(self.cloud_requests_without_response == 0)}
+                        if previous is not None:
+                            interval = monotonic - previous["monotonic"]
+                            payload.update({"throughput/in_tokens_per_second": ((current["input_tokens"] - current["cached_tokens"]) - (previous["input_tokens"] - previous["cached_tokens"])) / interval, "throughput/cache_tokens_per_second": (current["cached_tokens"] - previous["cached_tokens"]) / interval, "throughput/out_tokens_per_second": (current["output_tokens"] - previous["output_tokens"]) / interval, "monitor/interval_seconds": interval})
+                        history.write(json.dumps({"metrics": payload, "provider_usage": current}) + "\n")
+                        self.run.log(payload)
+                    loop.call_soon_threadsafe(self.monitor_ready.set)
+                    previous = {**current, "monotonic": monotonic}
+                    if stopped:
+                        break
+                    deadline += 1
+                    stopped = self.monitor_stop.wait(max(0, deadline - time.monotonic()))
+            return
         pynvml.nvmlInit()
         devices = {index: pynvml.nvmlDeviceGetHandleByIndex(index) for index in (4, 5, 6)}
         required = {*COUNTERS.values(), *GAUGES, "process_start_time_seconds"}
@@ -286,6 +319,11 @@ class Evaluation:
             self.monitor_stop.set()
 
     async def snapshot(self, path):
+        if self.args.openai_judge:
+            with self.log_lock:
+                snapshot = {"time": time.time(), "file": str(path), "tokens": self.cloud_usage.copy()}
+            path.write_text(json.dumps(snapshot, indent=2) + "\n")
+            return snapshot
         print(f"METRICS request={PD_URL}/metrics artifact={path}", flush=True)
         response = await self.http.get(f"{PD_URL}/metrics")
         path.write_text(response.text)
@@ -309,6 +347,25 @@ class Evaluation:
         if "after" not in phase:
             phase["after"] = await self.snapshot(path.with_suffix(".after.prom"))
             path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
+        if self.args.openai_judge:
+            delta = {key: phase["after"]["tokens"][key] - phase["before"]["tokens"][key] for key in COUNTERS}
+            usage = collect_usage([Path(item) for item in phase["trace_dirs"]], rates=None)
+            per_request = {key: sum(item[key] for item in usage.values()) if all(item[key] is not None for item in usage.values()) else None for key in COUNTERS}
+            if all(value is not None for value in per_request.values()) and per_request != delta:
+                raise RuntimeError(f"OpenAI response usage differs from live counters: phase={path}; response_usage={per_request}; live_delta={delta}")
+            phase["response_ids"] = sorted(record["response_id"] for record in usage.values() if record["response_id"] is not None)
+            phase["requests_without_response"] = [record["request_key"] for record in usage.values() if record["response_id"] is None]
+            phase["usage_complete"] = not phase["requests_without_response"]
+            phase["request_tokens"] = per_request
+            phase["provider_tokens"] = delta
+            phase["provider_minus_requests"] = {key: delta[key] - per_request[key] if per_request[key] is not None else None for key in COUNTERS}
+            phase["complete"] = True
+            path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
+            (path.with_suffix(".usage.json")).write_text(json.dumps(list(usage.values()), ensure_ascii=False, indent=2) + "\n")
+            print(f"PHASE done={phase['name']} tokens={delta} provider_minus_requests={phase['provider_minus_requests']}", flush=True)
+            with self.log_lock:
+                self.run.log({f"{phase['method']}/{phase['kind']}/{key}": value for key, value in delta.items()})
+            return
         before, after = phase["before"]["samples"], phase["after"]["samples"]
         if before["process_start_time_seconds"] != after["process_start_time_seconds"]:
             path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
@@ -399,7 +456,7 @@ class Evaluation:
             query_time = str(question["query_time"]).zfill(9)
             metadata = {"questioner": "A1_JAKE", "questioner_name": "Jake", "perspective": "first-person narrator and camera wearer", "query_time_raw_DHHMMSSFF": question["query_time"], "query_day": int(query_time[0]), "query_time_of_day": f"{query_time[1:3]}:{query_time[3:5]}:{query_time[5:7]}", "query_frame_index": int(query_time[7:9])}
             messages = [{"role": "system", "content": RUBRIC}, {"role": "user", "content": json.dumps({"question": question["question"], "metadata": metadata, "reference_answer": question["reference_answer"], "candidate_answer": answer["candidate_answer"]}, ensure_ascii=False)}]
-            trace = {"request": {"model": MODEL, "messages": messages, "reasoning_effort": "xhigh", "response_format": {"type": "json_schema", "json_schema": {"name": self.judgment_type.__name__, "schema": self.judgment_type.model_json_schema(), "strict": True}}}, "response": None, "error": None}
+            trace = {"request": {"model": self.judge_model, "messages": messages, "reasoning_effort": "xhigh", "response_format": {"type": "json_schema", "json_schema": {"name": self.judgment_type.__name__, "schema": self.judgment_type.model_json_schema(), "strict": True}}}, "response": None, "error": None}
             traces = directory / "traces"
             traces.mkdir()
             path = traces / "judge.json"
@@ -409,17 +466,27 @@ class Evaluation:
             self.progress["progress/judge/started"] += 1
             self.progress["progress/judge/active"] += 1
             try:
-                raw = await self.judge_client.chat.completions.with_raw_response.parse(model=MODEL, messages=messages, reasoning_effort="xhigh", response_format=self.judgment_type)
+                raw = await self.judge_client.chat.completions.with_raw_response.parse(model=self.judge_model, messages=messages, reasoning_effort="xhigh", response_format=self.judgment_type)
                 trace["request"] = json.loads(raw.http_request.content)
                 trace["response"] = raw.http_response.json()
                 path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
+                if self.args.openai_judge:
+                    usage = trace["response"]["usage"]
+                    input_key = "input_tokens" if "input_tokens" in usage else "prompt_tokens"
+                    output_key = "output_tokens" if "output_tokens" in usage else "completion_tokens"
+                    detail_key = "input_tokens_details" if input_key == "input_tokens" else "prompt_tokens_details"
+                    tokens = {"input_tokens": usage[input_key], "cached_tokens": usage[detail_key]["cached_tokens"], "output_tokens": usage[output_key]}
+                    with self.log_lock:
+                        for key in COUNTERS:
+                            self.cloud_usage[key] += tokens[key]
                 response = raw.parse()
                 message = response.choices[0].message
                 if response.choices[0].finish_reason != "stop" or message.refusal or message.parsed is None:
                     raise ValueError(f"Judge did not return a completed judgment: {trace['response']}")
-                reasoning = trace["response"]["choices"][0]["message"]["reasoning"]
-                if not isinstance(reasoning, str) or not reasoning.strip():
-                    raise ValueError("Judge response has no actual reasoning")
+                if not self.args.openai_judge:
+                    reasoning = trace["response"]["choices"][0]["message"]["reasoning"]
+                    if not isinstance(reasoning, str) or not reasoning.strip():
+                        raise ValueError("Judge response has no actual reasoning")
                 outcome.update({"outcome": "scored", "score": message.parsed.score, "justification": message.parsed.justification})
                 (question_root / "judgment.json").write_text(json.dumps(outcome, ensure_ascii=False, indent=2) + "\n")
                 if self.args.method == "sql":
@@ -431,6 +498,9 @@ class Evaluation:
                 if isinstance(error, openai.APIError):
                     trace["error"]["body"] = error.body
                     trace["request"] = json.loads(error.request.content)
+                if self.args.openai_judge and trace["response"] is None:
+                    with self.log_lock:
+                        self.cloud_requests_without_response += 1
                 outcome.update({"outcome": "failed", "error": trace["error"]})
                 print(f"JUDGE_FAILED method={method} id={question['id']} attempt={attempt} error={type(error).__name__}: {error} trace={path}", flush=True)
             finally:
@@ -598,16 +668,18 @@ class Evaluation:
             phase = json.loads(path.read_text())
             phase["phase_file"] = str(path)
             phases.append(phase)
-        responses = collect_usage([Path(directory) for phase in phases for directory in phase["trace_dirs"]])
-        complete = all(phase["complete"] for phase in phases)
+        responses = collect_usage([Path(directory) for phase in phases for directory in phase["trace_dirs"]], rates=None) if self.args.openai_judge else collect_usage([Path(directory) for phase in phases for directory in phase["trace_dirs"]])
+        complete = all(phase["complete"] for phase in phases) and (not self.args.openai_judge or all(phase["usage_complete"] for phase in phases))
         totals = {}
         if complete:
             for method in sorted({phase["method"] for phase in phases}):
                 totals[method] = {}
                 for kind in (*sorted({phase["kind"] for phase in phases if phase["method"] == method}), "all"):
                     selected = [phase for phase in phases if phase["method"] == method and (kind == "all" or phase["kind"] == kind)]
-                    totals[method][kind] = {key: sum(phase["server_tokens"][key] for phase in selected) for key in (*COUNTERS, "uncached_input_tokens", "fee_usd")}
-        payload = {"authoritative_source": f"{PD_URL}/metrics phase counter differences", "input_tokens_include_cached": True, "rates_usd_per_million": {"uncached_input": 0.15, "output": 0.47, "cached_input": 0.016}, "complete": complete, "totals": totals, "responses": list(responses.values()), "phases": phases}
+                    fields = tuple(COUNTERS) if self.args.openai_judge else (*COUNTERS, "uncached_input_tokens", "fee_usd")
+                    source = "provider_tokens" if self.args.openai_judge else "server_tokens"
+                    totals[method][kind] = {key: sum(phase[source][key] for phase in selected) for key in fields}
+        payload = {"authoritative_source": "OpenAI response usage" if self.args.openai_judge else f"{PD_URL}/metrics phase counter differences", "input_tokens_include_cached": True, "rates_usd_per_million": None if self.args.openai_judge else LOCAL_TOKEN_RATES, "complete": complete, "totals": totals, "responses": list(responses.values()), "phases": phases}
         (self.args.run_dir / "token-log.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         if complete:
             (self.args.run_dir / "token-metrics.json").write_text(json.dumps(totals, ensure_ascii=False, indent=2) + "\n")
@@ -618,7 +690,7 @@ async def main_async(args):
     global RUBRIC, JUDGE_VERSION
     if args.mm_lifelong_judge:
         RUBRIC = Path(__file__).with_name("mm_lifelong_rubric.txt").read_text()
-        JUDGE_VERSION = "mm-lifelong"
+        JUDGE_VERSION = "mm-lifelong-openai-gpt-5.6-terra" if args.openai_judge else "mm-lifelong"
     args.artifact_root = args.artifact_root.resolve()
     args.run_dir = args.run_dir.resolve()
     args.magic_reference = (args.magic_reference if args.magic_reference is not None else args.artifact_root / "results/quality-magic-judge-v2").resolve()
@@ -654,7 +726,7 @@ async def main_async(args):
         questions = [by_id[question_id] for question_id in args.ids]
     if not questions or args.concurrency < 1:
         raise ValueError("Evaluation requires questions and positive concurrency")
-    config = {"method": args.method, "artifact_root": str(args.artifact_root), "model": MODEL, "base_url": BASE_URL, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "reasoning_effort": "xhigh", "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": 2, "judge_attempts": 2, "questions": questions, "judge_rubric": RUBRIC, "judge_version": JUDGE_VERSION, "answer_source_run_dir": str(args.answers_from) if args.answers_from is not None else None, "investigation_call_limit": INVESTIGATION_CALL_LIMIT if args.answers_from is None else None, "live_metrics_interval_seconds": 1}
+    config = {"method": args.method, "artifact_root": str(args.artifact_root), "model": MODEL, "base_url": BASE_URL, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "judge_model": OPENAI_JUDGE_MODEL if args.openai_judge else MODEL, "judge_api": "openai" if args.openai_judge else "local", "reasoning_effort": "xhigh", "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": 2, "judge_attempts": 2, "questions": questions, "judge_rubric": RUBRIC, "judge_version": JUDGE_VERSION, "answer_source_run_dir": str(args.answers_from) if args.answers_from is not None else None, "investigation_call_limit": INVESTIGATION_CALL_LIMIT if args.answers_from is None else None, "live_metrics_interval_seconds": 1}
     if args.method == "sql":
         config.update({"retrieval_method": "sql_ppr_semantic" if args.answers_from is None else "saved_answers", "live_magic_reference": str(args.magic_reference), "overlap_accuracy_definition": "score >= 4" if args.mm_lifelong_judge else "score == 5"})
     config_path = args.run_dir / "config.json"
@@ -694,5 +766,6 @@ if __name__ == "__main__":
     parser.add_argument("--ids", nargs="+")
     parser.add_argument("--answers-from", type=Path, help="Rejudge saved answers and reuse their final failure classifications without answering again")
     parser.add_argument("--mm-lifelong-judge", action="store_true", help="Use the MM-Lifelong semantic-similarity rubric and its 4/5=1, 3=0.5, 0/1/2=0 mapping")
+    parser.add_argument("--openai-judge", action="store_true", help="Judge saved answers with gpt-5.6-terra through the OpenAI API and SHARED_OPENAI_KEY")
     parser.add_argument("--magic-reference", type=Path, help="Completed MAGIC judgments with the same rubric for live overlap")
     asyncio.run(main_async(parser.parse_args()))
