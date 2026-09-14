@@ -249,16 +249,23 @@ class Evaluation:
                     if "Avg prompt throughput:" not in line and "SpecDecoding metrics:" not in line:
                         continue
                     marker = "Engine " if "Avg prompt throughput:" in line else "SpecDecoding metrics:"
-                    body = line[line.index(marker):].strip()
-                    fields = body.split(":", 1)[1].split(",") if marker == "Engine " else body.removeprefix(marker).split(",")
+                    if marker == "Engine " and marker in line:
+                        body = line[line.index(marker):].strip()
+                        metric_body = body.split(":", 1)[1]
+                    elif marker == "Engine ":
+                        body = line.strip()
+                        metric_body = body[body.index("Avg prompt throughput:"):]
+                    else:
+                        body = line[line.index(marker):].strip()
+                        metric_body = body.removeprefix(marker)
                     payload = {"monitor/timestamp": time.time(), **self.progress.copy(), "vllm_log/line": line.rstrip("\n")}
                     engine = re.search(r"Engine\s+(\d+)", body)
                     if engine is not None:
                         payload["vllm_log/engine"] = engine.group(1)
-                    for field in fields:
-                        match = re.fullmatch(r"\s*([^:]+):\s*(-?\d+(?:\.\d+)?)\s*(tokens/s|reqs|tokens|%)?\s*", field)
-                        if match is None:
-                            continue
+                    position_rates = re.search(r"Per-position acceptance rate:\s*([\d.,\s-]+),\s*Avg Draft acceptance rate:", metric_body)
+                    if position_rates is not None:
+                        payload["vllm_log/per_position_acceptance_rate"] = [float(value) for value in position_rates.group(1).split(",")]
+                    for match in re.finditer(r"(?:^|,\s*)([^:,]+):\s*(-?\d+(?:\.\d+)?)\s*(tokens/s|reqs|tokens|%)?", metric_body):
                         name = re.sub(r"[^a-z0-9]+", "_", match.group(1).lower()).strip("_")
                         payload[f"vllm_log/{name}"] = float(match.group(2))
                     history.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -482,7 +489,7 @@ class Evaluation:
                     normalized = normalize_text(candidate)
                     if re.search(r"\b(cannot determine|can't determine|unable to determine|unknown|insufficient)\b", normalized):
                         raise ValueError(f"MCQ answer is indeterminate: {candidate!r}")
-                    selected = set(re.findall(r"(?i)(?<![A-Za-z])([A-D])(?![A-Za-z])", candidate))
+                    selected = set(re.findall(r"(?m)^\s*(?:Answer\s*:\s*)?([A-D])(?=\s*$|[.)])", candidate))
                     if not selected:
                         for letter in "ABCD":
                             if normalize_text(question["choices"][letter]) in normalized:
@@ -848,12 +855,10 @@ async def main_async(args):
     if args.dataset == "mcq":
         converted = []
         for item in questions:
-            question = re.sub(r"\bWhich of the following people\b", "Who", item["question"], flags=re.I)
-            question = re.sub(r"(?:\n|\s)(?:\([Aa]\)|[Aa][.)])\s+.*?(?:\([Bb]\)|[Bb][.)])\s+.*", "", question, flags=re.S).strip()
             query_time = int(item["query_time"]["date"].removeprefix("DAY") + item["query_time"]["time"].zfill(8))
             choices = {letter: item["choice_" + letter.lower()] for letter in "ABCD"}
             correct = item["answer"].upper()
-            converted.append({"id": item["ID"], "question": normalize_text(question), "query_time": query_time, "reference_answer": normalize_text(choices[correct]), "choices": choices, "correct_choice": correct})
+            converted.append({"id": item["ID"], "question": normalize_text(item["question"]), "query_time": query_time, "reference_answer": normalize_text(choices[correct]), "choices": choices, "correct_choice": correct})
         questions = converted
     by_id = {str(question["id"]): question for question in questions}
     if len(by_id) != len(questions):
