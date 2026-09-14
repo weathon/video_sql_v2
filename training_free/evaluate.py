@@ -239,18 +239,12 @@ class Evaluation:
                 source.seek(0, os.SEEK_END)
                 loop.call_soon_threadsafe(self.monitor_ready.set)
                 stopped = False
-                deadline = time.monotonic()
                 while True:
-                    monotonic = time.monotonic()
-                    if monotonic >= deadline:
-                        with self.log_lock:
-                            self.run.log({"monitor/timestamp": time.time(), **self.progress.copy()})
-                        deadline = monotonic + 1
                     line = source.readline()
                     if not line:
                         if stopped:
                             return
-                        stopped = self.monitor_stop.wait(min(0.2, max(0, deadline - time.monotonic())))
+                        stopped = self.monitor_stop.wait(0.2)
                         continue
                     if "Avg prompt throughput:" not in line and "SpecDecoding metrics:" not in line:
                         continue
@@ -481,7 +475,7 @@ class Evaluation:
             self.progress["progress/answer/active"] += 1
             try:
                 if method == "magic":
-                    candidate, answered_at = await asyncio.to_thread(run_magic, question_prompt, question["query_time"], directory, self.args.artifact_root, self.args.base_url, self.args.embedding_url, self.args.model, self.args.reasoning_effort, self.args.dataset == "mcq")
+                    candidate, answered_at = await asyncio.to_thread(run_magic, question_prompt, question["query_time"], directory, self.args.artifact_root, self.args.base_url, self.args.embedding_url, self.args.model, self.args.reasoning_effort)
                     status = "answered"
                 else:
                     harness = VideoSQLHarness(database=self.args.artifact_root / "questions" / f"{question['id']}.duckdb", embedding_index=self.args.artifact_root / "embeddings", media_map=self.args.artifact_root / "media-map.json", skill_dir=Path(__file__).resolve().parent / "skills", run_dir=directory, model_name=self.args.model, api_key="EMPTY", embedding_url=self.args.embedding_url, embedding_model=EMBEDDING_MODEL, query_time=question["query_time"], base_url=self.args.base_url, clip_qa_video=True, reasoning_effort=self.args.reasoning_effort, semantic_search_mode=self.args.semantic_search_mode)
@@ -495,7 +489,7 @@ class Evaluation:
                     normalized = normalize_text(candidate)
                     if re.search(r"\b(cannot determine|can't determine|unable to determine|unknown|insufficient)\b", normalized):
                         raise ValueError(f"MCQ answer is indeterminate: {candidate!r}")
-                    selected = set(re.findall(r"(?im)^\s*(?:Answer\s*:\s*)?([A-D])(?=\s*$|[.)])", candidate))
+                    selected = set(re.findall(r"(?m)^\s*(?:Answer\s*:\s*)?([A-D])(?=\s*$|[.)])", candidate))
                     if not selected:
                         for letter in "ABCD":
                             if normalize_text(question["choices"][letter]) in normalized:
