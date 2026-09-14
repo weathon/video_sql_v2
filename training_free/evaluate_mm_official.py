@@ -117,7 +117,15 @@ def score_one(item, position, client, run_dir, state, lock):
     with lock:
         state["started"] += 1
         state["active"] += 1
-    for attempt in range(RETRY_TIMES):
+    used_attempts = len(list(question_dir.glob("attempt-*/trace.json")))
+    if used_attempts == RETRY_TIMES:
+        result = {**item, "gpt_score": -1, "gpt_error": "All official judge attempts were consumed before interruption", "attempt": used_attempts}
+        (question_dir / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+        with lock:
+            state["active"] -= 1
+            state["failed"] += 1
+        return position, result
+    for attempt in range(used_attempts, RETRY_TIMES):
         attempt_dir = question_dir / f"attempt-{attempt + 1}"
         attempt_dir.mkdir(parents=True, exist_ok=True)
         trace_path = attempt_dir / "trace.json"
@@ -220,8 +228,7 @@ def main(args):
     for trace_path in run_dir.glob("questions/*/attempt-*/trace.json"):
         trace = json.loads(trace_path.read_text())
         if trace["response"] is None:
-            if trace["error"] is not None:
-                state["requests_without_response"] += 1
+            state["requests_without_response"] += 1
             continue
         response = trace["response"]
         if response["id"] in response_ids:
