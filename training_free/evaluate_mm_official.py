@@ -19,7 +19,7 @@ from wandb.sdk.lib.runid import generate_id
 
 
 MODEL_NAME = "gpt-5"
-MAX_WORKERS = 128
+MAX_WORKERS = 32
 RETRY_TIMES = 3
 TIMEOUT_SEC = 60
 
