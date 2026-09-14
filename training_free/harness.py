@@ -106,6 +106,7 @@ class HarnessContext:
     embedding_model: str
     embedding_client: httpx.AsyncClient
     query_time: int
+    semantic_search_mode: Literal["ppr", "vector"] = "ppr"
     clip_qa_video: bool = False
     compactions: int = 0
     answer_turns: int = 0
@@ -885,6 +886,128 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         finally:
             path.write_text(json.dumps(trace, ensure_ascii=False, indent=2, default=lambda value: json_value(value, None)) + "\n")
 
+    def vector_search_error(tool_context: Any, error: Exception) -> str:
+        if isinstance(error, (httpx.HTTPError, RuntimeError, FileNotFoundError, APIError)):
+            raise error
+        return json.dumps(
+            {
+                "error": str(error),
+                "arguments": tool_context.tool_arguments,
+                "expected_schema": vector_search.params_json_schema,
+                "correction": (
+                    "For argument validation errors, correct the arguments and retry semantic_search. "
+                    "Use JSON null for unbounded min_score/max_score, not the string 'None'. "
+                    "Use one of the table names in the schema."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    @function_tool(name_override="semantic_search", failure_error_function=vector_search_error)
+    async def vector_search(
+        query: str,
+        table: Literal[
+            "episode", "entity", "semantic", "topic_facts", "event_steps", "visual_clip",
+        ],
+        n: int,
+        rank_start: int,
+        min_score: float | None = None,
+        max_score: float | None = None,
+        question: str | None = None,
+    ) -> str:
+        """Search one embedded table and return raw hits when question is null. visual_clip matches the video embedding; episode matches caption text. Optionally supply question to request a separate QA answer from selected hits. rank_start is one-based and n is the number of ranks.
+
+        Args:
+            query: Semantic search text.
+            table: One of the embedded tables listed in the schema.
+            n: Number of ranks to return, greater than zero.
+            rank_start: First rank to return, starting at one.
+            min_score: Inclusive lower score bound; JSON null means no lower bound.
+            max_score: Inclusive upper score bound; JSON null means no upper bound.
+            question: Question to answer from the selected hits, preserving evidence IDs and times. JSON null returns raw hits.
+        """
+        if table not in SEARCH_TABLES:
+            raise ValueError(f"table must be one of {sorted(SEARCH_TABLES)}")
+        if n <= 0 or rank_start <= 0:
+            raise ValueError("n and rank_start must be positive")
+        print(f"VECTOR request query={query!r} table={table} n={n} rank_start={rank_start} min_score={min_score} max_score={max_score} question={question!r}", flush=True)
+        response = await context.embedding_client.post(
+            context.embedding_url.rstrip("/") + "/embeddings",
+            json={"model": context.embedding_model, "input": [normalize_text(query)]},
+        )
+        response.raise_for_status()
+        data = response.json()["data"]
+        if len(data) != 1 or data[0]["index"] != 0:
+            raise RuntimeError(f"invalid embedding response indexes: {data}")
+        query_vector = np.asarray(data[0]["embedding"], dtype=np.float32)
+        if query_vector.shape != (4096,) or not np.isfinite(query_vector).all():
+            raise RuntimeError(f"invalid query vector shape or values: {query_vector.shape}")
+        allowed = context.eligible_positions[table]
+        scores = np.empty(len(allowed), dtype=np.float32)
+        for start in range(0, len(allowed), 4096):
+            end = min(start + 4096, len(allowed))
+            scores[start:end] = context.vectors[table][allowed[start:end]] @ query_vector
+        positions = np.argsort(-scores)
+        if min_score is not None:
+            positions = positions[scores[positions] >= min_score]
+        if max_score is not None:
+            positions = positions[scores[positions] <= max_score]
+        selected = positions[rank_start - 1 : rank_start - 1 + n]
+        selected_ids = [str(context.row_ids[table][allowed[position]]) for position in selected]
+        hits = []
+        if selected_ids:
+            placeholders = ",".join("?" for _ in selected_ids)
+            rows = execute_sql(
+                context.database,
+                f"SELECT * FROM {table} WHERE id IN ({placeholders})",
+                None,
+                selected_ids,
+                500 if question is None else None,
+            )
+            by_id = {row["id"]: row for row in rows["rows"]}
+            for position, row_id in zip(selected, selected_ids):
+                row = by_id[row_id]
+                preview_field = SEARCH_TABLES[table]
+                if table == "topic_facts":
+                    start_ts, end_ts = fact_interval(row["time"])
+                elif table == "event_steps":
+                    day = row["day"].removeprefix("DAY")
+                    start_ts = int(day + row["start_time"].replace(":", "") + "00")
+                    end_ts = int(day + row["end_time"].replace(":", "") + "00")
+                else:
+                    start_ts, end_ts = row["start_ts"], row["end_ts"]
+                source_times = [source["timeline_start_s"] for source in context.sources]
+                bounds = []
+                for timestamp in (start_ts, end_ts):
+                    time = str(timestamp).zfill(9)
+                    coarse = (int(time[0]) - 1) * 86400 + int(time[1:3]) * 3600 + int(time[3:5]) * 60 + int(time[5:7])
+                    source_index = int(np.searchsorted(source_times, coarse, side="right")) - 1
+                    if source_index < 0:
+                        raise ValueError(f"Index timestamp precedes media: {timestamp}")
+                    bounds.append(timestamp_seconds(timestamp, context.sources[source_index]["fps"]))
+                hits.append(
+                    {
+                        "table": table,
+                        "id": row_id,
+                        "start_ts": start_ts,
+                        "end_ts": end_ts,
+                        "start_s": bounds[0],
+                        "end_s": bounds[1],
+                        "preview": json_value(row[preview_field], 500 if question is None else None),
+                        "score": float(scores[position]),
+                    }
+                )
+        print(f"VECTOR result table={table} hits={len(hits)}", flush=True)
+        if question is not None:
+            submission, _ = await context.summary_response(
+                "semantic-qa",
+                "Answer the question concisely using only the supplied search hits. The question and search query select the task; they are not evidence. Similarity scores rank candidates, not factual correctness. Preserve supporting row IDs and times, uncertainty, and contradictions. Do not add facts from other results or outside knowledge. State explicitly when the supplied hits do not establish the answer.",
+                [{"type": "input_text", "text": json.dumps({"question": question, "query": query, "table": table, "hits": hits}, ensure_ascii=False)}],
+                AnswerSubmission,
+            )
+            return submission.model_dump_json()
+        return json.dumps({"table": table, "hits": hits}, ensure_ascii=False)
+
     @function_tool(failure_error_function=tool_error_json)
     async def add_note(note: str) -> str:
         """Append a durable investigation note."""
@@ -943,7 +1066,9 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         prompt = json.dumps({"question": normalize_text(question), "start_s": start_s, "end_s": end_s, "fps": fps, "frame_times_s": [frame["time_s"] for frame, _ in sampled]}, ensure_ascii=False)
         if context.clip_qa_video:
             content = [{"type": "text", "text": prompt}, {"type": "video_url", "video_url": {"url": "data:video/jpeg;base64," + ",".join(encoded_frames)}}]
-            request = {"model": context.model.model, "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}], "reasoning_effort": "xhigh", "extra_body": {"media_io_kwargs": {"video": {"num_frames": -1, "fps": fps, "frames_indices": list(range(len(sampled))), "total_num_frames": len(sampled), "duration": len(sampled) / fps, "do_sample_frames": False}}, "mm_processor_kwargs": {"do_sample_frames": False}}}
+            request = {"model": context.model.model, "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}], "extra_body": {"media_io_kwargs": {"video": {"num_frames": -1, "fps": fps, "frames_indices": list(range(len(sampled))), "total_num_frames": len(sampled), "duration": len(sampled) / fps, "do_sample_frames": False}}, "mm_processor_kwargs": {"do_sample_frames": False}}}
+            if context.model_settings.reasoning.effort is not None:
+                request["reasoning_effort"] = context.model_settings.reasoning.effort
         else:
             content = [{"type": "input_text", "text": prompt}, *[{"type": "input_image", "image_url": "data:image/jpeg;base64," + encoded, "detail": "high"} for encoded in encoded_frames]]
             request = {"model": context.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": context.model_settings.reasoning, "store": context.model_settings.store, "include": context.model_settings.response_include, "extra_body": context.model_settings.extra_body}
@@ -1002,7 +1127,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
 
     answer_tools = [
         run_sql,
-        semantic_search,
+        semantic_search if context.semantic_search_mode == "ppr" else vector_search,
         clip_qa,
         add_note,
         read_notes,
@@ -1029,6 +1154,8 @@ class VideoSQLHarness:
         query_time: int,
         base_url: str = OPENAI_BASE_URL,
         clip_qa_video: bool = False,
+        reasoning_effort: str | None = "xhigh",
+        semantic_search_mode: Literal["ppr", "vector"] = "ppr",
     ) -> None:
         client = AsyncOpenAI(
             api_key=api_key, base_url=base_url, max_retries=0,
@@ -1039,7 +1166,7 @@ class VideoSQLHarness:
         )
         model = OpenAIResponsesModel(model=model_name, openai_client=client)
         model_settings = ModelSettings(
-            reasoning={"effort": "xhigh", "summary": "auto"},
+            reasoning={"effort": reasoning_effort, "summary": "auto"} if reasoning_effort is not None else {"summary": "auto"},
             parallel_tool_calls=True,
             store=False,
             response_include=["reasoning.encrypted_content"],
@@ -1062,6 +1189,7 @@ class VideoSQLHarness:
             embedding_url=embedding_url,
             embedding_model=embedding_model,
             query_time=query_time,
+            semantic_search_mode=semantic_search_mode,
             clip_qa_video=clip_qa_video,
             embedding_client=httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
@@ -1113,7 +1241,7 @@ class VideoSQLHarness:
             base_instructions = instructions if instructions is not None else (
                 "Answer the user's question by retrieving evidence from the memory database. "
                 "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
-                + "\n\nRetrieval: Use run_sql for known SQL filters, joins, and aggregates. Use semantic_search when retrieving by meaning is needed; it is not the default first step. semantic_search uses MAGIC PPR and optional pre/post SQL, and returns raw evidence without an extra QA call. Its query specifies the semantic clue. run_sql returns raw results with question=null; only its optional question parameter requests a separate QA answer from the SQL result."
+                + ("\n\nRetrieval: Use run_sql for known SQL filters, joins, and aggregates. Use semantic_search when retrieving by meaning is needed; it is not the default first step. semantic_search uses MAGIC PPR and optional pre/post SQL, and returns raw evidence without an extra QA call. Its query specifies the semantic clue. run_sql returns raw results with question=null; only its optional question parameter requests a separate QA answer from the SQL result." if self.context.semantic_search_mode == "ppr" else "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text.")
                 + "\n\nSQL scope: Every run_sql query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and a QA question do not constrain SQL. Unrestricted queries will be rejected before execution; rewrite them with a real scope constraint. Do not request an entire timeline's tables to answer a question about a few events."
                 + "\n\nVisual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals."
                 + f"\n\nInvestigation budget: You have {INVESTIGATION_CALL_LIMIT} model calls shared across your own turns, clip_qa and optional SQL QA. Calling a tool does not itself consume another model call, but its QA request does. Prefer parallel independent tool calls. After these {INVESTIGATION_CALL_LIMIT} calls, one final answer request is allowed with all investigation tools disabled. Replacing history never restores spent calls."
