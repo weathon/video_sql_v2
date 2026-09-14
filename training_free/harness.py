@@ -44,6 +44,7 @@ from pydantic import BaseModel
 from training_free.normalize import normalize_text
 from training_free.ppr import search_graph
 from training_free.index_schema import SCHEMA, SEARCH_TABLES, fact_interval, timestamp_seconds
+from training_free.vector import search_vectors
 
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -106,6 +107,7 @@ class HarnessContext:
     embedding_model: str
     embedding_client: httpx.AsyncClient
     query_time: int
+    semantic_search_mode: Literal["ppr", "vector"] = "ppr"
     clip_qa_video: bool = False
     compactions: int = 0
     answer_turns: int = 0
@@ -859,14 +861,19 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
 
     @function_tool(failure_error_function=tool_error_json)
     async def semantic_search(query: str, n: int, pre_sql: str | None = None, post_sql: str | None = None) -> str:
-        """Retrieve evidence by semantic meaning using MAGIC PPR. Use this when semantic matching is needed, not as a default first step. run_sql handles direct SQL queries. query is the natural-language clue; n is the maximum PPR hit count before post SQL. Optional pre_sql selects exactly one id column from the question database; memory_nodes unions entity, episode, semantic, and visual_clip. It limits seeds and graph propagation to those IDs, for example yesterday. Optional post_sql instead queries only ppr_hits(id, node_type, text, start_ts, end_ts, start_s, end_s, metadata JSON, rank, score) to filter, order, project, or aggregate the retrieved nodes. Usually choose one SQL stage according to purpose: pre limits search scope, post refines semantic hits. Both are allowed when necessary. Null means no SQL at that stage. Returns evidence rows directly without an additional LLM QA call. Multiscale quotas may return fewer than n hits."""
+        """Retrieve evidence by semantic meaning with the configured retrieval mode. Use this when semantic matching is needed, not as a default first step. run_sql handles direct SQL queries. query is the natural-language clue; n is the maximum hit count before post SQL. Optional pre_sql selects exactly one id column from the question database; memory_nodes unions entity, episode, semantic, and visual_clip. Optional post_sql queries only ppr_hits in PPR mode or vector_hits in ordinary vector mode, with columns (id, node_type, text, start_ts, end_ts, start_s, end_s, metadata JSON, rank, score). Null means no SQL at that stage. Returns evidence rows directly without an additional LLM QA call."""
         if n <= 0:
             raise ValueError("n must be positive")
         query = normalize_text(query)
         request = {"model": context.embedding_model, "input": [query]}
         trace = {"query": query, "n": n, "pre_sql": pre_sql, "post_sql": post_sql, "query_time": context.query_time, "embedding_request": request}
-        path = context.run_dir / "traces" / f"ppr-{uuid.uuid4().hex}.json"
-        print(f"PPR request query={query!r} n={n} pre_sql={pre_sql!r} post_sql={post_sql!r} trace={path}", flush=True)
+        if context.semantic_search_mode == "vector":
+            trace["mode"] = "vector"
+        path = context.run_dir / "traces" / f"{context.semantic_search_mode}-{uuid.uuid4().hex}.json"
+        if context.semantic_search_mode == "ppr":
+            print(f"PPR request query={query!r} n={n} pre_sql={pre_sql!r} post_sql={post_sql!r} trace={path}", flush=True)
+        else:
+            print(f"VECTOR request query={query!r} n={n} pre_sql={pre_sql!r} post_sql={post_sql!r} trace={path}", flush=True)
         try:
             response = await context.embedding_client.post(context.embedding_url.rstrip("/") + "/embeddings", json=request)
             trace["embedding_status"] = response.status_code
@@ -874,16 +881,25 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             response.raise_for_status()
             data = response.json()["data"]
             if len(data) != 1 or data[0]["index"] != 0:
-                raise RuntimeError(f"Invalid PPR embedding response indexes: {data}")
+                raise RuntimeError(f"Invalid {'PPR' if context.semantic_search_mode == 'ppr' else 'vector'} embedding response indexes: {data}")
             vector = np.asarray(data[0]["embedding"], dtype=np.float32)
             if vector.shape != (4096,) or not np.isfinite(vector).all() or np.linalg.norm(vector) == 0:
-                raise RuntimeError(f"Invalid PPR query embedding: {vector.shape}")
-            result = await asyncio.to_thread(search_graph, context, query, vector, n, pre_sql, post_sql, trace)
+                raise RuntimeError(f"Invalid {'PPR' if context.semantic_search_mode == 'ppr' else 'vector'} query embedding: {vector.shape}")
+            if context.semantic_search_mode == "ppr":
+                result = await asyncio.to_thread(search_graph, context, query, vector, n, pre_sql, post_sql, trace)
+            else:
+                result = await asyncio.to_thread(search_vectors, context, vector, n, pre_sql, post_sql, trace)
             trace["result"] = result
-            print(f"PPR result candidates={result['candidate_count']} hits={result['ppr_hit_count']} rows={len(result['rows'])}", flush=True)
+            if context.semantic_search_mode == "ppr":
+                print(f"PPR result candidates={result['candidate_count']} hits={result['ppr_hit_count']} rows={len(result['rows'])}", flush=True)
+            else:
+                print(f"VECTOR result candidates={result['candidate_count']} hits={result['vector_hit_count']} rows={len(result['rows'])}", flush=True)
             return json.dumps(result, ensure_ascii=False, default=lambda value: json_value(value, None))
         finally:
             path.write_text(json.dumps(trace, ensure_ascii=False, indent=2, default=lambda value: json_value(value, None)) + "\n")
+
+    if context.semantic_search_mode == "ppr":
+        semantic_search.description = "Retrieve evidence by semantic meaning using MAGIC PPR. Use this when semantic matching is needed, not as a default first step. run_sql handles direct SQL queries. query is the natural-language clue; n is the maximum PPR hit count before post SQL. Optional pre_sql selects exactly one id column from the question database; memory_nodes unions entity, episode, semantic, and visual_clip. It limits seeds and graph propagation to those IDs, for example yesterday. Optional post_sql instead queries only ppr_hits(id, node_type, text, start_ts, end_ts, start_s, end_s, metadata JSON, rank, score) to filter, order, project, or aggregate the retrieved nodes. Usually choose one SQL stage according to purpose: pre limits search scope, post refines semantic hits. Both are allowed when necessary. Null means no SQL at that stage. Returns evidence rows directly without an additional LLM QA call. Multiscale quotas may return fewer than n hits."
 
     @function_tool(failure_error_function=tool_error_json)
     async def add_note(note: str) -> str:
@@ -943,7 +959,9 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         prompt = json.dumps({"question": normalize_text(question), "start_s": start_s, "end_s": end_s, "fps": fps, "frame_times_s": [frame["time_s"] for frame, _ in sampled]}, ensure_ascii=False)
         if context.clip_qa_video:
             content = [{"type": "text", "text": prompt}, {"type": "video_url", "video_url": {"url": "data:video/jpeg;base64," + ",".join(encoded_frames)}}]
-            request = {"model": context.model.model, "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}], "reasoning_effort": "xhigh", "extra_body": {"media_io_kwargs": {"video": {"num_frames": -1, "fps": fps, "frames_indices": list(range(len(sampled))), "total_num_frames": len(sampled), "duration": len(sampled) / fps, "do_sample_frames": False}}, "mm_processor_kwargs": {"do_sample_frames": False}}}
+            request = {"model": context.model.model, "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}], "extra_body": {"media_io_kwargs": {"video": {"num_frames": -1, "fps": fps, "frames_indices": list(range(len(sampled))), "total_num_frames": len(sampled), "duration": len(sampled) / fps, "do_sample_frames": False}}, "mm_processor_kwargs": {"do_sample_frames": False}}}
+            if context.model_settings.reasoning is not None and context.model_settings.reasoning.get("effort") is not None:
+                request["reasoning_effort"] = context.model_settings.reasoning["effort"]
         else:
             content = [{"type": "input_text", "text": prompt}, *[{"type": "input_image", "image_url": "data:image/jpeg;base64," + encoded, "detail": "high"} for encoded in encoded_frames]]
             request = {"model": context.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": context.model_settings.reasoning, "store": context.model_settings.store, "include": context.model_settings.response_include, "extra_body": context.model_settings.extra_body}
@@ -1029,6 +1047,8 @@ class VideoSQLHarness:
         query_time: int,
         base_url: str = OPENAI_BASE_URL,
         clip_qa_video: bool = False,
+        reasoning_effort: str | None = "xhigh",
+        semantic_search_mode: Literal["ppr", "vector"] = "ppr",
     ) -> None:
         client = AsyncOpenAI(
             api_key=api_key, base_url=base_url, max_retries=0,
@@ -1039,7 +1059,7 @@ class VideoSQLHarness:
         )
         model = OpenAIResponsesModel(model=model_name, openai_client=client)
         model_settings = ModelSettings(
-            reasoning={"effort": "xhigh", "summary": "auto"},
+            reasoning={"effort": reasoning_effort, "summary": "auto"} if reasoning_effort is not None else {"summary": "auto"},
             parallel_tool_calls=True,
             store=False,
             response_include=["reasoning.encrypted_content"],
@@ -1062,6 +1082,7 @@ class VideoSQLHarness:
             embedding_url=embedding_url,
             embedding_model=embedding_model,
             query_time=query_time,
+            semantic_search_mode=semantic_search_mode,
             clip_qa_video=clip_qa_video,
             embedding_client=httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
@@ -1113,7 +1134,7 @@ class VideoSQLHarness:
             base_instructions = instructions if instructions is not None else (
                 "Answer the user's question by retrieving evidence from the memory database. "
                 "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
-                + "\n\nRetrieval: Use run_sql for known SQL filters, joins, and aggregates. Use semantic_search when retrieving by meaning is needed; it is not the default first step. semantic_search uses MAGIC PPR and optional pre/post SQL, and returns raw evidence without an extra QA call. Its query specifies the semantic clue. run_sql returns raw results with question=null; only its optional question parameter requests a separate QA answer from the SQL result."
+                + f"\n\nRetrieval: Use run_sql for known SQL filters, joins, and aggregates. Use semantic_search when retrieving by meaning is needed; it is not the default first step. semantic_search uses {'MAGIC PPR' if self.context.semantic_search_mode == 'ppr' else 'ordinary cosine vector retrieval'} and optional pre/post SQL, and returns raw evidence without an extra QA call. Its query specifies the semantic clue. run_sql returns raw results with question=null; only its optional question parameter requests a separate QA answer from the SQL result."
                 + "\n\nSQL scope: Every run_sql query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and a QA question do not constrain SQL. Unrestricted queries will be rejected before execution; rewrite them with a real scope constraint. Do not request an entire timeline's tables to answer a question about a few events."
                 + "\n\nVisual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals."
                 + f"\n\nInvestigation budget: You have {INVESTIGATION_CALL_LIMIT} model calls shared across your own turns, clip_qa and optional SQL QA. Calling a tool does not itself consume another model call, but its QA request does. Prefer parallel independent tool calls. After these {INVESTIGATION_CALL_LIMIT} calls, one final answer request is allowed with all investigation tools disabled. Replacing history never restores spent calls."
