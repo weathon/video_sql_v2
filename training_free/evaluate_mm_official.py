@@ -130,11 +130,11 @@ def score_one(item, position, client, run_dir, state, lock):
         attempt_dir.mkdir(parents=True, exist_ok=True)
         trace_path = attempt_dir / "trace.json"
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
-        trace = {"request": {"model": MODEL_NAME, "messages": messages, "temperature": 0.0, "timeout": TIMEOUT_SEC}, "response": None, "error": None}
+        trace = {"request": {"model": MODEL_NAME, "messages": messages, "timeout": TIMEOUT_SEC}, "response": None, "error": None}
         trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
         print(f"JUDGE request method={run_dir.name} id={item['index']} attempt={attempt + 1} trace={trace_path}", flush=True)
         try:
-            response = client.chat.completions.create(model=MODEL_NAME, messages=messages, temperature=0.0, timeout=TIMEOUT_SEC)
+            response = client.chat.completions.create(model=MODEL_NAME, messages=messages, timeout=TIMEOUT_SEC)
             trace["response"] = response.model_dump(mode="json")
             trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
             usage = trace["response"]["usage"]
@@ -203,7 +203,7 @@ def main(args):
     run_dir = args.run_dir.resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     items = [json.loads(line) for line in args.input_jsonl.read_text().splitlines() if line.strip()]
-    config = {"model": MODEL_NAME, "max_workers": MAX_WORKERS, "retry_times": RETRY_TIMES, "timeout_seconds": TIMEOUT_SEC, "temperature": 0.0, "input_jsonl": str(args.input_jsonl.resolve()), "method": args.method, "metadata": "EgoLife questioner and query time", "prompt_source": "MM-Lifelong eval_acc.py plus EgoLife metadata rules", "live_metrics_interval_seconds": 1}
+    config = {"model": MODEL_NAME, "max_workers": MAX_WORKERS, "retry_times": RETRY_TIMES, "timeout_seconds": TIMEOUT_SEC, "input_jsonl": str(args.input_jsonl.resolve()), "method": args.method, "metadata": "EgoLife questioner and query time", "prompt_source": "MM-Lifelong eval_acc.py plus EgoLife metadata rules", "live_metrics_interval_seconds": 1}
     config_path = run_dir / "config.json"
     if config_path.exists():
         saved = json.loads(config_path.read_text())
