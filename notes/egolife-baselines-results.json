@@ -984,5 +984,284 @@
         "original_mean_score": 2.819277108433735
       }
     }
+  },
+  "completion_500": {
+    "date": "2026-09-13",
+    "denominator_rule": "Maintenance failures are retried; final EgoLife denominator is 500. Existing algorithm failures remain included with score zero.",
+    "methods": {
+      "magic": {
+        "run_dir": "/raid/videosql-video-artifacts/results/quality-magic-judge-v2",
+        "quality": {
+          "method": "magic",
+          "requested": 500,
+          "denominator": 500,
+          "mean_score": 2.286,
+          "score5_count": 188,
+          "score5_fraction": 0.376,
+          "algorithm_failure_count": 20,
+          "maintenance_failure_count": 0
+        }
+      },
+      "sql60": {
+        "run_dir": "/raid/videosql-video-artifacts/results/quality-sql60-completed-judge-v2",
+        "quality": {
+          "method": "sql",
+          "requested": 500,
+          "denominator": 500,
+          "mean_score": 2.81,
+          "score5_count": 227,
+          "score5_fraction": 0.454,
+          "algorithm_failure_count": 1,
+          "maintenance_failure_count": 0
+        }
+      },
+      "sql60_ppr_semantic": {
+        "run_dir": "/raid/videosql-video-artifacts/results/quality-sql60-ppr-completed-judge-v2",
+        "quality": {
+          "method": "sql",
+          "requested": 500,
+          "denominator": 500,
+          "mean_score": 2.66,
+          "score5_count": 222,
+          "score5_fraction": 0.444,
+          "algorithm_failure_count": 1,
+          "maintenance_failure_count": 0
+        }
+      }
+    },
+    "repairs": {
+      "131": {
+        "run_dir": "/raid/videosql-video-artifacts/results/repair-sql60-q131",
+        "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/331t5e66",
+        "source_commit": "783d3101c1be134deb53e5f8a7be9a1aa9fbc5ee",
+        "additional_answer_attempts": 1,
+        "model_calls": {
+          "investigation": 60,
+          "forced_final": 1,
+          "investigation_limit": 60
+        },
+        "latency_seconds": 2703.935269523994,
+        "judge_v2_score": 1,
+        "tokens": {
+          "input_tokens": 1719349,
+          "cached_tokens": 1297600,
+          "output_tokens": 586453,
+          "uncached_input_tokens": 421749,
+          "fee_usd": 0.3596568599999999
+        },
+        "llm_requests": 62
+      },
+      "473": {
+        "run_dir": "/raid/videosql-video-artifacts/results/repair-sql60-ppr-q473",
+        "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/jlafpvz2",
+        "source_commit": "e475632bf2b73f445d46f380eb5f96f9e4f2bf79",
+        "additional_answer_attempts": 1,
+        "model_calls": {
+          "investigation": 25,
+          "forced_final": 0,
+          "investigation_limit": 60
+        },
+        "latency_seconds": 134.05602008104324,
+        "judge_v2_score": 2,
+        "tokens": {
+          "input_tokens": 1232130,
+          "cached_tokens": 1115200,
+          "output_tokens": 27058,
+          "uncached_input_tokens": 116930,
+          "fee_usd": 0.04809996
+        },
+        "llm_requests": 26
+      }
+    }
+  },
+  "mm_lifelong_judge": {
+    "date": "2026-09-13",
+    "rubric_source": "MM-Lifelong/MM-Lifelong@248aa82039a574e63a2e524746a7cd8f32330443/eval_acc.py",
+    "rubric_file": "training_free/mm_lifelong_rubric.txt",
+    "output_format": "SDK structured parse; original official semantic criteria and special rules retained",
+    "metadata": "EgoLife questioner Jake / A1_JAKE and query day/time",
+    "score_mapping": {
+      "0": 0,
+      "1": 0,
+      "2": 0,
+      "3": 0.5,
+      "4": 1,
+      "5": 1
+    },
+    "methods": {
+      "magic": {
+        "run_dir": "/raid/videosql-video-artifacts/results/quality-magic-mm-lifelong-judge",
+        "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/8d08zt0l",
+        "quality": {
+          "method": "magic",
+          "requested": 500,
+          "denominator": 500,
+          "mean_score": 2.212,
+          "score5_count": 136,
+          "score5_fraction": 0.272,
+          "algorithm_failure_count": 20,
+          "maintenance_failure_count": 0,
+          "mapped_mean_score": 0.396,
+          "mapped_full_credit_count": 187,
+          "mapped_full_credit_fraction": 0.374,
+          "score_distribution": {
+            "0": 172,
+            "1": 82,
+            "2": 37,
+            "3": 22,
+            "4": 51,
+            "5": 136
+          }
+        },
+        "tokens_this_rejudge": {
+          "input_tokens": 285945,
+          "cached_tokens": 0,
+          "output_tokens": 339412,
+          "uncached_input_tokens": 285945,
+          "fee_usd": 0.20241538999999997
+        },
+        "llm_requests": 480,
+        "audit_file": "/raid/videosql-video-artifacts/results/quality-magic-mm-lifelong-judge/final-audit.json"
+      },
+      "sql60_ppr_semantic": {
+        "run_dir": "/raid/videosql-video-artifacts/results/quality-sql60-ppr-mm-lifelong-judge",
+        "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/gk5yaejt",
+        "quality": {
+          "method": "sql",
+          "requested": 500,
+          "denominator": 500,
+          "mean_score": 2.632,
+          "score5_count": 179,
+          "score5_fraction": 0.358,
+          "algorithm_failure_count": 1,
+          "maintenance_failure_count": 0,
+          "mapped_mean_score": 0.47,
+          "mapped_full_credit_count": 229,
+          "mapped_full_credit_fraction": 0.458,
+          "score_distribution": {
+            "0": 123,
+            "1": 87,
+            "2": 49,
+            "3": 12,
+            "4": 50,
+            "5": 179
+          }
+        },
+        "tokens_this_rejudge": {
+          "input_tokens": 374390,
+          "cached_tokens": 0,
+          "output_tokens": 534141,
+          "uncached_input_tokens": 374390,
+          "fee_usd": 0.30720477
+        },
+        "llm_requests": 499,
+        "audit_file": "/raid/videosql-video-artifacts/results/quality-sql60-ppr-mm-lifelong-judge/final-audit.json"
+      }
+    },
+    "incremental_runs": {
+      "repair-sql60-q131": {
+        "url": "https://wandb.ai/3dsmile/video-sql-v2/runs/331t5e66",
+        "tokens": {
+          "input_tokens": 1719349,
+          "cached_tokens": 1297600,
+          "output_tokens": 586453,
+          "uncached_input_tokens": 421749,
+          "fee_usd": 0.3596568599999999
+        },
+        "requests": 62
+      },
+      "repair-sql60-ppr-q473": {
+        "url": "https://wandb.ai/3dsmile/video-sql-v2/runs/jlafpvz2",
+        "tokens": {
+          "input_tokens": 1232130,
+          "cached_tokens": 1115200,
+          "output_tokens": 27058,
+          "uncached_input_tokens": 116930,
+          "fee_usd": 0.04809996
+        },
+        "requests": 26
+      },
+      "quality-magic-mm-lifelong-judge": {
+        "url": "https://wandb.ai/3dsmile/video-sql-v2/runs/8d08zt0l",
+        "tokens": {
+          "input_tokens": 285945,
+          "cached_tokens": 0,
+          "output_tokens": 339412,
+          "uncached_input_tokens": 285945,
+          "fee_usd": 0.20241538999999997
+        },
+        "requests": 480
+      },
+      "quality-sql60-ppr-mm-lifelong-judge": {
+        "url": "https://wandb.ai/3dsmile/video-sql-v2/runs/gk5yaejt",
+        "tokens": {
+          "input_tokens": 374390,
+          "cached_tokens": 0,
+          "output_tokens": 534141,
+          "uncached_input_tokens": 374390,
+          "fee_usd": 0.30720477
+        },
+        "requests": 499
+      }
+    },
+    "paired_comparison": {
+      "reference": "/raid/videosql-video-artifacts/results/quality-magic-mm-lifelong-judge",
+      "accuracy_definition": "score >= 4",
+      "metrics": {
+        "overlap/count": 500,
+        "overlap/sql_mean_score": 2.632,
+        "overlap/magic_mean_score": 2.212,
+        "overlap/sql_accuracy": 0.458,
+        "overlap/magic_accuracy": 0.374,
+        "overlap/sql_mapped_mean_score": 0.47,
+        "overlap/magic_mapped_mean_score": 0.396,
+        "overlap/mean_score_delta": 0.41999999999999993,
+        "overlap/accuracy_delta": 0.08400000000000002
+      }
+    },
+    "incremental_totals": {
+      "input_tokens": 3611814,
+      "cached_tokens": 2412800,
+      "output_tokens": 1487064,
+      "uncached_input_tokens": 1199014,
+      "fee_usd": 0.9173769799999999,
+      "llm_requests": 1067,
+      "incomplete_usage_requests": 0
+    },
+    "cumulative_actual_spend_including_prior_judges": {
+      "magic": {
+        "input_tokens": 86551831,
+        "cached_tokens": 7996000,
+        "output_tokens": 3737089,
+        "uncached_input_tokens": 78555831,
+        "fee_usd": 13.667742479999998,
+        "source_runs": [
+          "quality-magic-rerun",
+          "quality-magic-judge-v2",
+          "quality-magic-mm-lifelong-judge"
+        ]
+      },
+      "sql60": {
+        "input_tokens": 277517016,
+        "cached_tokens": 230724000,
+        "output_tokens": 23559178,
+        "uncached_input_tokens": 46793016,
+        "fee_usd": 21.783350060000004,
+        "source_runs": [
+          "quality-sql60-completed-judge-v2"
+        ]
+      },
+      "sql60_ppr_semantic": {
+        "input_tokens": 267876846,
+        "cached_tokens": 211990400,
+        "output_tokens": 29670301,
+        "uncached_input_tokens": 55886446,
+        "fee_usd": 25.719854769999994,
+        "source_runs": [
+          "quality-sql60-ppr-completed-judge-v2",
+          "quality-sql60-ppr-mm-lifelong-judge"
+        ]
+      }
+    }
   }
 }

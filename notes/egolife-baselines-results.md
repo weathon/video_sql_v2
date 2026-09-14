@@ -2,6 +2,51 @@
 
 本次有效运行使用 Qwen/Qwen3.8-27B-FP8、xhigh，质量评测每种方法并发 20、500 题，每批失败题集中重试一次。视频在 caption 明确区间内均匀采样。旧 quality-magic、quality-sql 已作废。
 
+## 2026-09-13：补齐 500 题与 MM-Lifelong 重评
+
+本节为最终 500 题结果，下方保留补跑前的历史记录。原 SQL60 的维护失败 ID 131、SQL60+PPR 的维护失败 ID 473 各追加一次答题后均获得有效答案，按原 judge v2 分别得 1、2 分。此前的算法失败仍计 0 分：MAGIC 20 题、原 SQL60 的 ID 346、SQL60+PPR 的 ID 74；三组最终维护失败均为 0。
+
+| 方法，原 judge v2 | 平均分 / 5 | 5 分题数 / 分母 | 5 分率 | 算法失败 |
+|---|---:|---:|---:|---:|
+| MAGIC | 2.2860 | 188/500 | 37.60% | 20 |
+| 原 SQL60 | 2.8100 | 227/500 | 45.40% | 1 |
+| SQL60 + PPR | 2.6600 | 222/500 | 44.40% | 1 |
+
+ID 131 使用 `783d3101c1be134deb53e5f8a7be9a1aa9fbc5ee` 的原 SQL60 源码和静态 skills；追加尝试用了 60 次调查加一次强答，答题耗时 2703.94 秒。ID 473 保持原 SQL60+PPR 的答题实现，使用 25 次调查，没有强答，耗时 134.06 秒。旧答案、评分、失败记录及 traces 均保留，补齐结果单独保存。
+
+随后仅对 MAGIC 的 480 份有效答案与 SQL60+PPR 的 499 份有效答案重新 judge，其余算法失败计 0，分母均为 500。采用 MM-Lifelong 官方 `eval_acc.py`（dataset revision `248aa82039a574e63a2e524746a7cd8f32330443`）的语义相似度 rubric，保留其 hallucination-sensitive 和 time-duration 特殊规则；输出格式适配 SDK structured parse。继续提供 EgoLife 的提问者 Jake / A1_JAKE 和 query day/time metadata，judge 使用 Qwen/Qwen3.8-27B-FP8、xhigh、并发 20。实际提示见 [mm_lifelong_rubric.txt](../training_free/mm_lifelong_rubric.txt)。
+
+MM-Lifelong 官方映射为：原始 4、5 分计 1，3 分计 0.5，0、1、2 分计 0；映射平均分与 4–5 分比例分别报告。
+
+| 方法，MM-Lifelong rubric | 原始平均分 / 5 | 原始 5 分题数 | 4–5 分题数 / 分母 | 4–5 分比例 | 映射平均分 / 1 |
+|---|---:|---:|---:|---:|---:|
+| MAGIC | 2.2120 | 136/500 | 187/500 | 37.40% | 0.3960 |
+| SQL60 + PPR | 2.6320 | 179/500 | 229/500 | 45.80% | 0.4700 |
+
+双方按同一 500 题比较，SQL60+PPR 的映射平均分高 0.074，4–5 分比例高 8.40 个百分点。MAGIC 原始 0–5 分分布为 `[172, 82, 37, 22, 51, 136]`，SQL60+PPR 为 `[123, 87, 49, 12, 50, 179]`。ID 473 在本次 MM-Lifelong rubric 下得 0 分，包含在结果中。
+
+本次新增调用与费用如下，token 以独立服务端 `/metrics` 的阶段差值为准，输入列已扣除缓存。1,067 次新增 LLM 请求均返回完整 usage，逐请求合计与服务端三类计数的差均为 0。
+
+| 阶段 | LLM 请求 | in | cache | out | 等效 USD |
+|---|---:|---:|---:|---:|---:|
+| 原 SQL60，ID 131 补跑及 v2 judge | 62 | 421,749 | 1,297,600 | 586,453 | 0.359657 |
+| SQL60+PPR，ID 473 补跑及 v2 judge | 26 | 116,930 | 1,115,200 | 27,058 | 0.048100 |
+| MAGIC，MM-Lifelong rejudge | 480 | 285,945 | 0 | 339,412 | 0.202415 |
+| SQL60+PPR，MM-Lifelong rejudge | 499 | 374,390 | 0 | 534,141 | 0.307205 |
+| 本次新增合计 | 1,067 | 1,199,014 | 2,412,800 | 1,487,064 | 0.917377 |
+
+计入原运行、维护补跑及已经执行过的各版 judge 后，累计实际等效费用为 MAGIC **13.667742 USD**、原 SQL60 **21.783350 USD**、SQL60+PPR **25.719855 USD**。原运行缺失 usage 的记录仍保持未知，其服务端费用已包含在累计值内。
+
+四个阶段使用同一服务串行执行，各阶段内部保留并发 20。运行时以 1 Hz 记录 token、吞吐、GPU 和已完成题的实时 overlap；已核查远端历史。最后一次 1 Hz 采样之后产生的少量 token，以阶段结束的服务端快照更新 W&B summary，原始时序保留。最终 overlap 为 500 题。
+
+- [原 SQL60 补跑 W&B](https://wandb.ai/3dsmile/video-sql-v2/runs/331t5e66)：`results/repair-sql60-q131`。
+- [SQL60+PPR 补跑 W&B](https://wandb.ai/3dsmile/video-sql-v2/runs/jlafpvz2)：`results/repair-sql60-ppr-q473`。
+- [MAGIC MM-Lifelong 重评 W&B](https://wandb.ai/3dsmile/video-sql-v2/runs/8d08zt0l)：`results/quality-magic-mm-lifelong-judge`。
+- [SQL60+PPR MM-Lifelong 重评 W&B](https://wandb.ai/3dsmile/video-sql-v2/runs/gk5yaejt)：`results/quality-sql60-ppr-mm-lifelong-judge`。
+- 补齐后的 v2 数据：`results/quality-sql60-completed-judge-v2`、`results/quality-sql60-ppr-completed-judge-v2`。所有路径均相对于 `/raid/videosql-video-artifacts`；config 记录来源，完整 trace 继续位于对应原运行或补跑目录。
+
+已核对补跑中的实际 SQL/PPR 输入与返回、SQL QA 响应、强答时关闭工具、实际视频证据帧，以及重评请求中的 rubric、metadata、答案和 reasoning。逐题重算确认两个重评目录分别复用 480、499 份原答案，最终指标均与逐题分数一致。独立子代理审查和 Claude 全仓库审查已完成，记录在 `runs/egolife-completion/claude-full-review.log`；本任务四个服务容器已停止并删除。下一阶段计划已明确：维护错误需要继续重试，EgoLife 最终分母 500，MM-Lifelong Month validation 最终分母 623。
+
 ## SQL60 与新版 judge
 
 原 SQL 60 次调查预算运行已完成，源码为 `783d3101c1be134deb53e5f8a7be9a1aa9fbc5ee`，没有 PPR 工具。以下三组均使用包含提问者和 query time 的新版 judge；MAGIC 和 SQL10 复用原答题结果重新评分，SQL60 从头答完 500 题并执行一次集中失败重试。
