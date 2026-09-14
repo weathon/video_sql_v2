@@ -95,6 +95,6 @@ QA问题和视频: HF Dataset MM-Lifelong/MM-Lifelong
 2. 现在GPU极度空余, 选择出5个GPU(下俩标记为GPU0-4, 不代表真实GPU id), GPU 0: embedding server和2个encoder. GPU1,2: 一个qwen 3.8 27B server GPU3,4: 另一个 3.8 27B server. 两个encoder分别链接一个PD server. 共享一个embedding server. 两个VLLM server暴露不同的接口
 3. 我们的方法使用 SQL60 + PPR：保留原 SQL 工具，以支持 pre/post SQL 的 PPR 作为 semantic_search，不默认或优先推荐。两种方法均进行全局检索，没有 query_time，不沿用 EgoLife 的逐题时间截止过滤。
 4. 同时启动 MAGIC Video 和 SQL60 + PPR，分别使用一个 vLLM 接口，并分别记录 token 消耗。overlap 根据运行中双方实时完成的共同题目计算，不要求 MAGIC 全部运行完成后再启动 SQL。
-5. 使用 MM-Lifelong 官方 rubric 和评分口径。其余运行设置继承上一轮：所有 LLM 调用（包括 judge）使用 Qwen/Qwen3.8-27B-FP8、xhigh，保留 reasoning 历史；客户端不设置采样参数和 token 上限；每边并发 20，SQL 每次尝试最多 60 次共享调查调用再加一次强答，MAGIC 保留上游检索轮数；失败题在本批结束后集中重试一次；W&B 以 1 Hz 记录 token、吞吐、GPU 和实时 overlap。
+5. 使用 MM-Lifelong 官方 rubric 和评分口径。其余运行设置继承上一轮：所有 LLM 调用（包括 judge）使用 Qwen/Qwen3.8-27B-FP8、xhigh，保留 reasoning 历史；客户端不设置采样参数和 token 上限；每边并发 20，SQL 每次尝试最多 60 次共享调查调用再加一次强答，MAGIC 保留上游检索轮数；失败题在本批结束后集中重试一次，维护错误继续重试，不能通过排除题目缩小分母；最终报告使用完整评测集分母，EgoLife 为 500，MM-Lifelong Month validation 为 623；W&B 以 1 Hz 记录 token、吞吐、GPU 和实时 overlap。
 6. 两套 harness 的内存上限合计为服务启动后可用内存的 20%，CPU KV cache 合计 512GB。
 7. 只比较结果，artifacts 和结果本地保存，不上传 HF。
