@@ -262,12 +262,12 @@ class Evaluation:
                     engine = re.search(r"Engine\s+(\d+)", body)
                     if engine is not None:
                         payload["vllm_log/engine"] = engine.group(1)
-                    position_rates = re.search(r"Per-position acceptance rate:\s*([\d.,\s-]+),\s*Avg Draft acceptance rate:", metric_body)
-                    if position_rates is not None:
-                        payload["vllm_log/per_position_acceptance_rate"] = [float(value) for value in position_rates.group(1).split(",")]
                     for match in re.finditer(r"(?:^|,\s*)([^:,]+):\s*(-?\d+(?:\.\d+)?)\s*(tokens/s|reqs|tokens|%)?", metric_body):
                         name = re.sub(r"[^a-z0-9]+", "_", match.group(1).lower()).strip("_")
                         payload[f"vllm_log/{name}"] = float(match.group(2))
+                    position_rates = re.search(r"Per-position acceptance rate:\s*([\d.,\s-]+),\s*Avg Draft acceptance rate:", metric_body)
+                    if position_rates is not None:
+                        payload["vllm_log/per_position_acceptance_rate"] = [float(value) for value in position_rates.group(1).split(",")]
                     history.write(json.dumps(payload, ensure_ascii=False) + "\n")
                     with self.log_lock:
                         self.run.log(payload)
