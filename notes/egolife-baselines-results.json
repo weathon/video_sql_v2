@@ -1324,5 +1324,70 @@
       "one_fraction_delta": 0.066,
       "mapped_mean_delta": 0.061
     }
+  },
+  "mm_lifelong_official_gpt5_egolife_metadata_judge": {
+    "date": "2026-09-13",
+    "judge_model": "gpt-5",
+    "judge_api": "openai",
+    "max_workers": 128,
+    "judge_attempts": 3,
+    "timeout_seconds": 60,
+    "sampling_parameters": "omitted",
+    "rubric_source": "MM-Lifelong/MM-Lifelong@248aa82039a574e63a2e524746a7cd8f32330443/eval_acc.py",
+    "metadata": "EgoLife questioner Jake / A1_JAKE, first-person camera wearer, query day/time/frame",
+    "score_mapping": {
+      "0": 0,
+      "1": 0,
+      "2": 0,
+      "3": 0.5,
+      "4": 1,
+      "5": 1
+    },
+    "answer_retry": {
+      "attempts": "initial plus three retries",
+      "magic_recovered_count": 16,
+      "magic_final_blank_ids": [374, 419, 431, 484],
+      "sql60_ppr_recovered_ids": [74]
+    },
+    "methods": {
+      "magic": {
+        "run_dir": "/raid/videosql-video-artifacts/results/quality-magic-mm-lifelong-official-gpt5-egolife-metadata-judge",
+        "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/xhd0n9w6",
+        "denominator": 500,
+        "valid_judge_samples": 500,
+        "judge_failures": 0,
+        "one_count": 203,
+        "one_fraction": 0.406,
+        "average_score": 0.428,
+        "raw_mean_score": 2.308,
+        "score_distribution": [200, 47, 28, 22, 30, 173],
+        "judge_attempt_distribution": {"1": 500},
+        "usage": {
+          "input_tokens": 312509,
+          "cached_tokens": 0,
+          "output_tokens": 172695,
+          "complete": true
+        }
+      },
+      "sql60_ppr_semantic": {
+        "run_dir": "/raid/videosql-video-artifacts/results/quality-sql60-ppr-mm-lifelong-official-gpt5-egolife-metadata-judge",
+        "wandb_url": "https://wandb.ai/3dsmile/video-sql-v2/runs/tx6ojga6",
+        "denominator": 500,
+        "valid_judge_samples": 500,
+        "judge_failures": 0,
+        "one_count": 234,
+        "one_fraction": 0.468,
+        "average_score": 0.478,
+        "raw_mean_score": 2.606,
+        "score_distribution": [172, 46, 38, 10, 19, 215],
+        "judge_attempt_distribution": {"1": 500},
+        "usage": {
+          "input_tokens": 381711,
+          "cached_tokens": 0,
+          "output_tokens": 231386,
+          "complete": true
+        }
+      }
+    }
   }
 }

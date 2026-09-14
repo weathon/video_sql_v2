@@ -61,6 +61,22 @@ MAGIC 原始 0–5 分分布为 `[188, 36, 28, 42, 27, 179]`，SQL60+PPR 为 `[1
 
 已核对补跑中的实际 SQL/PPR 输入与返回、SQL QA 响应、强答时关闭工具、实际视频证据帧，以及重评请求中的 rubric、metadata、答案和 reasoning。逐题重算确认两个重评目录分别复用 480、499 份原答案，最终指标均与逐题分数一致。独立子代理审查和 Claude 全仓库审查已完成，记录在 `runs/egolife-completion/claude-full-review.log`；本任务四个服务容器已停止并删除。下一阶段计划已明确：维护错误需要继续重试，EgoLife 最终分母 500，MM-Lifelong Month validation 最终分母 623。
 
+### OpenAI gpt-5 官方 judge 与 EgoLife metadata
+
+答题错误统一执行初始尝试加三次重试。MAGIC 的 20 题中有 16 题恢复，最终无答案的 ID 为 374、419、431、484；SQL60+PPR 的 ID 74 在第二次尝试用完 60 次调查调用和一次强制回答后恢复。两边最终评分分母均为 500，无答案按 0 分处理。
+
+Judge 使用 MM-Lifelong 官方 `eval_acc.py` 的 `gpt-5`、并发 128、三次 judge 尝试、60 秒超时、prompt、文本解析和分数映射，并追加 Jake / A1_JAKE、第一人称 camera wearer、query day/time/frame metadata。OpenAI 的 `gpt-5` 不接受官方脚本的 `temperature=0.0`，按用户决定省略全部采样参数。
+
+| 方法 | 1 分题数 / 500 | 1 分率 | Average score | 原始平均分 / 5 |
+|---|---:|---:|---:|---:|
+| MAGIC | 203/500 | 40.60% | 0.4280 | 2.3080 |
+| SQL60 + PPR | 234/500 | 46.80% | 0.4780 | 2.6060 |
+
+MAGIC 原始 0–5 分分布为 `[200, 47, 28, 22, 30, 173]`，SQL60+PPR 为 `[172, 46, 38, 10, 19, 215]`。1000 道评分均在第一次 judge 尝试返回有效结果和完整 usage。MAGIC 使用 312,509 输入、0 缓存输入、172,695 输出 token；SQL60+PPR 使用 381,711 输入、0 缓存输入、231,386 输出 token。逐题请求与答案、metadata、响应、usage、解析分数和最终聚合已经核验，W&B 实时时序间隔为 1 秒。
+
+- [MAGIC gpt-5 judge W&B](https://wandb.ai/3dsmile/video-sql-v2/runs/xhd0n9w6)：`results/quality-magic-mm-lifelong-official-gpt5-egolife-metadata-judge`。
+- [SQL60+PPR gpt-5 judge W&B](https://wandb.ai/3dsmile/video-sql-v2/runs/tx6ojga6)：`results/quality-sql60-ppr-mm-lifelong-official-gpt5-egolife-metadata-judge`。
+
 ## SQL60 与新版 judge
 
 原 SQL 60 次调查预算运行已完成，源码为 `783d3101c1be134deb53e5f8a7be9a1aa9fbc5ee`，没有 PPR 工具。以下三组均使用包含提问者和 query time 的新版 judge；MAGIC 和 SQL10 复用原答题结果重新评分，SQL60 从头答完 500 题并执行一次集中失败重试。
