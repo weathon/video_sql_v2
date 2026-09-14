@@ -283,7 +283,7 @@ class MagicMemory(WorldMemory):
         return "\n\n".join(results)
 
 
-def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path, base_url: str, embedding_url: str, model: str = MODEL, reasoning_effort: str | None = "xhigh") -> tuple[str, float]:
+def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path, base_url: str, embedding_url: str, model: str = MODEL, reasoning_effort: str | None = "xhigh", mcq: bool = False) -> tuple[str, float]:
     api = MagicAPI(Path(run_dir), base_url, embedding_url, model, reasoning_effort)
     artifact_root = Path(artifact_root).resolve()
     question = normalize_text(question)
@@ -302,8 +302,9 @@ def run_magic(question: str, query_time: int, run_dir: Path, artifact_root: Path
     reasoning_prompt = copy.deepcopy(reasoning_template)
     reasoning_prompt[0]["content"] = reasoning_prompt[0]["content"].replace('If decision = "answer": Do NOT include "search_query".', 'If decision = "answer": Set "search_query" to null.').replace('"search_query": "<str>"', '"search_query": "<str>" | null').replace('"decision": "answer"\n}', '"decision": "answer",\n  "search_query": null\n}')
     final_prompt = copy.deepcopy(qa_template)
-    final_prompt[0]["content"] = final_prompt[0]["content"].replace("Your task is to answer multiple choice questions based on this accumulated context. Always choose the most relevant answer from the given choices based on the evidence provided.", "Your task is to answer open-ended questions based on this accumulated context.").replace("Provide your answer as a single letter (A, B, C, or D) based on the evidence.", "Provide a direct, brief, factual answer to the question based on the evidence.")
-    final_prompt[0]["content"] = final_prompt[0]["content"].replace("Choose the answer that best matches the evidence.", "Answer the question based on the evidence.")
+    if not mcq:
+        final_prompt[0]["content"] = final_prompt[0]["content"].replace("Your task is to answer multiple choice questions based on this accumulated context. Always choose the most relevant answer from the given choices based on the evidence provided.", "Your task is to answer open-ended questions based on this accumulated context.").replace("Provide your answer as a single letter (A, B, C, or D) based on the evidence.", "Provide a direct, brief, factual answer to the question based on the evidence.")
+        final_prompt[0]["content"] = final_prompt[0]["content"].replace("Choose the answer that best matches the evidence.", "Answer the question based on the evidence.")
     full_query = f"Query: {question}\nCurrent time: {transform_timestamp(str(query_time))}"
     conversation = []
     round_history = []
