@@ -41,7 +41,7 @@ JUDGE_VERSION = 2
 COUNTERS = {"input_tokens": "vllm:prompt_tokens_total", "cached_tokens": "vllm:prompt_tokens_cached_total", "output_tokens": "vllm:generation_tokens_total"}
 GAUGES = ("vllm:num_requests_running", "vllm:num_requests_waiting")
 LOCAL_TOKEN_RATES = {"uncached_input": 0.15, "output": 0.47, "cached_input": 0.016}
-ATTEMPTS = (1, 2, 3)
+ATTEMPTS = (1, 2, 3, 4)
 
 
 class Judgment(BaseModel):
