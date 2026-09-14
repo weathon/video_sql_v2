@@ -35,12 +35,18 @@ PD_URL = "http://127.0.0.1:8124"
 EMBEDDING_URL = "http://127.0.0.1:8114/v1"
 EMBEDDING_MODEL = "qwen3-vl-embedding-8b"
 RUBRIC = "Evaluate whether the candidate correctly answers the question, using the reference answer and authoritative metadata. The reference is a concise correct answer, not an exhaustive list of permissible wording or supporting details. Score 5 when all facts required by the question are correct and the answer has no material contradiction. Accept ordinary synonyms, paraphrases, reversed list order, and recognizable spelling variants of the same name; do not require exact wording. Additional specificity, explanations, citations, episode IDs, timestamps, formatting, verbosity, or cautious wording are not errors by themselves. Do not assume an extra detail is false merely because the short reference omits it. A genuinely wrong additional claim or unresolved alternative that changes the answer can warrant a deduction. Judge what the question asks: a who-question requires the correct people, not every incidental event in the reference. The metadata identifies the questioner: I, me, my, mine, the narrator, and the camera wearer refer to Jake / A1_JAKE / a1_jake. Use the supplied query day and clock time to compare absolute DAYn timestamps with relative expressions such as last night, yesterday, or three hours ago. DAY3 is a day label, not automatically three days ago. Respect the reference's temporal precision: approximate hours and parts of the day such as noon do not require an exact minute match. Return a brief justification and one integer score: 0 = no valid answer or the core answer is wrong; 1 = only a few relevant correct details and the core question is unanswered; 2 = partially correct with major omissions or errors; 3 = the core is mostly correct but still has material omissions or errors; 4 = essentially complete and correct, with an identifiable minor factual error or omission relevant to the question; 5 = fully correct on the required answer and semantically equivalent at the question's intended level of detail, with no material contradiction. For any score below 5, identify the actual factual error or missing required information; stylistic differences or harmless additional context are not sufficient reasons to deduct. The score must agree with the justification."
+JUDGE_VERSION = 2
 COUNTERS = {"input_tokens": "vllm:prompt_tokens_total", "cached_tokens": "vllm:prompt_tokens_cached_total", "output_tokens": "vllm:generation_tokens_total"}
 GAUGES = ("vllm:num_requests_running", "vllm:num_requests_waiting")
 
 
 class Judgment(BaseModel):
     justification: str = Field(min_length=1, description="Brief factual basis for the score; identify any actual error or required omission when deducting points.")
+    score: int = Field(strict=True, ge=0, le=5)
+
+
+class SimilarityJudgment(BaseModel):
+    justification: str = Field(min_length=1, description="Brief analysis explaining the semantic similarity between the groundtruth and the candidate answer.")
     score: int = Field(strict=True, ge=0, le=5)
 
 
@@ -155,6 +161,7 @@ class Evaluation:
         self.run = run
         self.http = httpx.AsyncClient(timeout=60)
         self.judge_client = openai.AsyncOpenAI(api_key="EMPTY", base_url=BASE_URL, max_retries=0, timeout=None)
+        self.judgment_type = SimilarityJudgment if args.mm_lifelong_judge else Judgment
         self.semaphore = asyncio.Semaphore(1 if args.method == "latency" else args.concurrency)
         self.phase_dir = args.run_dir / "phases"
         self.phase_dir.mkdir(parents=True, exist_ok=True)
@@ -165,10 +172,10 @@ class Evaluation:
         self.magic_scores = {}
         self.completed_scores = {}
         if args.method == "sql":
-            reference = args.artifact_root / "results/quality-magic-judge-v2"
+            reference = args.magic_reference
             reference_config = json.loads((reference / "config.json").read_text())["evaluation"]
-            if reference_config["judge_rubric"] != RUBRIC or reference_config["judge_version"] != 2:
-                raise ValueError("Live MAGIC comparison requires the same judge v2 rubric")
+            if reference_config["judge_rubric"] != RUBRIC or reference_config["judge_version"] != JUDGE_VERSION:
+                raise ValueError("Live MAGIC comparison requires the same judge rubric and version")
             reference_questions = {str(question["id"]): question for question in reference_config["questions"]}
             for question in questions:
                 qid = str(question["id"])
@@ -189,6 +196,10 @@ class Evaluation:
             ours = [self.completed_scores[qid] for qid in ids]
             magic = [self.magic_scores[qid] for qid in ids]
             payload.update({"overlap/sql_mean_score": sum(ours) / len(ids), "overlap/magic_mean_score": sum(magic) / len(ids), "overlap/sql_accuracy": sum(score == 5 for score in ours) / len(ids), "overlap/magic_accuracy": sum(score == 5 for score in magic) / len(ids)})
+            if self.args.mm_lifelong_judge:
+                for name, scores in (("sql", ours), ("magic", magic)):
+                    payload[f"overlap/{name}_accuracy"] = sum(score >= 4 for score in scores) / len(ids)
+                    payload[f"overlap/{name}_mapped_mean_score"] = sum(1 if score >= 4 else 0.5 if score == 3 else 0 for score in scores) / len(ids)
             payload["overlap/mean_score_delta"] = payload["overlap/sql_mean_score"] - payload["overlap/magic_mean_score"]
             payload["overlap/accuracy_delta"] = payload["overlap/sql_accuracy"] - payload["overlap/magic_accuracy"]
         self.progress.update(payload)
@@ -388,7 +399,7 @@ class Evaluation:
             query_time = str(question["query_time"]).zfill(9)
             metadata = {"questioner": "A1_JAKE", "questioner_name": "Jake", "perspective": "first-person narrator and camera wearer", "query_time_raw_DHHMMSSFF": question["query_time"], "query_day": int(query_time[0]), "query_time_of_day": f"{query_time[1:3]}:{query_time[3:5]}:{query_time[5:7]}", "query_frame_index": int(query_time[7:9])}
             messages = [{"role": "system", "content": RUBRIC}, {"role": "user", "content": json.dumps({"question": question["question"], "metadata": metadata, "reference_answer": question["reference_answer"], "candidate_answer": answer["candidate_answer"]}, ensure_ascii=False)}]
-            trace = {"request": {"model": MODEL, "messages": messages, "reasoning_effort": "xhigh", "response_format": {"type": "json_schema", "json_schema": {"name": "Judgment", "schema": Judgment.model_json_schema(), "strict": True}}}, "response": None, "error": None}
+            trace = {"request": {"model": MODEL, "messages": messages, "reasoning_effort": "xhigh", "response_format": {"type": "json_schema", "json_schema": {"name": self.judgment_type.__name__, "schema": self.judgment_type.model_json_schema(), "strict": True}}}, "response": None, "error": None}
             traces = directory / "traces"
             traces.mkdir()
             path = traces / "judge.json"
@@ -398,7 +409,7 @@ class Evaluation:
             self.progress["progress/judge/started"] += 1
             self.progress["progress/judge/active"] += 1
             try:
-                raw = await self.judge_client.chat.completions.with_raw_response.parse(model=MODEL, messages=messages, reasoning_effort="xhigh", response_format=Judgment)
+                raw = await self.judge_client.chat.completions.with_raw_response.parse(model=MODEL, messages=messages, reasoning_effort="xhigh", response_format=self.judgment_type)
                 trace["request"] = json.loads(raw.http_request.content)
                 trace["response"] = raw.http_response.json()
                 path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
@@ -538,8 +549,9 @@ class Evaluation:
             await self.batch(method, "judge", attempt, answerable)
         unresolved_judges = [question["id"] for question in answerable if not (self.args.run_dir / method / "questions" / str(question["id"]) / "judgment.json").exists()]
         unknown = [failure for failure in failures if failure["category"] == "unknown"]
-        if unknown or unresolved_judges:
-            blocked = {"unknown_failures": unknown, "unresolved_judges": unresolved_judges}
+        maintenance = [failure for failure in failures if failure["category"] == "maintenance"]
+        if unknown or unresolved_judges or maintenance:
+            blocked = {"unknown_failures": unknown, "unresolved_judges": unresolved_judges, "maintenance_failures_to_retry": maintenance}
             (self.args.run_dir / method / "blocked.json").write_text(json.dumps(blocked, ensure_ascii=False, indent=2) + "\n")
             raise RuntimeError(f"Summary blocked by unknown failure causes or unresolved judge errors: {blocked}")
         results = []
@@ -558,6 +570,8 @@ class Evaluation:
         if not included:
             raise RuntimeError(f"No questions remain in the denominator for {method}")
         summary = {"method": method, "requested": len(results), "denominator": len(included), "mean_score": sum(item["score"] for item in included) / len(included), "score5_count": sum(item["score"] == 5 for item in included), "score5_fraction": sum(item["score"] == 5 for item in included) / len(included), "algorithm_failure_count": sum(item["category"] == "algorithm" for item in results), "maintenance_failure_count": sum(item["category"] == "maintenance" for item in results)}
+        if self.args.mm_lifelong_judge:
+            summary.update({"mapped_mean_score": sum(1 if item["score"] >= 4 else 0.5 if item["score"] == 3 else 0 for item in included) / len(included), "mapped_full_credit_count": sum(item["score"] >= 4 for item in included), "mapped_full_credit_fraction": sum(item["score"] >= 4 for item in included) / len(included), "score_distribution": {str(score): sum(item["score"] == score for item in included) for score in range(6)}})
         if self.args.method == "latency":
             per_question = []
             for result in results:
@@ -570,7 +584,7 @@ class Evaluation:
         (self.args.run_dir / method / "metrics.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
         if self.args.method == "sql":
             ids = sorted(self.completed_scores.keys() & self.magic_scores.keys(), key=int)
-            comparison = {"reference": "results/quality-magic-judge-v2", "accuracy_definition": "score == 5", "metrics": {key: value for key, value in self.progress.items() if key.startswith("overlap/")}, "ids": ids}
+            comparison = {"reference": str(self.args.magic_reference), "accuracy_definition": "score >= 4" if self.args.mm_lifelong_judge else "score == 5", "metrics": {key: value for key, value in self.progress.items() if key.startswith("overlap/")}, "ids": ids}
             (self.args.run_dir / "overlap-comparison.json").write_text(json.dumps(comparison, ensure_ascii=False, indent=2) + "\n")
         with self.log_lock:
             self.run.log({f"{method}/{key}": value for key, value in summary.items() if isinstance(value, (int, float))})
@@ -601,8 +615,13 @@ class Evaluation:
 
 
 async def main_async(args):
+    global RUBRIC, JUDGE_VERSION
+    if args.mm_lifelong_judge:
+        RUBRIC = Path(__file__).with_name("mm_lifelong_rubric.txt").read_text()
+        JUDGE_VERSION = "mm-lifelong"
     args.artifact_root = args.artifact_root.resolve()
     args.run_dir = args.run_dir.resolve()
+    args.magic_reference = (args.magic_reference if args.magic_reference is not None else args.artifact_root / "results/quality-magic-judge-v2").resolve()
     if args.answers_from is not None:
         args.answers_from = args.answers_from.resolve()
         if args.method == "latency" or args.answers_from == args.run_dir:
@@ -635,9 +654,9 @@ async def main_async(args):
         questions = [by_id[question_id] for question_id in args.ids]
     if not questions or args.concurrency < 1:
         raise ValueError("Evaluation requires questions and positive concurrency")
-    config = {"method": args.method, "artifact_root": str(args.artifact_root), "model": MODEL, "base_url": BASE_URL, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "reasoning_effort": "xhigh", "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": 2, "judge_attempts": 2, "questions": questions, "judge_rubric": RUBRIC, "judge_version": 2, "answer_source_run_dir": str(args.answers_from) if args.answers_from is not None else None, "investigation_call_limit": INVESTIGATION_CALL_LIMIT if args.answers_from is None else None, "live_metrics_interval_seconds": 1}
+    config = {"method": args.method, "artifact_root": str(args.artifact_root), "model": MODEL, "base_url": BASE_URL, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "reasoning_effort": "xhigh", "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": 2, "judge_attempts": 2, "questions": questions, "judge_rubric": RUBRIC, "judge_version": JUDGE_VERSION, "answer_source_run_dir": str(args.answers_from) if args.answers_from is not None else None, "investigation_call_limit": INVESTIGATION_CALL_LIMIT if args.answers_from is None else None, "live_metrics_interval_seconds": 1}
     if args.method == "sql":
-        config.update({"retrieval_method": "sql_ppr_semantic" if args.answers_from is None else "saved_answers", "live_magic_reference": str(args.artifact_root / "results/quality-magic-judge-v2"), "overlap_accuracy_definition": "score == 5"})
+        config.update({"retrieval_method": "sql_ppr_semantic" if args.answers_from is None else "saved_answers", "live_magic_reference": str(args.magic_reference), "overlap_accuracy_definition": "score >= 4" if args.mm_lifelong_judge else "score == 5"})
     config_path = args.run_dir / "config.json"
     if config_path.exists():
         saved = json.loads(config_path.read_text())
@@ -674,4 +693,6 @@ if __name__ == "__main__":
     parser.add_argument("--concurrency", type=int, default=20)
     parser.add_argument("--ids", nargs="+")
     parser.add_argument("--answers-from", type=Path, help="Rejudge saved answers and reuse their final failure classifications without answering again")
+    parser.add_argument("--mm-lifelong-judge", action="store_true", help="Use the MM-Lifelong semantic-similarity rubric and its 4/5=1, 3=0.5, 0/1/2=0 mapping")
+    parser.add_argument("--magic-reference", type=Path, help="Completed MAGIC judgments with the same rubric for live overlap")
     asyncio.run(main_async(parser.parse_args()))
