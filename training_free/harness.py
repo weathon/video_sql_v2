@@ -1287,7 +1287,13 @@ class VideoSQLHarness:
             trace_files.append(trace_file)
             history = result.to_input_list()
             if result.final_output is not None:
-                submission = result.final_output if final_turn else AnswerSubmission.model_validate_json(str(result.final_output))
+                if final_turn:
+                    submission = result.final_output
+                elif history[-1]["type"] == "message":
+                    print(f"answer loop ended with a plain message; accepting it as the final answer trace={trace_file}", flush=True)
+                    submission = AnswerSubmission(answer=str(result.final_output))
+                else:
+                    submission = AnswerSubmission.model_validate_json(str(result.final_output))
                 return RolloutSession(
                     answer=submission.answer,
                     status="answered",

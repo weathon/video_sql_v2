@@ -59,6 +59,7 @@ Judge 输入为问题、metadata（提问者 Jake/A1_JAKE 与 query time）、�
 - overlap：对比并行运行中的 MAGIC run 已写盘的逐题 judgment。
 - 阻塞项一（DP=2 会关闭 vLLM stats logging，日志里没有 throughput 行）：改 TP=2 两个容器，一个给 MAGIC 用一个给 SQL 用，分开 log。
 - 阻塞项二（MCQ 字母抽取规则）：要求最后输出 Answer: 看结果，如果提取失败就单独 call 一次 llm 来 parse。
+- VideoSQL 在 MCQ 上多次以纯文本消息结束而没有调用 submit_answer：接受最终纯文本消息作为答案。
 
 # vLLM Commands
 CPU KV cache 四个 rank 合计 512 GB，每个 rank 128,000,000,000 bytes。
