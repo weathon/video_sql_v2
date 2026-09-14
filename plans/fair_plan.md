@@ -21,12 +21,25 @@ MAGIC-Video 使用 qwen 3.5 flash；本阶段加载 `Qwen/Qwen3.5-35B-A3B-FP8`�
 
 四个 setting 同时运行，共享同一主模型服务和 embedding 服务，每个 setting 并发 10：
 
-| Setting | Harness | Dataset | Model |
-|---|---|---|---|
-| 1 | MAGIC-Video | Open EgoLifeQA | Qwen/Qwen3.5-35B-A3B |
-| 2 | MAGIC-Video | MCQ EgoLifeQA | Qwen/Qwen3.5-35B-A3B |
-| 3 | VideoSQL 60 + PPR semantic search | Open EgoLifeQA | Qwen/Qwen3.5-35B-A3B |
-| 4 | VideoSQL 60 + PPR semantic search | MCQ EgoLifeQA | Qwen/Qwen3.5-35B-A3B |
+Setting 1:
+- Harness: MAGIC-Video
+- Dataset: Open EgoLifeQA
+- Model: Qwen/Qwen3.5-35B-A3B
+
+Setting 2:
+- Harness: MAGIC-Video
+- Dataset: MCQ EgoLifeQA
+- Model: Qwen/Qwen3.5-35B-A3B
+
+Setting 3:
+- Harness: VideoSQL 60 + PPR semantic search
+- Dataset: Open EgoLifeQA
+- Model: Qwen/Qwen3.5-35B-A3B
+
+Setting 4:
+- Harness: VideoSQL 60 + PPR semantic search
+- Dataset: MCQ EgoLifeQA
+- Model: Qwen/Qwen3.5-35B-A3B
 
 Open 与 MCQ 都使用 A1_JAKE 的同一 500 个 ID 和 query time。Open 使用现有 `questions.json`。MCQ 从现有 `/raid/wg25r/egolife/EgoLifeQA/EgoLifeQA_A1_JAKE.json` 读取原题、A–D 选项和答案字母，生成独立的紧凑 question manifest；复用同一批逐题 DuckDB、MAGIC 索引、向量和视频 artifacts。MCQ 向两种方法提供题干及带 A–D 标签的四个选项，要求结构化返回单个选项字母；MAGIC 使用其上游 MCQ responder prompt，Open 继续使用已适配的开放题 prompt。MCQ 只按预测字母与正确字母精确匹配计算准确率，不调用 LLM judge。
 
