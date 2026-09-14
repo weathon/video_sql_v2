@@ -861,7 +861,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
 
     @function_tool(failure_error_function=tool_error_json)
     async def semantic_search(query: str, n: int, pre_sql: str | None = None, post_sql: str | None = None) -> str:
-        """Retrieve evidence by semantic meaning. Use this when semantic matching is needed, not as a default first step. run_sql handles direct SQL queries."""
+        """Retrieve evidence by semantic meaning with the configured retrieval mode. Use this when semantic matching is needed, not as a default first step. run_sql handles direct SQL queries. query is the natural-language clue; n is the maximum hit count before post SQL. Optional pre_sql selects exactly one id column from the question database; memory_nodes unions entity, episode, semantic, and visual_clip. Optional post_sql queries only ppr_hits in PPR mode or vector_hits in ordinary vector mode, with columns (id, node_type, text, start_ts, end_ts, start_s, end_s, metadata JSON, rank, score). Null means no SQL at that stage. Returns evidence rows directly without an additional LLM QA call."""
         if n <= 0:
             raise ValueError("n must be positive")
         query = normalize_text(query)
@@ -900,8 +900,6 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
 
     if context.semantic_search_mode == "ppr":
         semantic_search.description = "Retrieve evidence by semantic meaning using MAGIC PPR. Use this when semantic matching is needed, not as a default first step. run_sql handles direct SQL queries. query is the natural-language clue; n is the maximum PPR hit count before post SQL. Optional pre_sql selects exactly one id column from the question database; memory_nodes unions entity, episode, semantic, and visual_clip. It limits seeds and graph propagation to those IDs, for example yesterday. Optional post_sql instead queries only ppr_hits(id, node_type, text, start_ts, end_ts, start_s, end_s, metadata JSON, rank, score) to filter, order, project, or aggregate the retrieved nodes. Usually choose one SQL stage according to purpose: pre limits search scope, post refines semantic hits. Both are allowed when necessary. Null means no SQL at that stage. Returns evidence rows directly without an additional LLM QA call. Multiscale quotas may return fewer than n hits."
-    else:
-        semantic_search.description = "Retrieve evidence by semantic meaning using ordinary cosine vector retrieval. Use this when semantic matching is needed, not as a default first step. run_sql handles direct SQL queries. query is the natural-language clue; n is the maximum vector hit count before post SQL. Optional pre_sql selects exactly one id column from the question database; memory_nodes unions entity, episode, semantic, and visual_clip. It limits vector candidates to those IDs. Optional post_sql instead queries only vector_hits(id, node_type, text, start_ts, end_ts, start_s, end_s, metadata JSON, rank, score) to filter, order, project, or aggregate the retrieved nodes. Null means no SQL at that stage. Returns evidence rows directly without an additional LLM QA call."
 
     @function_tool(failure_error_function=tool_error_json)
     async def add_note(note: str) -> str:
@@ -962,8 +960,8 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         if context.clip_qa_video:
             content = [{"type": "text", "text": prompt}, {"type": "video_url", "video_url": {"url": "data:video/jpeg;base64," + ",".join(encoded_frames)}}]
             request = {"model": context.model.model, "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}], "extra_body": {"media_io_kwargs": {"video": {"num_frames": -1, "fps": fps, "frames_indices": list(range(len(sampled))), "total_num_frames": len(sampled), "duration": len(sampled) / fps, "do_sample_frames": False}}, "mm_processor_kwargs": {"do_sample_frames": False}}}
-            if context.model_settings.reasoning.effort is not None:
-                request["reasoning_effort"] = context.model_settings.reasoning.effort
+            if context.model_settings.reasoning is not None and context.model_settings.reasoning.get("effort") is not None:
+                request["reasoning_effort"] = context.model_settings.reasoning["effort"]
         else:
             content = [{"type": "input_text", "text": prompt}, *[{"type": "input_image", "image_url": "data:image/jpeg;base64," + encoded, "detail": "high"} for encoded in encoded_frames]]
             request = {"model": context.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": context.model_settings.reasoning, "store": context.model_settings.store, "include": context.model_settings.response_include, "extra_body": context.model_settings.extra_body}
