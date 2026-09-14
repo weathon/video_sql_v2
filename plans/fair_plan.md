@@ -17,15 +17,15 @@
 | [trace2skill_service.py](/raid/wg25r/video_sql_trace2skill/infra/trace2skill_service.py) | 四个本地服务的启动配置 |
 
 # 本次任务
-为了与 MAGIC Video 基线进行公平比较，我们需要使用他们的模型。MAGIC Video 使用了 qwen 3.5 flash（即 Qwen/Qwen3.5-35B-A3B 的host名称）。因此，请在 4 块 GPU 上为 Qwen/Qwen3.5-35B-A3B-FP8 搭建 vLLM 服务，并采用最简单的配置方式（无需遵循 infra.txt 中的复杂设置, 见最下面如何使用, 可以稍微调整）。embedding model依旧使用qwen 3 vl embedding. 仅替换vlm模型, 在这个模型上面运行:
+为了与 MAGIC Video 基线进行公平比较，我们需要使用他们的模型。MAGIC Video 使用了 qwen 3.5 flash（即 Qwen/Qwen3.5-35B-A3B 的host名称）。因此，请在 4 块 GPU 上为 Qwen/Qwen3.5-35B-A3B-FP8 搭建 vLLM 服务，并采用最简单的配置方式（无需遵循 infra.txt 中的复杂设置, 见最下面如何使用, 可以稍微调整）。embedding model依旧使用qwen 3 vl embedding. 替换 vlm 模型并将所有 semantic search 改为非 PPR，在这个模型上面运行:
 
 Setting 1:
-Harness: MAGIC Video
+Harness: MAGIC Video，非 PPR semantic search
 Dataset: Open-EgoLifeQA
 Model: Qwen/Qwen3.5-35B-A3B-FP8
 
 Setting 2:
-Harness: MAGIC Video
+Harness: MAGIC Video，非 PPR semantic search
 Dataset: MCQ EgoLifeQA
 Model: Qwen/Qwen3.5-35B-A3B-FP8
 
@@ -47,10 +47,10 @@ Model: Qwen/Qwen3.5-35B-A3B-FP8
 
 - 四组均使用 A1_JAKE 同一组 500 题及相同题目 ID。Open 复用已处理开放题与正确选项文本，答题模型不接收选项或参考答案；MCQ 使用原题及原顺序选项，正确选项仅用于评分。
 - 保留逐题 query time 截止、现有数据库和共享向量；视频继续使用按 caption 明确区间裁剪的缓存片段与均匀采样。缺少必需数据或向量应报错，不能跳过检索分支继续答题。
-- Setting 3、4 替换当前 PPR semantic_search，恢复普通向量相似度检索，不新增实验组。先限定当前逐题数据库允许的节点 ID，再对模型所选表/模态计算向量相似度、排名和分页；文本使用文本向量，视频使用已有视频向量，查询 embedding 继续使用 Qwen3-VL-Embedding-8B 和既有文本规范化。
-- 普通 semantic_search 不调用 PPR 图传播、BM25 或 chain 检索，不保留 PPR 的 pre_sql/post_sql 参数。保留独立 run_sql；semantic_search 仅在需要语义匹配时使用，不默认推荐。工具说明和静态 skills 必须与实际普通向量接口及 entity、episode、semantic、visual_clip schema 一致，不能直接复制 src/ 的旧表名或 row_id。
-- 保留原非 PPR 语义工具的排名、分数筛选和可选结果 QA 行为；额外结果 QA 属于调查模型调用。每次尝试共享 60 次调查调用，再额外一次关闭工具的强制回答；主 agent、clip_qa、SQL QA、检索结果 QA 均在实际发出模型请求前占用预算，reasoning 历史继续回传。
-- MAGIC 保留其自身 PPR、BM25、chain、检索轮数与现有时间截止语义；“非 PPR”只适用于 VideoSQL 的 semantic_search。
+- Setting 1–4 中 MAGIC 与 VideoSQL 的所有 semantic search 均使用非 PPR 的普通向量相似度检索，不新增实验组。先限定当前逐题数据库允许的节点 ID，再计算向量相似度和排名；VideoSQL 按模型所选表/模态检索并分页。文本使用文本向量，视频使用已有视频向量，查询 embedding 继续使用 Qwen3-VL-Embedding-8B 和既有文本规范化。
+- 所有普通 semantic search 均不调用 PPR 图传播、BM25 或 chain 检索。VideoSQL 不保留 PPR 的 pre_sql/post_sql 参数，保留独立 run_sql；semantic_search 仅在需要语义匹配时使用，不默认推荐。工具说明和静态 skills 必须与实际普通向量接口及 entity、episode、semantic、visual_clip schema 一致，不能直接复制 src/ 的旧表名或 row_id。
+- VideoSQL 保留原非 PPR 语义工具的排名、分数筛选和可选结果 QA 行为；额外结果 QA 属于调查模型调用。每次尝试共享 60 次调查调用，再额外一次关闭工具的强制回答；主 agent、clip_qa、SQL QA、检索结果 QA 均在实际发出模型请求前占用预算，reasoning 历史继续回传。
+- MAGIC 的 semantic search 同样替换为普通向量相似度检索，不使用 PPR；保留独立的 BM25、chain、时间检索分支、原检索轮数与现有时间截止语义。
 - 所有答题主调用、MAGIC retriever/responder、时间解析、clip_qa 和结果 QA 都使用同一个 Qwen/Qwen3.5-35B-A3B-FP8 服务；保留既有 xhigh 和 reasoning 历史，不设置客户端采样参数或输入/输出 token 上限。Open judge 独立使用下述 OpenAI 模型。
 
 # Open GPT judge：如何评分
@@ -104,7 +104,7 @@ Judge 输出 `Analysis:` 和 `Final Score:` 后的 0–5 整数；沿用刚才�
 
 # Review 后的实施核对点
 
-- 当前 `training_free/harness.py` 的 semantic_search 实际调用 PPR；只修改 setting 名称不会切换算法，实施时必须修改工具、skills 和 evaluator 中的检索标识，并检查真实检索 trace。
+- 当前 `training_free/harness.py` 的 semantic_search 实际调用 PPR；只修改 setting 名称不会切换算法，实施时必须修改工具、skills 和 evaluator 中的检索标识，并覆盖 MAGIC 适配及检索路径中的全部 semantic search，检查两种方法的真实检索 trace，确认均未调用 PPR。
 - 当前 GPT judge 源码并发为 32、总尝试数为 3、固定超时 60 秒，且聚合时排除评分失败；刚才的实际运行配置为并发 128。实施时需要按本计划修改为并发 128、judge 无上限重试并逐次延长超时、最终分母 500。
 - MCQ 需要恢复选项输入并验证合法选项输出，不能直接复用删除选项后的 Open 输入。四组的新答案都必须由本次 Qwen3.5 服务生成，现有答案只用作历史对照。
 - [MAGIC 上游 README](../third_party/magic_video/README.md) 分别列出 retriever 为 `openai/gpt-oss-120b`、responder 为 `qwen/qwen3.5-flash-02-23`。本计划共享 Qwen3.5 服务的比较是统一模型后的 harness 比较，不能称为完整复现上游全部模型配置。Qwen3.5-Flash 对应 35B-A3B 的托管版本，但上下文和托管功能另有设置：[Qwen 模型卡](https://huggingface.co/Qwen/Qwen3.5-35B-A3B/blob/main/README.md)。
