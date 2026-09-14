@@ -491,20 +491,20 @@ async def run_stream(
         async def invoke_tool(tool_context: ToolContext, arguments: str, original=tool.on_invoke_tool):
             context.tool_counter += 1
             tool_id = context.tool_counter
-            raw_arguments = arguments
+            raw_arguments = None
             if tool_context.tool_name == "semantic_search" and context.semantic_search_mode == "vector":
                 parsed = json.loads(arguments)
-                for key in ("min_score", "max_score", "question"):
-                    if key in parsed and parsed[key] in ("None", "null", ""):
-                        parsed[key] = None
-                arguments = json.dumps(parsed, ensure_ascii=False)
-                if arguments != raw_arguments:
+                coerced = [key for key in ("min_score", "max_score", "question") if key in parsed and parsed[key] in ("None", "")]
+                if coerced:
+                    raw_arguments = arguments
+                    parsed.update({key: None for key in coerced})
+                    arguments = json.dumps(parsed, ensure_ascii=False)
                     print(f"semantic_search nullable arguments coerced: {raw_arguments} -> {arguments}", flush=True)
             output = await original(tool_context, arguments)
             record = {"tool_id": tool_id, "call_id": tool_context.tool_call_id,
                       "name": tool_context.tool_name, "arguments": arguments,
                       "original_output": stripped_json(output), "replacements": []}
-            if arguments != raw_arguments:
+            if raw_arguments is not None:
                 record["raw_arguments"] = raw_arguments
             context.tool_calls[tool_id] = record
             context.tool_ids[tool_context.tool_call_id] = tool_id
