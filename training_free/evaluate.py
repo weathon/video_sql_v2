@@ -481,7 +481,7 @@ class Evaluation:
             record = {"id": question["id"], "method": method, "attempt": attempt, "question_input": {"question": question["question"], "query_time": question["query_time"]}, "trace_dir": str(directory)}
             question_prompt = question["question"]
             if self.args.dataset == "mcq":
-                question_prompt += "\n\nOptions:\n" + "\n".join(f"{letter}. {question['choices'][letter]}" for letter in "ABCD") + "\n\nSelect exactly one option. End your response with a final line of the form Answer: X where X is the option letter A, B, C, or D."
+                question_prompt += "\n\nOptions:\n" + "\n".join(f"{letter}. {question['choices'][letter]}" for letter in "ABCD") + "\n\nSelect exactly one option. Your final answer must end with a line of the form Answer: X where X is the option letter A, B, C, or D."
                 record["question_input"]["prompt"] = question_prompt
             harness = None
             if self.args.method == "latency":
