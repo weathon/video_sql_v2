@@ -14,9 +14,9 @@ role = sys.argv[1]
 RUN.mkdir(parents=True, exist_ok=True)
 command = ["docker", "run", "--init", "--name", "fair-qwen35-" + role]
 shared = ["-e", "HF_HOME=/hf_cache", "-e", "HF_HUB_CACHE=/hf_cache", "-e", "HF_HUB_OFFLINE=1", "-v", "/raid/huggingface:/hf_cache"]
-if role == "vllm":
-    command += ["--gpus", '"device=0,1,2,3"', "--shm-size=32g", "-p", "127.0.0.1:8130:8000"] + shared + ["-e", "HF_HUB_CACHE=/hf_cache/hub"]
-    command += [IMAGE, MODEL, "--host", "0.0.0.0", "--port", "8000", "--trust-remote-code", "--enable-expert-parallel", "--tensor-parallel-size", "2", "--data-parallel-size", "2",
+if role in ("vllm-magic", "vllm-sql"):
+    command += ["--gpus", '"device=0,1"' if role == "vllm-magic" else '"device=2,3"', "--shm-size=32g", "-p", "127.0.0.1:8130:8000" if role == "vllm-magic" else "127.0.0.1:8131:8000"] + shared + ["-e", "HF_HUB_CACHE=/hf_cache/hub"]
+    command += [IMAGE, MODEL, "--host", "0.0.0.0", "--port", "8000", "--trust-remote-code", "--enable-expert-parallel", "--tensor-parallel-size", "2",
                 "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder", "--reasoning-parser", "qwen3", "--mm-encoder-tp-mode", "data",
                 "--speculative-config", json.dumps({"method": "mtp", "num_speculative_tokens": 2}),
                 "--kv-transfer-config", json.dumps({"kv_connector": "SimpleCPUOffloadConnector", "kv_role": "kv_both", "kv_connector_extra_config": {"cpu_bytes_to_use_per_rank": 128000000000, "lazy_offload": False}})]

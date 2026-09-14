@@ -12,6 +12,7 @@ import time
 import traceback
 from itertools import chain
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 import httpx
@@ -56,6 +57,10 @@ class Judgment(BaseModel):
 class SimilarityJudgment(BaseModel):
     justification: str = Field(min_length=1, description="Brief analysis explaining the semantic similarity between the groundtruth and the candidate answer.")
     score: int = Field(strict=True, ge=0, le=5)
+
+
+class McqSelection(BaseModel):
+    selected: Literal["A", "B", "C", "D", "multiple", "none"] = Field(description="The single option letter the answer text selects; multiple when it selects more than one option; none when it selects no option.")
 
 
 def collect_usage(trace_dirs, rates=LOCAL_TOKEN_RATES):
@@ -171,6 +176,7 @@ class Evaluation:
         self.judge_model = "gpt-5" if args.official_open_judge else OPENAI_JUDGE_MODEL if args.openai_judge else args.model
         self.judge_client = openai.AsyncOpenAI(api_key=os.environ["SHARED_OPENAI_KEY"], max_retries=0, timeout=None) if args.openai_judge else openai.AsyncOpenAI(api_key="EMPTY", base_url=args.base_url, max_retries=0, timeout=None)
         self.judgment_type = SimilarityJudgment if args.mm_lifelong_judge else Judgment
+        self.answer_client = openai.AsyncOpenAI(api_key="EMPTY", base_url=args.base_url, max_retries=0, timeout=None)
         self.semaphore = asyncio.Semaphore(1 if args.method == "latency" else args.concurrency)
         self.phase_dir = args.run_dir / "phases"
         self.phase_dir.mkdir(parents=True, exist_ok=True)
@@ -475,7 +481,7 @@ class Evaluation:
             record = {"id": question["id"], "method": method, "attempt": attempt, "question_input": {"question": question["question"], "query_time": question["query_time"]}, "trace_dir": str(directory)}
             question_prompt = question["question"]
             if self.args.dataset == "mcq":
-                question_prompt += "\n\nOptions:\n" + "\n".join(f"{letter}. {question['choices'][letter]}" for letter in "ABCD") + "\n\nRespond with exactly one option letter: A, B, C, or D."
+                question_prompt += "\n\nOptions:\n" + "\n".join(f"{letter}. {question['choices'][letter]}" for letter in "ABCD") + "\n\nSelect exactly one option. End your response with a final line of the form Answer: X where X is the option letter A, B, C, or D."
                 record["question_input"]["prompt"] = question_prompt
             harness = None
             if self.args.method == "latency":
@@ -496,10 +502,31 @@ class Evaluation:
                 if status != "answered" or not isinstance(candidate, str) or not candidate.strip():
                     raise ValueError(f"Method returned an invalid final answer: status={status}, candidate={candidate!r}")
                 if self.args.dataset == "mcq":
-                    letters = set(re.findall(r"(?<![a-z0-9])([a-d])(?=[.,):\]*]|\s*$)", normalize_text(candidate)))
+                    letters = set(re.findall(r"answer:\s*\(?([a-d])(?![a-z0-9])", normalize_text(candidate)))
+                    record["answer_line_letters"] = sorted(letters)
                     if len(letters) != 1:
-                        raise ValueError(f"MCQ answer must identify exactly one option letter: {candidate!r}; matched={sorted(letters)}")
-                    record["selected_choice"] = letters.pop().upper()
+                        messages = [{"role": "system", "content": "Extract which option a multiple-choice answer text selects. Return the single selected option letter; return multiple when the text selects more than one option; return none when it selects no option."}, {"role": "user", "content": json.dumps({"options": question["choices"], "answer_text": candidate}, ensure_ascii=False)}]
+                        trace = {"request": {"model": self.args.model, "messages": messages, "response_format": McqSelection.model_json_schema()}, "response": None, "error": None}
+                        path = directory / "mcq-parse.json"
+                        print(f"MCQ_PARSE method={method} id={question['id']} attempt={attempt} answer_line_letters={sorted(letters)} trace={path}", flush=True)
+                        try:
+                            raw = await self.answer_client.chat.completions.with_raw_response.parse(model=self.args.model, messages=messages, response_format=McqSelection)
+                            trace["request"] = json.loads(raw.http_request.content)
+                            trace["response"] = raw.http_response.json()
+                            parsed = raw.parse().choices[0].message.parsed
+                            if parsed is None:
+                                raise ValueError(f"MCQ parse returned no structured selection: {trace['response']}")
+                            letters = {parsed.selected}
+                        except Exception as error:
+                            trace["error"] = {"type": type(error).__name__, "message": str(error)}
+                            raise
+                        finally:
+                            path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
+                        record["mcq_parse_file"] = str(path)
+                    selected = letters.pop().upper()
+                    if selected not in ("A", "B", "C", "D"):
+                        raise ValueError(f"MCQ answer does not identify exactly one option: {candidate!r}; parsed={selected}")
+                    record["selected_choice"] = selected
                 (directory / "candidate.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
                 (question_root / "answer.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
                 record["outcome"] = "answered"
@@ -904,6 +931,7 @@ async def main_async(args):
             evaluation.save_token_log()
         finally:
             await evaluation.judge_client.close()
+            await evaluation.answer_client.close()
             await evaluation.http.aclose()
             weave.get_client().finish(use_progress_bar=False)
             weave.finish()
