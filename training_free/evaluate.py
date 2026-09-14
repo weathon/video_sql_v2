@@ -41,6 +41,7 @@ JUDGE_VERSION = 2
 COUNTERS = {"input_tokens": "vllm:prompt_tokens_total", "cached_tokens": "vllm:prompt_tokens_cached_total", "output_tokens": "vllm:generation_tokens_total"}
 GAUGES = ("vllm:num_requests_running", "vllm:num_requests_waiting")
 LOCAL_TOKEN_RATES = {"uncached_input": 0.15, "output": 0.47, "cached_input": 0.016}
+ATTEMPTS = (1, 2, 3)
 
 
 class Judgment(BaseModel):
@@ -583,7 +584,7 @@ class Evaluation:
                 source = self.args.answers_from / method / "questions" / str(question["id"])
                 root = self.args.run_dir / method / "questions" / str(question["id"])
                 root.mkdir(parents=True, exist_ok=True)
-                names = ("answer.json",) if (source / "answer.json").exists() else ("answer-attempt-1.json", "answer-attempt-2.json", "failure-review.json")
+                names = ("answer.json",) if (source / "answer.json").exists() else tuple(path.name for path in sorted(source.glob("answer-attempt-*.json")))
                 original = json.loads((source / names[0]).read_text())
                 if original["question_input"] != {"question": question["question"], "query_time": question["query_time"]}:
                     raise ValueError(f"Rejudge source question differs: {source}")
@@ -591,7 +592,7 @@ class Evaluation:
                     shutil.copyfile(source / name, root / name)
             print(f"REJUDGE reused_answers_from={self.args.answers_from} questions={len(self.questions)}", flush=True)
         else:
-            for attempt in (1, 2):
+            for attempt in ATTEMPTS:
                 await self.batch(method, "answer", attempt, self.questions)
         answerable, failures = [], []
         for question in self.questions:
@@ -599,47 +600,43 @@ class Evaluation:
             if (root / "answer.json").exists():
                 answerable.append(question)
             else:
-                failure = classify_failure(json.loads((root / "answer-attempt-2.json").read_text()))
-                failure["id"] = question["id"]
-                review_path = root / "failure-review.json"
-                failure["suggested_category"] = failure["category"]
-                failure["category"] = "unknown"
-                if review_path.exists():
-                    review = json.loads(review_path.read_text())
-                    if review["category"] not in ("algorithm", "maintenance") or not review["trace_evidence"].strip():
-                        raise ValueError(f"Invalid manual failure review: {review_path}")
-                    failure.update({"category": review["category"], "cause": review["cause"], "review": review})
+                last_path = root / f"answer-attempt-{ATTEMPTS[-1]}.json"
+                last = json.loads(last_path.read_text())
+                failure = {"id": question["id"], "category": "failed", "stage": "answer", "attempts": len(ATTEMPTS), "last_attempt_file": str(last_path), "error": last["error"]}
                 (root / "failure.json").write_text(json.dumps(failure, ensure_ascii=False, indent=2) + "\n")
                 failures.append(failure)
-                if self.args.method == "sql" and failure["category"] == "algorithm":
+                if self.args.method == "sql":
                     self.completed_scores[str(question["id"])] = 0
         if self.args.method == "sql":
             self.update_overlap()
-        for attempt in (1, 2):
+        for attempt in ATTEMPTS:
             await self.batch(method, "judge", attempt, answerable)
         unresolved_judges = [question["id"] for question in answerable if not (self.args.run_dir / method / "questions" / str(question["id"]) / "judgment.json").exists()]
-        unknown = [failure for failure in failures if failure["category"] == "unknown"]
-        maintenance = [failure for failure in failures if failure["category"] == "maintenance"]
-        if unknown or unresolved_judges or maintenance:
-            blocked = {"unknown_failures": unknown, "unresolved_judges": unresolved_judges, "maintenance_failures_to_retry": maintenance}
-            (self.args.run_dir / method / "blocked.json").write_text(json.dumps(blocked, ensure_ascii=False, indent=2) + "\n")
-            raise RuntimeError(f"Summary blocked by unknown failure causes or unresolved judge errors: {blocked}")
+        for question_id in unresolved_judges:
+            root = self.args.run_dir / method / "questions" / str(question_id)
+            last_path = root / f"judge-attempt-{ATTEMPTS[-1]}.json"
+            last = json.loads(last_path.read_text())
+            failure = {"id": question_id, "category": "failed", "stage": "judge", "attempts": len(ATTEMPTS), "last_attempt_file": str(last_path), "error": last["error"]}
+            (root / "failure.json").write_text(json.dumps(failure, ensure_ascii=False, indent=2) + "\n")
+            failures.append(failure)
+            if self.args.method == "sql":
+                self.completed_scores[str(question_id)] = 0
+        if self.args.method == "sql" and unresolved_judges:
+            self.update_overlap()
         results = []
         for question in self.questions:
             root = self.args.run_dir / method / "questions" / str(question["id"])
-            if (root / "answer.json").exists():
+            if (root / "answer.json").exists() and (root / "judgment.json").exists():
                 answer = json.loads((root / "answer.json").read_text())
                 judgment = json.loads((root / "judgment.json").read_text())
                 result = {"id": question["id"], "category": "answered", "score": judgment["score"], "candidate_answer": answer["candidate_answer"], "latency_seconds": answer["latency_seconds"], "attempt": answer["attempt"]}
             else:
                 failure = json.loads((root / "failure.json").read_text())
-                result = {**failure, "score": 0 if failure["category"] == "algorithm" else None}
+                result = {**failure, "score": 0}
             results.append(result)
             (root / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
-        included = [result for result in results if result["category"] != "maintenance"]
-        if not included:
-            raise RuntimeError(f"No questions remain in the denominator for {method}")
-        summary = {"method": method, "requested": len(results), "denominator": len(included), "mean_score": sum(item["score"] for item in included) / len(included), "score5_count": sum(item["score"] == 5 for item in included), "score5_fraction": sum(item["score"] == 5 for item in included) / len(included), "algorithm_failure_count": sum(item["category"] == "algorithm" for item in results), "maintenance_failure_count": sum(item["category"] == "maintenance" for item in results)}
+        included = results
+        summary = {"method": method, "requested": len(results), "denominator": len(included), "mean_score": sum(item["score"] for item in included) / len(included), "score5_count": sum(item["score"] == 5 for item in included), "score5_fraction": sum(item["score"] == 5 for item in included) / len(included), "failure_count": sum(item["category"] == "failed" for item in results)}
         if self.args.mm_lifelong_judge:
             summary.update({"mapped_mean_score": sum(1 if item["score"] >= 4 else 0.5 if item["score"] == 3 else 0 for item in included) / len(included), "mapped_full_credit_count": sum(item["score"] >= 4 for item in included), "mapped_full_credit_fraction": sum(item["score"] >= 4 for item in included) / len(included), "score_distribution": {str(score): sum(item["score"] == score for item in included) for score in range(6)}})
         if self.args.method == "latency":
@@ -726,7 +723,7 @@ async def main_async(args):
         questions = [by_id[question_id] for question_id in args.ids]
     if not questions or args.concurrency < 1:
         raise ValueError("Evaluation requires questions and positive concurrency")
-    config = {"method": args.method, "artifact_root": str(args.artifact_root), "model": MODEL, "base_url": BASE_URL, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "judge_model": OPENAI_JUDGE_MODEL if args.openai_judge else MODEL, "judge_api": "openai" if args.openai_judge else "local", "reasoning_effort": "xhigh", "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": 2, "judge_attempts": 2, "questions": questions, "judge_rubric": RUBRIC, "judge_version": JUDGE_VERSION, "answer_source_run_dir": str(args.answers_from) if args.answers_from is not None else None, "investigation_call_limit": INVESTIGATION_CALL_LIMIT if args.answers_from is None else None, "live_metrics_interval_seconds": 1}
+    config = {"method": args.method, "artifact_root": str(args.artifact_root), "model": MODEL, "base_url": BASE_URL, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "judge_model": OPENAI_JUDGE_MODEL if args.openai_judge else MODEL, "judge_api": "openai" if args.openai_judge else "local", "reasoning_effort": "xhigh", "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": len(ATTEMPTS), "judge_attempts": len(ATTEMPTS), "questions": questions, "judge_rubric": RUBRIC, "judge_version": JUDGE_VERSION, "answer_source_run_dir": str(args.answers_from) if args.answers_from is not None else None, "investigation_call_limit": INVESTIGATION_CALL_LIMIT if args.answers_from is None else None, "live_metrics_interval_seconds": 1}
     if args.method == "sql":
         config.update({"retrieval_method": "sql_ppr_semantic" if args.answers_from is None else "saved_answers", "live_magic_reference": str(args.magic_reference), "overlap_accuracy_definition": "score >= 4" if args.mm_lifelong_judge else "score == 5"})
     config_path = args.run_dir / "config.json"
