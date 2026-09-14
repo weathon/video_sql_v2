@@ -1,103 +1,129 @@
 # Fair comparsion against baseline
 
 # 前情提要
+刚才另一个agent完成了刚才另一个plans/baselines_plan.md, 目录在./training_free/, 他eval的是MAGIC Video和我们的方法在EgoLife上面的eval, 部分代码偏离了plan, 这是后期修正并且是intended. 
 
-另一个 agent 已完成 [baselines_plan.md](baselines_plan.md)，实现位于 `training_free/`。该实现比较 MAGIC-Video 和 VideoSQL 在 EgoLifeQA A1_JAKE 500 题上的表现；后期修正是当前 intended 行为。本阶段只替换答题模型，保留已经确认的 artifacts、检索算法、视频均匀采样、reasoning 回传、60+1 调查预算和 trace 语义。
-
+文件说明
 | 文件 | 用途 |
 |---|---|
 | [harness.py](/raid/wg25r/video_sql_trace2skill/training_free/harness.py) | 答题 agent、工具、共享调用预算 |
-| [evaluate.py](/raid/wg25r/video_sql_trace2skill/training_free/evaluate.py) | 批量运行、失败重试、W&B、token 对账 |
-| [evaluate_mm_official.py](/raid/wg25r/video_sql_trace2skill/training_free/evaluate_mm_official.py) | OpenAI `gpt-5` 开放题 judge |
+| [evaluate.py](/raid/wg25r/video_sql_trace2skill/training_free/evaluate.py) | 批量运行、judge、重试、W&B、token 对账 |
+| [evaluate_mm_official.py](/raid/wg25r/video_sql_trace2skill/training_free/evaluate_mm_official.py) | 本次 Open 评分的 GPT judge prompt、EgoLife metadata、分数解析与映射 |
 | [prepare_baselines.py](/raid/wg25r/video_sql_trace2skill/training_free/prepare_baselines.py) | 数据转换、建库、embedding、逐题时间过滤 |
 | [index_schema.py](/raid/wg25r/video_sql_trace2skill/training_free/index_schema.py) | DuckDB schema、时间转换 |
 | [ppr.py](/raid/wg25r/video_sql_trace2skill/training_free/ppr.py) | 支持 pre/post SQL 的 PPR |
 | [magic.py](/raid/wg25r/video_sql_trace2skill/training_free/magic.py) | MAGIC 基线适配 |
 | [skills/](/raid/wg25r/video_sql_trace2skill/training_free/skills) | 静态工具使用说明 |
+| [trace2skill_service.py](/raid/wg25r/video_sql_trace2skill/infra/trace2skill_service.py) | 四个本地服务的启动配置 |
 
-# 比较设置
-
-MAGIC-Video 使用 qwen 3.5 flash；本阶段加载 `Qwen/Qwen3.5-35B-A3B-FP8`，对客户端公布的 served model name 为 `Qwen/Qwen3.5-35B-A3B`。主 agent、MAGIC retriever/responder、`clip_qa`、SQL result QA 和其他答题子调用全部改用该 served model。reasoning 保持 `xhigh` 并保留历史 reasoning；客户端不设置采样参数或输入、输出 token 上限。Embedding 继续使用现有 `Qwen3-VL-Embedding-8B` 向量和服务，不重新生成图、数据库、文本向量或视频向量。
-
-四个 setting 同时运行，共享同一主模型服务和 embedding 服务，每个 setting 并发 10：
+# 本次任务
+为了与 MAGIC Video 基线进行公平比较，我们需要使用他们的模型。MAGIC Video 使用了 qwen 3.5 flash（即 Qwen/Qwen3.5-35B-A3B 的host名称）。因此，请在 4 块 GPU 上为 Qwen/Qwen3.5-35B-A3B-FP8 搭建 vLLM 服务，并采用最简单的配置方式（无需遵循 infra.txt 中的复杂设置, 见最下面如何使用, 可以稍微调整）。embedding model依旧使用qwen 3 vl embedding. 仅替换vlm模型, 在这个模型上面运行:
 
 Setting 1:
-- Harness: MAGIC-Video
-- Dataset: Open EgoLifeQA
-- Model: Qwen/Qwen3.5-35B-A3B
+Harness: MAGIC Video
+Dataset: Open-EgoLifeQA
+Model: Qwen/Qwen3.5-35B-A3B-FP8
 
 Setting 2:
-- Harness: MAGIC-Video
-- Dataset: MCQ EgoLifeQA
-- Model: Qwen/Qwen3.5-35B-A3B
+Harness: MAGIC Video
+Dataset: MCQ EgoLifeQA
+Model: Qwen/Qwen3.5-35B-A3B-FP8
 
 Setting 3:
-- Harness: VideoSQL 60 + PPR semantic search
-- Dataset: Open EgoLifeQA
-- Model: Qwen/Qwen3.5-35B-A3B
+Harness: VideoSQL 60，非 PPR semantic search
+Dataset: Open EgoLifeQA
+Model: Qwen/Qwen3.5-35B-A3B-FP8
 
 Setting 4:
-- Harness: VideoSQL 60 + PPR semantic search
-- Dataset: MCQ EgoLifeQA
-- Model: Qwen/Qwen3.5-35B-A3B
+Harness: VideoSQL 60，非 PPR semantic search
+Dataset: MCQ EgoLifeQA
+Model: Qwen/Qwen3.5-35B-A3B-FP8
 
-Open 与 MCQ 都使用 A1_JAKE 的同一 500 个 ID 和 query time。Open 使用现有 `questions.json`。MCQ 从现有 `/raid/wg25r/egolife/EgoLifeQA/EgoLifeQA_A1_JAKE.json` 读取原题、A–D 选项和答案字母，生成独立的紧凑 question manifest；复用同一批逐题 DuckDB、MAGIC 索引、向量和视频 artifacts。MCQ 向两种方法提供题干及带 A–D 标签的四个选项，要求结构化返回单个选项字母；MAGIC 使用其上游 MCQ responder prompt，Open 继续使用已适配的开放题 prompt。MCQ 只按预测字母与正确字母精确匹配计算准确率，不调用 LLM judge。
+4个setting同时运行, 打到同一个vllm server和embedding server. 每个并发设置成8192. 这是客户端并发上限，不是 vLLM 的 max-num-seqs；每组只有 500 题，不复制题目来填满并发。
+最终报告一个简单的table, 包含4个setting每个setting的metric. MCQ EgoLife 报告正确选项数 / 500；Open EgoLife 报告映射后 1 分题数 / 500 和 Average score（0–1）。
+全部使用现有的artifacts. 
 
-# 错误重试与固定分母
+# 数据与非 PPR semantic search
 
-不再区分算法错误、维护错误或其他错误，也不因错误类型排除题目。答题阶段的任何失败，包括 API/服务错误、context overflow、工具错误、缺失最终答案、结构化输出无效和 MCQ 选项无效，都在该 setting 的整批结束后集中重试；每题执行一次初始尝试和最多三次相同设置的重试。每次尝试使用隔离的可变检索状态并完整保存请求、响应、工具输入输出、错误和 usage。
+- 四组均使用 A1_JAKE 同一组 500 题及相同题目 ID。Open 复用已处理开放题与正确选项文本，答题模型不接收选项或参考答案；MCQ 使用原题及原顺序选项，正确选项仅用于评分。
+- 保留逐题 query time 截止、现有数据库和共享向量；视频继续使用按 caption 明确区间裁剪的缓存片段与均匀采样。缺少必需数据或向量应报错，不能跳过检索分支继续答题。
+- Setting 3、4 替换当前 PPR semantic_search，恢复普通向量相似度检索，不新增实验组。先限定当前逐题数据库允许的节点 ID，再对模型所选表/模态计算向量相似度、排名和分页；文本使用文本向量，视频使用已有视频向量，查询 embedding 继续使用 Qwen3-VL-Embedding-8B 和既有文本规范化。
+- 普通 semantic_search 不调用 PPR 图传播、BM25 或 chain 检索，不保留 PPR 的 pre_sql/post_sql 参数。保留独立 run_sql；semantic_search 仅在需要语义匹配时使用，不默认推荐。工具说明和静态 skills 必须与实际普通向量接口及 entity、episode、semantic、visual_clip schema 一致，不能直接复制 src/ 的旧表名或 row_id。
+- 保留原非 PPR 语义工具的排名、分数筛选和可选结果 QA 行为；额外结果 QA 属于调查模型调用。每次尝试共享 60 次调查调用，再额外一次关闭工具的强制回答；主 agent、clip_qa、SQL QA、检索结果 QA 均在实际发出模型请求前占用预算，reasoning 历史继续回传。
+- MAGIC 保留其自身 PPR、BM25、chain、检索轮数与现有时间截止语义；“非 PPR”只适用于 VideoSQL 的 semantic_search。
+- 所有答题主调用、MAGIC retriever/responder、时间解析、clip_qa 和结果 QA 都使用同一个 Qwen/Qwen3.5-35B-A3B-FP8 服务；保留既有 xhigh 和 reasoning 历史，不设置客户端采样参数或输入/输出 token 上限。Open judge 独立使用下述 OpenAI 模型。
 
-三次重试后仍无有效答案的题保留在固定的 500 题分母中。Open 将其候选答案记为空并最终记 0；MCQ 将其记为错误答案。错误链只用于 trace 和问题诊断，不产生影响分母或评分的 failure category。
+# Open GPT judge：如何评分
 
-# Open EgoLifeQA judge
+采用刚才实际运行的 `gpt-5` judge，通过项目 `.env` 的 `SHARED_OPENAI_KEY` 调用 OpenAI API；不再使用 `gpt-5.6-terra`。刚才运行返回的模型标识为 `gpt-5-2025-08-07`。参考实现为 `training_free/evaluate_mm_official.py`，正式配置采用刚才运行的 judge 并发 128，独立于答题并发 8192。初始请求超时 60 秒，不设置 temperature、top_p、其他采样参数、reasoning_effort 或 token 上限；重试采用下节的新规则。
 
-开放题在四个答题 setting 完成全部重试后，对 MAGIC 和 VideoSQL 的保存答案分别运行同一个 OpenAI judge。使用 `.env` 中的 `SHARED_OPENAI_KEY`，模型为 `gpt-5`，每个方法依次运行，方法内并发 128、每题最多三次 judge 尝试、单次超时 60 秒。请求省略 `temperature`、`top_p`、其他采样参数、reasoning 参数和输入/输出 token 上限。
+System prompt 复用该脚本中的 MM-Lifelong 官方 `eval_acc.py` prompt，来源版本为 `MM-Lifelong/MM-Lifelong@248aa82039a574e63a2e524746a7cd8f32330443`，并保留其 EgoLife metadata 附加规则。语义评分标准如下：
 
-Judge 使用 MM-Lifelong 官方 `eval_acc.py` 的 system prompt、user prompt 结构、文本输出和解析规则，并追加 EgoLife metadata：提问者为 Jake/A1_JAKE，第一人称 `I/me/my/mine`、narrator 和 camera wearer 都指 Jake；提供 query time 原始 DHHMMSSFF、query day、时分秒和 frame index；相对时间按该 query time 解释，`DAYn` 是日期标签，不表示 n 天前。User prompt 依次包含 `Question`、`Metadata`、`Groundtruth answer`、`Candidate answer` 和 `Your response`。模型先输出简短 `Analysis`，再输出 `Final Score` 的 0–5 整数；优先解析 `Final Score`，否则采用官方的首个独立 0–5 数字回退规则。
-
-原始分数规则如下：
-
-| 原始分数 | 规则 |
+| 原始分数 | 标准 |
 |---|---|
-| 0 | 无相似性；答案无关、矛盾、为空或完全未回答问题 |
-| 1 | 仅有相关主题或关键词，没有表达参考答案的主要含义 |
-| 2 | 回答了少量次要方面，但遗漏或误述核心事实 |
-| 3 | 捕捉主要含义，但有若干重要遗漏或明显不准确 |
-| 4 | 主要含义和大部分关键细节正确，仅有轻微遗漏、简化或非关键错误 |
-| 5 | 与参考答案语义等价，覆盖全部必要信息且无实质错误 |
+| 0 | 无语义相似性，完全无关、矛盾或未回答问题 |
+| 1 | 只有相关话题或关键词，没有回答参考答案的核心内容 |
+| 2 | 捕捉到少量次要内容，但遗漏或误述核心事实 |
+| 3 | 捕捉主要意思，但遗漏重要细节或有明显不准确 |
+| 4 | 主要意思和大部分关键细节正确，仅有次要遗漏或不重要的不准确 |
+| 5 | 与参考答案语义等价，包含全部必要信息，无实质遗漏或错误 |
 
-保留官方特殊规则：hallucination-sensitive 问题只有全部要求项正确才得 5，任一项错误、缺失或幻觉即得 0；时长问题只接受题目规定范围内的误差，超出范围得 0。最终映射为原始 4/5 → 1，原始 3 → 0.5，原始 0/1/2 → 0。`Average score` 是 500 题映射分数的平均值；open accuracy/perfect score portion 是映射为 1 的题数除以 500。Judge 的任何错误都按官方三次尝试预算重试；三次均失败的题保留在分母中并记 0。
+保留官方特殊规则：hallucination-sensitive 问题只有所有必要项均正确才给 5，否则给 0；时间/时长问题按题目规定的容差判断，超出容差给 0。
 
-# W&B、overlap 与 token
+User prompt 按以下顺序构造，不传检索 trace 或独立选项：
 
-四个 setting 从启动开始在线同步到 W&B，运行过程中完成一题就立即落盘。每秒记录各 setting 的 started/active/completed/failed、GPU utilization/memory/power、累计 token usage 和已落盘结果的 overlap。Open 的 overlap 是 setting 1 与 3 已落盘 judge 结果的 ID 交集；MCQ 的 overlap 是 setting 2 与 4 已落盘答案结果的 ID 交集。每次从当前交集重新计算双方准确率；Open 还计算双方 `Average score`。不使用最终结果反填早期 overlap。
+```text
+Question: <开放题>
+Metadata: <JSON metadata>
+Groundtruth answer: <正确选项对应的答案文本>
+Candidate answer: <本组模型最终答案>
+Your response:
+```
 
-主 vLLM 的累计 prompt、cached prompt 和 generation token 以每秒直接读取 `/metrics` 的 counter 为准，正式总账使用运行前后 counter 差值；不以逐响应 usage 求和替代服务端总数。逐响应原始 usage 仍保存在 trace 中，用于核对缺失响应。四个 setting 共享服务，因此 vLLM token 与 throughput 是四组任务的服务级总量，不拆分归因。
+Metadata 包含 `questioner=A1_JAKE`、`questioner_name=Jake`、第一人称 narrator/camera wearer、原始 `query_time_raw_DHHMMSSFF`、`query_day`、`query_time_of_day=HH:MM:SS` 和 `query_frame_index`。I/me/my、narrator、camera wearer 均指 Jake；用 query day/time 对齐 yesterday、last night 等相对时间；DAYn 是日期标签，不是 n 天前。
 
-Throughput 不通过完成 token 的相邻差值计算。vLLM 日志每次产生 throughput/status 行时，原样保存整行并将其中全部指标同步到 W&B，包括 prompt/generation throughput、running/waiting、GPU KV cache、prefix cache hit rate 和 MTP stats；报告为共享服务总 throughput。W&B 在运行过程中持续同步，不在任务结束时才上传。
+Judge 输出 `Analysis:` 和 `Final Score:` 后的 0–5 整数；沿用刚才脚本的文本解析，优先匹配 `Final Score:\s*([0-5])`，未匹配时按官方规则查找首个独立 0–5 数字，没有有效分数即评分失败并重试。保存完整请求、响应、分析、原始分数、原始 usage 和每次尝试。
 
-# 服务
+原始 4/5 分映射为 1，3 分映射为 0.5，0/1/2 分映射为 0。Open 准确率（perfect score portion）是映射后 1 分题数 / 500，Average score 是映射分数总和 / 500，不以原始 5 分率或原始 0–5 平均分替代。MCQ 不调用 GPT judge，使用 SDK structured parse 得到一个合法选项标识，与原始正确选项直接比较。
 
-启动前检查 GPU、CPU 内存、端口和现有容器；若不能满足两块 GPU 和合计 512 GiB CPU KV cache，立即报告，不等待或降低规格。主模型使用两块 GPU，因此 `data-parallel-size` 为 2；CPU KV cache 合计 512 GiB，每个 rank 为 256 GiB，即 274877906944 bytes。主服务端口为 8103，embedding 服务端口为 8114。使用独立容器名，不使用 Docker `--rm`；结束后停止并手动删除容器。
+# 错误与重试
+
+- 不再按“算法错误”与“维护错误”分流或排除题目。所有答题执行错误都进入重试，包括 API/服务错误、context 溢出、空答案、结构化输出错误、缺失证据或检索失败；每题初始尝试加最多三次整题重试，共最多四次，批次结束后集中重试剩余失败题。
+- 模型能在当前 rollout 内纠正的工具错误原样回传，后续调查调用继续计入 60 次预算。整题重试隔离可变状态，每次重试重新获得同样的 60+1 调用预算。合法但答错的答案或低 judge 分数不是执行错误，不能据此重新答题择优。
+- 四次答题尝试耗尽后仍无有效答案，记录最终失败和全部错误 trace；该题保留在 500 分母中，Open 记 0，MCQ 记错误。只报告失败数量与原因，不计算两类错误指标。
+- Judge 不设重试次数上限，每次重试延长请求超时；超时、API 失败、空响应或无有效分数均重试。保留已生成答案，仅重试 judge，不重新答题；有效分数（包括 0）立即保存并结束该题评分。保存各次实际超时设置，恢复时保留尝试历史。
+- Judge 尚未成功的题目属于评分未完成，不得从分母剔除或伪造 0 分。最终 Open 结果必须覆盖 500 题（含答题耗尽已记 0 的题目），不能直接采用旧脚本排除 `gpt_score=-1` 后的 `valid_samples` 分母。
+- 答案、judge 和每次尝试完成即落盘，恢复复用已完成阶段，不覆盖原始 traces。
+
+# 实时 W&B 与服务统计
+
+- 继续以 1 Hz 实时记录 W&B，不能等结束再上传；四个 setting 分开保存结果和进度。Open overlap 为 Setting 1 与 3 已落盘且评分完成的共同 ID，MCQ overlap 为 Setting 2 与 4 已落盘且评分完成的共同 ID；分别记录实际 overlap 数、两侧准确率，Open 另记两侧 Average score。没有 overlap 时只记录数量，不编造准确率。
+- Throughput 使用共享 vLLM 服务日志中的 prompt/generation throughput，设置并核验实际服务日志周期为 1 秒。保存包含 throughput 的完整行及同一统计周期的 MTP/speculative decoding、KV cache、prefix cache 等独立统计行；仅筛选含 throughput 的行会漏掉 MTP。按 engine/rank 去重；服务已给聚合值时不能再叠加各 rank，只有分 rank 值时才在同一统计周期求和。保留各 rank 的命中率/占用率，不能相加百分比。实现依据：[vLLM 日志源码](https://docs.vllm.ai/en/latest/api/vllm/v1/metrics/loggers/)。
+- 四组共用服务的 throughput 是服务总量，不作为四个 setting 各自独立 throughput；不能用客户端已完成请求的 token 差值替代服务日志 throughput。
+- 累计 token usage 继续每秒直接抓取本地服务 `/metrics`，以共享服务总量核对四组全部请求的原始 usage 总和，不能把共享服务计数重复归入每组。OpenAI judge 的 usage 单独记录，来源为实际 API 响应，不混入本地 vLLM 计数。未返回 usage 保持未知，不按零处理。
+
+# Review 后的实施核对点
+
+- 当前 `training_free/harness.py` 的 semantic_search 实际调用 PPR；只修改 setting 名称不会切换算法，实施时必须修改工具、skills 和 evaluator 中的检索标识，并检查真实检索 trace。
+- 当前 GPT judge 源码并发为 32、总尝试数为 3、固定超时 60 秒，且聚合时排除评分失败；刚才的实际运行配置为并发 128。实施时需要按本计划修改为并发 128、judge 无上限重试并逐次延长超时、最终分母 500。
+- MCQ 需要恢复选项输入并验证合法选项输出，不能直接复用删除选项后的 Open 输入。四组的新答案都必须由本次 Qwen3.5 服务生成，现有答案只用作历史对照。
+- [MAGIC 上游 README](../third_party/magic_video/README.md) 分别列出 retriever 为 `openai/gpt-oss-120b`、responder 为 `qwen/qwen3.5-flash-02-23`。本计划共享 Qwen3.5 服务的比较是统一模型后的 harness 比较，不能称为完整复现上游全部模型配置。Qwen3.5-Flash 对应 35B-A3B 的托管版本，但上下文和托管功能另有设置：[Qwen 模型卡](https://huggingface.co/Qwen/Qwen3.5-35B-A3B/blob/main/README.md)。
+- 正式启动时核对四块主服务 GPU、embedding 服务资源、媒体挂载和可用内存；资源不足立即报告。固定实际 vLLM 版本并验证 DP4、EP、MTP2、CPU KV offload、工具/思考解析和真实视频请求可同时工作；不因命令能启动就认定兼容。CPU offload 依赖 prefix caching，命令中显式启用，并查看实际 offload 日志确认：[vLLM connector 源码](https://docs.vllm.ai/en/latest/api/vllm/distributed/kv_transfer/kv_connector/v1/simple_cpu_offload_connector/)。
+
+# vLLM Commands
+
+CPU KV cache 四个 rank 合计 512 GB；按十进制 GB 计算，每个 rank 128,000,000,000 bytes，合计 512,000,000,000 bytes。`cpu_bytes_to_use_per_rank` 是整数，不是列表。该预算属于共享 vLLM 服务，不能给每个 setting 重复分配。
 
 ```bash
 vllm serve Qwen/Qwen3.5-35B-A3B-FP8 \
-  --served-model-name Qwen/Qwen3.5-35B-A3B \
-  --host 0.0.0.0 \
-  --port 8103 \
   --trust-remote-code \
   --enable-expert-parallel \
-  --data-parallel-size 2 \
+  --data-parallel-size 4 \
+  --enable-prefix-caching \
   --enable-auto-tool-choice \
   --tool-call-parser qwen3_coder \
   --reasoning-parser qwen3 \
   --mm-encoder-tp-mode data \
   --speculative-config '{"method":"mtp","num_speculative_tokens":2}' \
-  --kv-transfer-config '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":274877906944,"lazy_offload":false}}'
+  --kv-transfer-config '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":128000000000,"lazy_offload":false}}'
 ```
-
-# 验证与报告
-
-正式运行前分别对四个 setting 做小范围真实调用，人工检查主 agent、MAGIC 检索与 responder、PPR、SQL、SQL QA、视频工具、reasoning 回传、MCQ 选项输入与预测解析、60+1 强答、所有错误重试、Open judge metadata、原始/映射分数、每秒 `/metrics` usage、vLLM 完整 throughput 行和实时 overlap。不能只检查完成数量或最终文件。
-
-中等源码修改后由 fresh subagent 按 `REVIEW.md` 审查 diff；正式运行前由 Claude CLI 按 `REVIEW.md` 和本计划审查整个仓库，不只审查 diff。最终报告一个四行表：两个 MCQ setting 报告 `correct / 500` 和准确率；两个 Open setting 报告映射 1 分题数 `/ 500`、perfect score portion 和 `Average score`。另外分别报告四个 setting 耗尽三次重试后的题数，以及共享服务总 token 和 throughput；原始 traces、逐题结果与服务日志留在忽略目录，Git 只提交紧凑最终报告。
