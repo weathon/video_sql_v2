@@ -55,6 +55,8 @@ FRAME_SIZE = (854, 480)
 CLIP_IMAGE_LIMIT = 650
 TOOL_REMINDER_CHARACTERS = 10_000
 INVESTIGATION_CALL_LIMIT = 60
+QA_MAX_OUTPUT_TOKENS = 4096
+QA_LENGTH_RETRIES = 3
 SHARED_VECTORS = {}
 SHARED_ROW_IDS = {}
 
@@ -213,26 +215,34 @@ class HarnessContext:
             raise
 
     async def summary_response(self, name: str, instructions: str, content: list[dict[str, Any]], text_format: type[BaseModel]):
-        request = {"model": self.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": self.model_settings.reasoning, "store": self.model_settings.store, "include": self.model_settings.response_include, "extra_body": self.model_settings.extra_body}
+        request = {"model": self.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": self.model_settings.reasoning, "store": self.model_settings.store, "include": self.model_settings.response_include, "extra_body": self.model_settings.extra_body, "max_output_tokens": QA_MAX_OUTPUT_TOKENS}
         if self.model_settings.extra_args is not None:
             request.update(self.model_settings.extra_args)
         path = self.run_dir / "traces" / f"{name}-{uuid.uuid4().hex}.json"
-        artifact = {"agent": {"name": name, "model": request["model"], "tools": []}, "api": "responses", "input": stripped_json(request), "tool_calls": [], "api_usage": [], "error": None}
+        artifact = {"agent": {"name": name, "model": request["model"], "tools": []}, "api": "responses", "input": stripped_json(request), "tool_calls": [], "api_usage": [], "length_retries": [], "error": None}
         path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
         print(f"{name} model={request['model']} content_parts={len(content)} trace={path}", flush=True)
         try:
             self.reserve_model_call(name)
-            raw = await self.client.responses.with_raw_response.parse(**request, text_format=text_format)
-            payload = json.loads(raw.content)
+            for attempt in range(1, QA_LENGTH_RETRIES + 2):
+                raw = await self.client.responses.with_raw_response.parse(**request, text_format=text_format)
+                payload = json.loads(raw.content)
+                if payload["usage"] is None:
+                    raise RuntimeError(f"{name} response {payload['id']} has no usage")
+                recorded = {"response_id": payload["id"], "agent": name, "model": payload["model"], "usage": payload["usage"], "service_tier": payload["service_tier"], "status": "response." + payload["status"]}
+                self.response_usage[payload["id"]] = recorded
+                artifact["api_usage"].append(recorded)
+                if payload["status"] == "incomplete" and payload["incomplete_details"]["reason"] == "max_output_tokens":
+                    artifact["length_retries"].append(payload)
+                    path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+                    print(f"{name} hit max_output_tokens={QA_MAX_OUTPUT_TOKENS} attempt={attempt} trace={path}", flush=True)
+                    if attempt > QA_LENGTH_RETRIES:
+                        raise InvalidTrace(f"{name} exceeded max_output_tokens={QA_MAX_OUTPUT_TOKENS} on {attempt} attempts")
+                    continue
+                break
             artifact["response"] = payload
-            path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
-            if payload["usage"] is None:
-                raise RuntimeError(f"{name} response {payload['id']} has no usage")
-            recorded = {"response_id": payload["id"], "agent": name, "model": payload["model"], "usage": payload["usage"], "service_tier": payload["service_tier"], "status": "response." + payload["status"]}
-            self.response_usage[payload["id"]] = recorded
             if payload["status"] == "completed":
                 self.path_responses.append(recorded)
-            artifact["api_usage"] = [recorded]
             path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
             response = raw.parse()
             if response.status != "completed" or response.output_parsed is None:
@@ -493,14 +503,14 @@ async def run_stream(
             context.tool_counter += 1
             tool_id = context.tool_counter
             raw_arguments = None
-            if tool_context.tool_name == "semantic_search" and context.semantic_search_mode == "vector":
+            if tool_context.tool_name in ("semantic_search", "run_sql") and context.semantic_search_mode == "vector":
                 parsed = json.loads(arguments)
                 coerced = [key for key in ("question",) if key in parsed and parsed[key] in ("None", "")]
                 if coerced:
                     raw_arguments = arguments
                     parsed.update({key: None for key in coerced})
                     arguments = json.dumps(parsed, ensure_ascii=False)
-                    print(f"semantic_search nullable arguments coerced: {raw_arguments} -> {arguments}", flush=True)
+                    print(f"{tool_context.tool_name} nullable arguments coerced: {raw_arguments} -> {arguments}", flush=True)
             output = await original(tool_context, arguments)
             record = {"tool_id": tool_id, "call_id": tool_context.tool_call_id,
                       "name": tool_context.tool_name, "arguments": arguments,
@@ -1248,6 +1258,7 @@ class VideoSQLHarness:
                 "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
                 + ("\n\nRetrieval: Use run_sql for known SQL filters, joins, and aggregates. Use semantic_search when retrieving by meaning is needed; it is not the default first step. semantic_search uses MAGIC PPR and optional pre/post SQL, and returns raw evidence without an extra QA call. Its query specifies the semantic clue. run_sql returns raw results with question=null; only its optional question parameter requests a separate QA answer from the SQL result." if self.context.semantic_search_mode == "ppr" else "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text; its sql runs after retrieval over the temporary table semantic_hits, which holds every row of the chosen table plus cosine_sim, start_ts, end_ts, start_s and end_s. Use that sql to rank by cosine_sim, filter or order by time, filter or sort by names or text, or aggregate, for example: SELECT id, text, start_ts, cosine_sim FROM semantic_hits ORDER BY cosine_sim DESC LIMIT 10; SELECT id, text, start_s, end_s, cosine_sim FROM semantic_hits WHERE start_ts >= 200000000 AND end_ts < 300000000 ORDER BY cosine_sim DESC LIMIT 10; SELECT id, text, start_ts FROM semantic_hits WHERE cosine_sim >= 0.4 ORDER BY start_ts LIMIT 20; SELECT id, text, cosine_sim FROM semantic_hits WHERE text LIKE '%alice%' ORDER BY text, cosine_sim DESC LIMIT 20.")
                 + "\n\nSQL scope: Every run_sql query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and a QA question do not constrain SQL. Unrestricted queries will be rejected before execution; rewrite them with a real scope constraint. Do not request an entire timeline's tables to answer a question about a few events."
+                + ("" if self.context.semantic_search_mode == "ppr" else " All text columns are casefolded to lowercase, so write LIKE patterns in lowercase.")
                 + "\n\nVisual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals."
                 + f"\n\nInvestigation budget: You have {INVESTIGATION_CALL_LIMIT} model calls shared across your own turns, clip_qa and optional SQL QA. Calling a tool does not itself consume another model call, but its QA request does. Prefer parallel independent tool calls. After these {INVESTIGATION_CALL_LIMIT} calls, one final answer request is allowed with all investigation tools disabled. Replacing history never restores spent calls."
                 + "\n\nContext maintenance: Only the latest tool result in your context can be replaced. After reading it, use replace_tool alone before continuing if it is large, even when useful and correct, or if it is invalid. Write replacement yourself and give a brief reason. Summarize only the target result's question and evidence, preserving relevant facts, IDs, times, uncertainty, contradictions, and unresolved details. Other results may be cited explicitly by tool_id, but do not present their evidence as part of this result or substitute a summary of another question. For invalid results, replace the entire content with why it must not be used. All history after the target result through the replacement turn is removed, including reasoning, messages, and tool calls; future reasoning starts from the replacement. Do not combine replace_tool with any other tool call in the same turn. Saving add_note does not replace a tool result."

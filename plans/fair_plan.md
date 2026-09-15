@@ -63,6 +63,9 @@ Judge 输入为问题、metadata（提问者 Jake/A1_JAKE 与 query time）、�
 - VideoSQL 的 semantic_search 可空参数被模型写成字符串 "None" 或 ""：把 "None"/"" 当作 null。
 - 给我们的 vector search 加上一个 sql filter/ranking 的功能，放在搜索之后，去掉 n、rank_start、min_score、max_score，改成让模型用 sql 来处理，同时 sql 可以 handle 其他的方式，比如对名字排序、筛选时间、时间排序等（这个 instruction 加入 prompt）。模型传入一个 sql 在返回后运行，返回 semantic 创建一个临时的 in memory table，包含额外一列就是 cosine sim（告诉模型有这一列），然后模型写 sql query，给几个 sample。
 - GPU usage 和 kv cache 用的都很少：把客户端 concurrent ×3（我们的方法 20→60），服务器端如果需要修改 max seq num 也修改。
+- run_sql 的可空参数 question 被写成 "None" 或 ""：也转换（当作 null）。
+- 文本列全部 casefold 小写而模型写大写 LIKE：在系统提示的 SQL scope 段加一句。
+- QA 子调用（sql-qa / semantic-qa）偶尔生成失控：我们的任务简单，max output token 设置成 4096 tokens，如果 stop reason 是 length 则重试。
 
 # vLLM Commands
 CPU KV cache 四个 rank 合计 512 GB，每个 rank 128,000,000,000 bytes。
