@@ -66,6 +66,7 @@ Judge 输入为问题、metadata（提问者 Jake/A1_JAKE 与 query time）、�
 - run_sql 的可空参数 question 被写成 "None" 或 ""：也转换（当作 null）。
 - 文本列全部 casefold 小写而模型写大写 LIKE：在系统提示的 SQL scope 段加一句。
 - QA 子调用（sql-qa / semantic-qa）偶尔生成失控：我们的任务简单，max output token 设置成 4096 tokens，如果 stop reason 是 length 则重试。
+- 4096 的上限对带思考的 QA 子调用太小（约一半子调用被截断）：上限改成 16384。
 
 # vLLM Commands
 CPU KV cache 四个 rank 合计 512 GB，每个 rank 128,000,000,000 bytes。
