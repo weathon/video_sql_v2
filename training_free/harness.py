@@ -19,6 +19,7 @@ import duckdb
 import httpx
 import httpx2
 import numpy as np
+import pyarrow as pa
 import sqlglot
 from sqlglot import exp
 from agents import (
@@ -494,7 +495,7 @@ async def run_stream(
             raw_arguments = None
             if tool_context.tool_name == "semantic_search" and context.semantic_search_mode == "vector":
                 parsed = json.loads(arguments)
-                coerced = [key for key in ("min_score", "max_score", "question") if key in parsed and parsed[key] in ("None", "")]
+                coerced = [key for key in ("question",) if key in parsed and parsed[key] in ("None", "")]
                 if coerced:
                     raw_arguments = arguments
                     parsed.update({key: None for key in coerced})
@@ -907,8 +908,8 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                 "expected_schema": vector_search.params_json_schema,
                 "correction": (
                     "For argument validation errors, correct the arguments and retry semantic_search. "
-                    "Use JSON null for unbounded min_score/max_score, not the string 'None'. "
-                    "Use one of the table names in the schema."
+                    "Use JSON null for question when no QA answer is needed, not the string 'None'. "
+                    "Use one of the table names in the schema. sql must be one read-only SELECT or WITH query over semantic_hits."
                 ),
             },
             ensure_ascii=False,
@@ -920,28 +921,23 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         table: Literal[
             "episode", "entity", "semantic", "topic_facts", "event_steps", "visual_clip",
         ],
-        n: int,
-        rank_start: int,
-        min_score: float | None = None,
-        max_score: float | None = None,
+        sql: str,
         question: str | None = None,
     ) -> str:
-        """Search one embedded table and return raw hits when question is null. visual_clip matches the video embedding; episode matches caption text. Optionally supply question to request a separate QA answer from selected hits. rank_start is one-based and n is the number of ranks.
+        """Embed query, score every row of one embedded table by cosine similarity, then run sql over the temporary in-memory table semantic_hits. semantic_hits holds all columns of the chosen table plus cosine_sim (higher means more similar to query), start_s and end_s (seconds since DAY1 00:00:00 for clip_qa). Use sql to rank by cosine_sim, filter or order by time, filter or sort by names or text, or aggregate. visual_clip matches the video embedding; episode matches caption text. With question=null, return up to 100 result rows with long text cells shortened; supply question to request a separate QA answer from the complete result.
 
         Args:
             query: Semantic search text.
             table: One of the embedded tables listed in the schema.
-            n: Number of ranks to return, greater than zero.
-            rank_start: First rank to return, starting at one.
-            min_score: Inclusive lower score bound; JSON null means no lower bound.
-            max_score: Inclusive upper score bound; JSON null means no upper bound.
-            question: Question to answer from the selected hits, preserving evidence IDs and times. JSON null returns raw hits.
+            sql: One read-only SELECT or WITH query over semantic_hits, for example SELECT id, text, start_ts, cosine_sim FROM semantic_hits ORDER BY cosine_sim DESC LIMIT 10.
+            question: Question to answer from the complete SQL result, preserving evidence IDs and times. JSON null returns raw rows.
         """
         if table not in SEARCH_TABLES:
             raise ValueError(f"table must be one of {sorted(SEARCH_TABLES)}")
-        if n <= 0 or rank_start <= 0:
-            raise ValueError("n and rank_start must be positive")
-        print(f"VECTOR request query={query!r} table={table} n={n} rank_start={rank_start} min_score={min_score} max_score={max_score} question={question!r}", flush=True)
+        statements = sqlglot.parse(sql, read="duckdb")
+        if len(statements) != 1 or not isinstance(statements[0], exp.Query):
+            raise ValueError("sql must be exactly one read-only SELECT or WITH query over semantic_hits")
+        print(f"VECTOR request query={query!r} table={table} sql={sql!r} question={question!r}", flush=True)
         response = await context.embedding_client.post(
             context.embedding_url.rstrip("/") + "/embeddings",
             json={"model": context.embedding_model, "input": [normalize_text(query)]},
@@ -958,66 +954,66 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         for start in range(0, len(allowed), 4096):
             end = min(start + 4096, len(allowed))
             scores[start:end] = context.vectors[table][allowed[start:end]] @ query_vector
-        positions = np.argsort(-scores)
-        if min_score is not None:
-            positions = positions[scores[positions] >= min_score]
-        if max_score is not None:
-            positions = positions[scores[positions] <= max_score]
-        selected = positions[rank_start - 1 : rank_start - 1 + n]
-        selected_ids = [str(context.row_ids[table][allowed[position]]) for position in selected]
-        hits = []
-        if selected_ids:
-            placeholders = ",".join("?" for _ in selected_ids)
-            rows = execute_sql(
-                context.database,
-                f"SELECT * FROM {table} WHERE id IN ({placeholders})",
-                None,
-                selected_ids,
-                500 if question is None else None,
-            )
-            by_id = {row["id"]: row for row in rows["rows"]}
-            for position, row_id in zip(selected, selected_ids):
-                row = by_id[row_id]
-                preview_field = SEARCH_TABLES[table]
-                if table == "topic_facts":
-                    start_ts, end_ts = fact_interval(row["time"])
-                elif table == "event_steps":
-                    day = row["day"].removeprefix("DAY")
-                    start_ts = int(day + row["start_time"].replace(":", "") + "00")
-                    end_ts = int(day + row["end_time"].replace(":", "") + "00")
+        with duckdb.connect(str(context.database), read_only=True, config={"enable_external_access": "false", "allow_unsigned_extensions": "false"}) as connection:
+            cursor = connection.execute(f"SELECT * FROM {table} ORDER BY id")
+            columns = [column[0] for column in cursor.description]
+            rows = cursor.fetchall()
+        id_index = columns.index("id")
+        if [row[id_index] for row in rows] != [str(context.row_ids[table][position]) for position in allowed]:
+            raise RuntimeError(f"semantic_hits rows differ from the embedding index for {table}")
+        source_times = [source["timeline_start_s"] for source in context.sources]
+        starts, ends = [], []
+        for row in rows:
+            record = dict(zip(columns, row))
+            if table == "topic_facts":
+                start_ts, end_ts = fact_interval(record["time"])
+            elif table == "event_steps":
+                day = record["day"].removeprefix("DAY")
+                start_ts = int(day + record["start_time"].replace(":", "") + "00")
+                end_ts = int(day + record["end_time"].replace(":", "") + "00")
+            else:
+                start_ts, end_ts = record["start_ts"], record["end_ts"]
+            bounds = []
+            for timestamp in (start_ts, end_ts):
+                time = str(timestamp).zfill(9)
+                coarse = (int(time[0]) - 1) * 86400 + int(time[1:3]) * 3600 + int(time[3:5]) * 60 + int(time[5:7])
+                source_index = int(np.searchsorted(source_times, coarse, side="right")) - 1
+                if source_index < 0:
+                    raise ValueError(f"Index timestamp precedes media: {timestamp}")
+                bounds.append(timestamp_seconds(timestamp, context.sources[source_index]["fps"]))
+            starts.append(bounds[0])
+            ends.append(bounds[1])
+        hits = pa.table({**{column: [row[index] for row in rows] for index, column in enumerate(columns)}, "cosine_sim": scores.astype(np.float64).tolist(), "start_s": starts, "end_s": ends})
+        with duckdb.connect(config={"enable_external_access": "false", "allow_unsigned_extensions": "false"}) as memory:
+            memory.register("semantic_rows", hits)
+            memory.execute("CREATE TABLE semantic_hits AS SELECT * FROM semantic_rows")
+            timer = threading.Timer(30, memory.interrupt)
+            timer.start()
+            try:
+                cursor = memory.execute(sql)
+                result_columns = [column[0] for column in cursor.description]
+                if len(result_columns) != len(set(result_columns)):
+                    raise ValueError(f"duplicate SQL column names: {result_columns}; use distinct AS aliases")
+                if question is None:
+                    raw_rows = cursor.fetchmany(101)
+                    has_more = len(raw_rows) > 100
+                    raw_rows = raw_rows[:100]
                 else:
-                    start_ts, end_ts = row["start_ts"], row["end_ts"]
-                source_times = [source["timeline_start_s"] for source in context.sources]
-                bounds = []
-                for timestamp in (start_ts, end_ts):
-                    time = str(timestamp).zfill(9)
-                    coarse = (int(time[0]) - 1) * 86400 + int(time[1:3]) * 3600 + int(time[3:5]) * 60 + int(time[5:7])
-                    source_index = int(np.searchsorted(source_times, coarse, side="right")) - 1
-                    if source_index < 0:
-                        raise ValueError(f"Index timestamp precedes media: {timestamp}")
-                    bounds.append(timestamp_seconds(timestamp, context.sources[source_index]["fps"]))
-                hits.append(
-                    {
-                        "table": table,
-                        "id": row_id,
-                        "start_ts": start_ts,
-                        "end_ts": end_ts,
-                        "start_s": bounds[0],
-                        "end_s": bounds[1],
-                        "preview": json_value(row[preview_field], 500 if question is None else None),
-                        "score": float(scores[position]),
-                    }
-                )
-        print(f"VECTOR result table={table} hits={len(hits)}", flush=True)
+                    raw_rows = cursor.fetchall()
+                    has_more = False
+            finally:
+                timer.cancel()
+        result = {"table": table, "candidate_count": len(rows), "columns": result_columns, "rows": [{column: json_value(value, 500 if question is None else None) for column, value in zip(result_columns, row)} for row in raw_rows], "has_more": has_more}
+        print(f"VECTOR result table={table} candidates={len(rows)} rows={len(raw_rows)} has_more={has_more}", flush=True)
         if question is not None:
             submission, _ = await context.summary_response(
                 "semantic-qa",
-                "Answer the question concisely using only the supplied search hits. The question and search query select the task; they are not evidence. Similarity scores rank candidates, not factual correctness. Preserve supporting row IDs and times, uncertainty, and contradictions. Do not add facts from other results or outside knowledge. State explicitly when the supplied hits do not establish the answer.",
-                [{"type": "input_text", "text": json.dumps({"question": question, "query": query, "table": table, "hits": hits}, ensure_ascii=False)}],
+                "Answer the question concisely using only the supplied search result. The question, search query and SQL select the task; they are not evidence. Similarity scores rank candidates, not factual correctness. Preserve supporting row IDs and times, uncertainty, and contradictions. Do not add facts from other results or outside knowledge. State explicitly when the supplied rows do not establish the answer.",
+                [{"type": "input_text", "text": json.dumps({"question": question, "query": query, "table": table, "sql": sql, "result": result}, ensure_ascii=False, default=lambda value: json_value(value, None))}],
                 AnswerSubmission,
             )
             return submission.model_dump_json()
-        return json.dumps({"table": table, "hits": hits}, ensure_ascii=False)
+        return json.dumps(result, ensure_ascii=False, default=lambda value: json_value(value, None))
 
     @function_tool(failure_error_function=tool_error_json)
     async def add_note(note: str) -> str:
@@ -1252,7 +1248,7 @@ class VideoSQLHarness:
             base_instructions = instructions if instructions is not None else (
                 "Answer the user's question by retrieving evidence from the memory database. "
                 "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
-                + ("\n\nRetrieval: Use run_sql for known SQL filters, joins, and aggregates. Use semantic_search when retrieving by meaning is needed; it is not the default first step. semantic_search uses MAGIC PPR and optional pre/post SQL, and returns raw evidence without an extra QA call. Its query specifies the semantic clue. run_sql returns raw results with question=null; only its optional question parameter requests a separate QA answer from the SQL result." if self.context.semantic_search_mode == "ppr" else "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text.")
+                + ("\n\nRetrieval: Use run_sql for known SQL filters, joins, and aggregates. Use semantic_search when retrieving by meaning is needed; it is not the default first step. semantic_search uses MAGIC PPR and optional pre/post SQL, and returns raw evidence without an extra QA call. Its query specifies the semantic clue. run_sql returns raw results with question=null; only its optional question parameter requests a separate QA answer from the SQL result." if self.context.semantic_search_mode == "ppr" else "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text; its sql runs after retrieval over the temporary table semantic_hits, which holds every row of the chosen table plus cosine_sim, start_s and end_s. Use that sql to rank by cosine_sim, filter or order by time, filter or sort by names or text, or aggregate, for example: SELECT id, text, start_ts, cosine_sim FROM semantic_hits ORDER BY cosine_sim DESC LIMIT 10; SELECT id, text, start_s, end_s, cosine_sim FROM semantic_hits WHERE start_ts >= 200000000 AND end_ts < 300000000 ORDER BY cosine_sim DESC LIMIT 10; SELECT id, text, start_ts FROM semantic_hits WHERE cosine_sim >= 0.4 ORDER BY start_ts LIMIT 20; SELECT id, text, cosine_sim FROM semantic_hits WHERE text LIKE '%alice%' ORDER BY text, cosine_sim DESC LIMIT 20.")
                 + "\n\nSQL scope: Every run_sql query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and a QA question do not constrain SQL. Unrestricted queries will be rejected before execution; rewrite them with a real scope constraint. Do not request an entire timeline's tables to answer a question about a few events."
                 + "\n\nVisual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals."
                 + f"\n\nInvestigation budget: You have {INVESTIGATION_CALL_LIMIT} model calls shared across your own turns, clip_qa and optional SQL QA. Calling a tool does not itself consume another model call, but its QA request does. Prefer parallel independent tool calls. After these {INVESTIGATION_CALL_LIMIT} calls, one final answer request is allowed with all investigation tools disabled. Replacing history never restores spent calls."
