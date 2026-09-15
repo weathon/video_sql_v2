@@ -86,3 +86,16 @@ vllm serve Qwen/Qwen3.5-35B-A3B-FP8 \
 
 # 结束程序
 所有程序正常结束时必须运行5/0代表正确完成
+
+# 新计划（Qwen3.8-27B 重跑）
+因为我们修改了自己的 harness（给 semantic search 加上了 sql），所以我们自己的方法的 MCQ 和 freeform 都要重跑，MAGIC 的 MCQ 也要重跑。最终需要 3 个 run：
+- VideoSQL & Qwen 3.8-27B & Open
+- MAGIC-Video & Qwen 3.8-27B & MCQ
+- VideoSQL & Qwen 3.8-27B & MCQ
+
+Open 的写入为 average rounded score 和 perfect score ratio。开 2 个 vllm 容器，都是 3.8 27b fp8，一个容器跑 magic 一个跑两个 videosql，并发 magic 为 20，sql 单个为 10 合并 20。其余部分保持一样。过夜跑，跑完之后 free 容器；中途中断可以在不改变 protocol 的情况下 debug 恢复运行。
+
+## 执行中的决定
+- vLLM 启动参数：沿用之前 3.8 基线 pd 角色那一套（max-model-len 314573 + yarn hf-overrides、mtp 3、mm-processor-cache-gb 4、limit-mm-per-prompt image 650/video 1、prefix caching、TP=2、CPU KV offload、max-num-seqs 50、gpu-memory-utilization 0.90），但是不分开 encoder（去掉 ec-transfer-config、encoder 容器和 proxy）。
+- GPU 和端口：和这次一样，MAGIC 容器 GPU 0,1 端口 8130；VideoSQL 容器 GPU 2,3 端口 8131；embedding GPU 4 端口 8114。
+- VideoSQL Open 的 overlap 对照用之前跑完的 MAGIC open（quality-magic-mm-lifelong-official-gpt5-egolife-metadata-judge）。因为它的目录结构不是 evaluate.py 的 run 结构，做一个适配目录（runs/fair-qwen38/magic-open-reference）供 --magic-reference 使用。
