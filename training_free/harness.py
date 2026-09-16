@@ -148,7 +148,7 @@ class HarnessContext:
         self.vectors = SHARED_VECTORS[key]
         self.row_ids = SHARED_ROW_IDS[key]
         self.eligible_positions = {}
-        with duckdb.connect(str(self.database), read_only=True) as connection:
+        with duckdb.connect(str(self.database), read_only=True, config={"enable_external_access": "false", "allow_unsigned_extensions": "false"}) as connection:
             for table in SEARCH_TABLES:
                 allowed = np.asarray([row[0] for row in connection.execute(f"SELECT id FROM {table} ORDER BY id").fetchall()], dtype=self.row_ids[table].dtype)
                 positions = np.searchsorted(self.row_ids[table], allowed)
