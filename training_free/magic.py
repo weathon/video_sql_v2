@@ -8,6 +8,7 @@ import re
 import sys
 import threading
 import time
+from functools import partialmethod
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
@@ -15,7 +16,7 @@ from uuid import uuid4
 
 import av
 import numpy as np
-from openai import APIError, ContentFilterFinishReasonError, LengthFinishReasonError, OpenAI
+from openai import APIError, ContentFilterFinishReasonError, LengthFinishReasonError, OpenAI, omit
 from pydantic import BaseModel, ValidationError, model_validator
 
 from training_free.normalize import normalize_text
@@ -77,7 +78,7 @@ class VideoTimeReference(TimeReference):
 
 
 class MagicAPI:
-    def __init__(self, run_dir, base_url, embedding_url, model=MODEL, reasoning_effort="xhigh"):
+    def __init__(self, run_dir, base_url, embedding_url, model=MODEL, reasoning_effort="xhigh", time_format="egolife"):
         self.run_dir = run_dir
         self.traces = run_dir / "traces"
         self.traces.mkdir(parents=True, exist_ok=True)
@@ -87,6 +88,7 @@ class MagicAPI:
         self.embeddings = OpenAI(api_key="EMPTY", base_url=embedding_url, max_retries=0, timeout=None)
         self.model = model
         self.reasoning_effort = reasoning_effort
+        self.time_format = time_format
         self.last_assistant = None
 
     def complete(self, messages, response_format=None):
@@ -148,14 +150,19 @@ class MagicAPI:
         finally:
             (self.traces / f"magic-{uuid4().hex}.json").write_text(json.dumps(trace, ensure_ascii=False))
 
-    def encode_text(self, texts):
+    def encode_text(self, texts, visual=False):
         single = isinstance(texts, str)
         inputs = [normalize_text(texts)] if single else [normalize_text(text) for text in texts]
         request = {"model": EMBEDDING_MODEL, "input": inputs, "encoding_format": "float"}
+        if visual and self.time_format == 'mmlifelong':
+            request = {"model": EMBEDDING_MODEL, "messages": [{"role": "user", "content": [{"type": "text", "text": f"Retrieve video segments that help answer questions about a long-form livestream.\n{texts}"}]}], "encoding_format": "float"}
         trace = {"request": request, "response": None, "error": None}
         print(f"MAGIC embeddings request: inputs={len(inputs)}", flush=True)
         try:
-            raw = self.embeddings.embeddings.with_raw_response.create(**request)
+            if 'messages' in request:
+                raw = self.embeddings.embeddings.with_raw_response.create(model=EMBEDDING_MODEL, input=omit, encoding_format="float", extra_body={"messages": request['messages']})
+            else:
+                raw = self.embeddings.embeddings.with_raw_response.create(**request)
             trace["request"] = json.loads(raw.http_request.content)
             trace["response"] = raw.text
             trace["response"] = raw.http_response.json()
@@ -176,7 +183,7 @@ class MagicAPI:
         finally:
             (self.traces / f"magic-{uuid4().hex}.json").write_text(json.dumps(trace, ensure_ascii=False))
 
-    encode_vis_query = encode_text
+    encode_vis_query = partialmethod(encode_text, visual=True)
 
 
 class MagicFrames:
@@ -356,7 +363,7 @@ class MagicMemory(WorldMemory):
 
 
 def run_magic(question: str, query_time: int | None, run_dir: Path, artifact_root: Path, base_url: str, embedding_url: str, model: str = MODEL, reasoning_effort: str | None = "xhigh", mcq: bool = False, time_format: str = 'egolife') -> tuple[str, float]:
-    api = MagicAPI(Path(run_dir), base_url, embedding_url, model, reasoning_effort)
+    api = MagicAPI(Path(run_dir), base_url, embedding_url, model, reasoning_effort, time_format)
     artifact_root = Path(artifact_root).resolve()
     if time_format == 'egolife':
         question = normalize_text(question)

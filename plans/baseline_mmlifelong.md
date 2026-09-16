@@ -132,6 +132,7 @@ Keep the code leanest and simplest possible.
 - 节点、边端点和 chain ID 加视频命名空间；视觉节点及 embedding 映射统一使用“视频身份＋起止时间”，避免同一长视频不同片段互相覆盖。不缓存裁剪视频，视频证据直接从原视频按区间读取。
 - 本次 `embed-video` 直接导入 `/raid/wg25r/video_sql/data/mm_lifelong_stage1/mm_lifelong.sqlite` 的 `visual_clips_emb`，通过 `visual_clips` 的 `broadcast_id/start_sec/end_sec` 对应本次片段。已保存全部 14 个视频的 9,168 条、4096 维视觉向量；MAGIC 与 SQL 使用同一份已有向量，不重新生成全量 video embedding。
 - 已有视觉向量的生成方式：`Qwen/Qwen3-VL-Embedding-8B`；每段均匀取 16 帧，缩放至长边 420、JPEG 编码；同一条 user 消息先放入 `Retrieve video segments that help answer questions about a long-form livestream.`，再放入 16 张图片，输出一个片段向量。实现及记录分别见 `/raid/wg25r/video_sql/build/embed_mm_lifelong_stage1.py` 和 `/raid/wg25r/video_sql/docs/HANDOFF_MM_LIFELONG_STAGE1.md`。
+- 两套 harness 的视觉查询沿用旧版格式：通过 `messages` 传入同一句检索指令、换行和查询文本；文本检索保持当前 `input` 格式。
 - 已按上述旧脚本输入重新 embedding 四段并检查实际请求、返回向量和输入帧。与已有向量的余弦相似度分别为：视频 4 的 0–30 秒 `0.989932`、30–60 秒 `0.985090`，视频 14 的 2700–2730 秒 `0.990925`，视频 11 的 11760–11776.81 秒 `0.983610`。验证结果保存在 `runs/mmlifelong-month/debug/existing-embeddings/comparison.json`。本次采用这些已有视觉向量的生成方式；文本 embedding 仍按原准备流程生成。
 - SQL 检索行和 MAGIC 证据明确携带视频身份与视频内时间；视频工具在 MM-Lifelong 模式下按视频身份定位。所有题使用同一份完整只读语料。
 - MAGIC 切换到上游 MM-Lifelong 提示与时间格式，保留既有检索参数和五轮检索预算；合并全部视频时保留原生关联，不新增推断关系。
@@ -171,6 +172,6 @@ Keep the code leanest and simplest possible.
 
 - 用小范围调试验证跨视频检索、同视频不同片段、零秒起点、小数秒、SQL 过滤、视频读取及旧 EgoLife 时间模式；不新增测试框架，不运行语法检查。
 - 手动检查实际请求与返回、检索记录、embedding 对应片段及返回帧，确认视频路径可用、证据身份正确、reasoning 被保留，且回答路径未读到答案线索。
-- 中等代码改动由新的 review subagent 按 `REVIEW.md` 审查；正式流水线开始前，用 Claude CLI 完成一次覆盖当前整个仓库的审查。审查未正常完成并给出明确结论时，不启动正式运行。
+- 中等代码改动由新的 review subagent 按 `REVIEW.md` 审查；本次按用户决定跳过不可用的 Claude CLI，由独立 subagent 完成全仓审查。审查未正常完成并给出明确结论时，不启动正式运行。
 - 保留已有工作区修改和删除，只提交本次源码、文档改动及紧凑最终结果；逐题输出、原始 traces 和二进制 artifacts 保持忽略。
 - 核验双方完整结果、失败处理、执行 traces 和 token 对账后，只回填原计划文件中两种方法的四个结果字段。完成提交与服务收尾后，执行约定的 `5/0`。

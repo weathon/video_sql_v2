@@ -965,9 +965,12 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         if len(statements) != 1 or not isinstance(statements[0], exp.Query):
             raise ValueError("sql must be exactly one read-only SELECT or WITH query over semantic_hits")
         print(f"VECTOR request query={query!r} table={table} sql={sql!r} question={question!r}", flush=True)
+        embedding_request = {"model": context.embedding_model, "input": [normalize_text(query)]}
+        if table == 'visual_clip' and context.time_format == 'mmlifelong':
+            embedding_request = {"model": context.embedding_model, "messages": [{"role": "user", "content": [{"type": "text", "text": f"Retrieve video segments that help answer questions about a long-form livestream.\n{query}"}]}]}
         response = await context.embedding_client.post(
             context.embedding_url.rstrip("/") + "/embeddings",
-            json={"model": context.embedding_model, "input": [normalize_text(query)]},
+            json=embedding_request,
         )
         response.raise_for_status()
         data = response.json()["data"]
