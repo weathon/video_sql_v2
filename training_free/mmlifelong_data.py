@@ -2,10 +2,12 @@
 
 import json
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pyarrow as pa
 
 from training_free.index_schema import DDL, NODE_TABLES
@@ -22,6 +24,24 @@ for table in ('topic_chains', 'event_chains'):
 for table in ('topic_facts', 'event_steps'):
     MM_DDL[table] = DDL[table].removesuffix(')') + ', video_id VARCHAR, start_ts DOUBLE, end_ts DOUBLE)'
 MM_SCHEMA = '\n'.join(MM_DDL.values()) + '\nAll 14 broadcasts are available to every question. video_id identifies the broadcast. start_ts/end_ts and semantic_hits.start_s/end_s are seconds within that video, including fractional seconds. There is no question cutoff. topic_facts.time and event_steps.start_time/end_time preserve HH:MM:SS strings; event_steps.day is NULL. Pass video_id with the video-local interval to clip_qa.'
+
+
+def import_visual_embeddings(root: Path) -> None:
+    database = Path('/raid/wg25r/video_sql/data/mm_lifelong_stage1/mm_lifelong.sqlite')
+    captions = json.loads((root / 'magic/captions/mmlifelong_30sec.json').read_text())
+    print(f'VIDEO_IMPORT source={database} table=visual_clips_emb captions={len(captions)}', flush=True)
+    with sqlite3.connect(f'file:{database}?mode=ro', uri=True) as connection:
+        records = connection.execute('SELECT c.clip_id, c.broadcast_id, c.start_sec, c.end_sec, e.embedding FROM visual_clips c JOIN visual_clips_emb e ON e.id=c.clip_id').fetchall()
+    visual = {f'{video_id}:{float(start)}:{float(end)}': (clip_id, np.frombuffer(blob, dtype=np.float32)) for clip_id, video_id, start, end, blob in records}
+    for index, caption in enumerate(captions):
+        key = caption['clip_key']
+        clip_id, vector = visual[key]
+        if vector.shape != (4096,) or not np.isfinite(vector).all() or np.linalg.norm(vector) == 0:
+            raise ValueError(f'Invalid saved visual embedding: {database} clip_id={clip_id} interval={key}')
+        directory = root / 'embedding-shards/video-grouped' / f'{index // 1000:03d}'
+        directory.mkdir(parents=True, exist_ok=True)
+        np.savez(directory / f'{index:06d}.npz', video_path=np.asarray(key), sampling=np.asarray('mmlifelong_16frames_420_instruction'), vector=vector, source_database=np.asarray(str(database)), source_clip_id=np.asarray(clip_id))
+    print(f'VIDEO_IMPORTED count={len(captions)} source={database}', flush=True)
 
 
 def prepare(root: Path) -> None:

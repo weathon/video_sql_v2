@@ -252,24 +252,20 @@ def cache_caption_clip(caption: dict, source: dict, root: Path) -> dict:
     return info
 
 
-async def embed_video(root: Path, endpoint: str, time_format: str = 'egolife') -> None:
+async def embed_video(root: Path, endpoint: str) -> None:
     sources = {row['original_path']: row for row in json.loads((root / 'media-map.json').read_text())['sources']}
-    caption_file = 'mmlifelong_30sec.json' if time_format == 'mmlifelong' else 'A1_JAKE_30sec.json'
-    captions = json.loads((root / 'magic/captions' / caption_file).read_text())
-    paths = {row['clip_key'] if time_format == 'mmlifelong' else row['video_path']: row for row in captions}
+    captions = json.loads((root / 'magic/captions/A1_JAKE_30sec.json').read_text())
+    paths = {row['video_path']: row for row in captions}
     directory = root / 'embedding-shards/video-grouped'
     directory.mkdir(parents=True, exist_ok=True)
     semaphore = asyncio.Semaphore(64)
-    clip_executor = ThreadPoolExecutor(max_workers=10) if time_format == 'egolife' else None
+    clip_executor = ThreadPoolExecutor(max_workers=10)
     clips = {}
     async with httpx.AsyncClient(timeout=None, limits=httpx.Limits(max_connections=64)) as client:
         async def one(index: int, path: str) -> None:
             async with semaphore:
-                if time_format == 'mmlifelong':
-                    info = sources[paths[path]['video_path']]
-                else:
-                    info = await asyncio.get_running_loop().run_in_executor(clip_executor, cache_caption_clip, paths[path], sources[paths[path]['video_path']], root)
-                    clips[path] = info
+                info = await asyncio.get_running_loop().run_in_executor(clip_executor, cache_caption_clip, paths[path], sources[paths[path]['video_path']], root)
+                clips[path] = info
                 shard_directory = directory / f'{index // 1000:03d}'
                 shard_directory.mkdir(exist_ok=True)
                 output = shard_directory / f'{index:06d}.npz'
@@ -279,10 +275,6 @@ async def embed_video(root: Path, endpoint: str, time_format: str = 'egolife') -
                             raise ValueError(f'Video shard ID or sampling mismatch: {output}')
                     return
                 request = {'model': 'qwen3-vl-embedding-8b', 'messages': [{'role': 'user', 'content': [{'type': 'video_url', 'video_url': {'url': Path(info['path']).as_uri()}}]}], 'media_io_kwargs': {'video': {'video_backend': 'qwen3_vl_uniform', 'backend': 'torchcodec', 'trace_path': info['path'], 'num_frames': -1, 'num_ffmpeg_threads': 4, 'seek_mode': 'exact'}}, 'mm_processor_kwargs': {'do_sample_frames': False}}
-                if time_format == 'mmlifelong':
-                    first = max(0, round(float(paths[path]['start_sec']) * info['fps']))
-                    stop = min(info['total_frames'], round(float(paths[path]['end_sec']) * info['fps']))
-                    request['media_io_kwargs']['video'].update({'start_frame': first, 'stop_frame': stop, 'source_fps': info['fps'], 'clip_key': path})
                 (shard_directory / f'{index:06d}-request.json').write_text(json.dumps(request))
                 response = await client.post(endpoint.rstrip('/') + '/embeddings', json=request)
                 if response.is_error:
@@ -301,10 +293,8 @@ async def embed_video(root: Path, endpoint: str, time_format: str = 'egolife') -
                 for index, path in enumerate(paths):
                     group.create_task(one(index, path))
         finally:
-            if clip_executor is not None:
-                clip_executor.shutdown(wait=True, cancel_futures=True)
-    if time_format == 'egolife':
-        (root / 'clip-map.json').write_text(json.dumps(clips, ensure_ascii=False))
+            clip_executor.shutdown(wait=True, cancel_futures=True)
+    (root / 'clip-map.json').write_text(json.dumps(clips, ensure_ascii=False))
     print(f'VIDEO_COMPLETE videos={len(paths)}', flush=True)
 
 
@@ -410,7 +400,11 @@ def main() -> None:
     elif args.stage == 'embed-text':
         asyncio.run(embed_text(args.root, args.embedding_url))
     elif args.stage == 'embed-video':
-        asyncio.run(embed_video(args.root, args.embedding_url, args.time_format))
+        if args.time_format == 'mmlifelong':
+            from training_free.mmlifelong_data import import_visual_embeddings
+            import_visual_embeddings(args.root)
+        else:
+            asyncio.run(embed_video(args.root, args.embedding_url))
     elif args.stage == 'assemble':
         assemble(args.root)
     elif args.stage == 'databases':
