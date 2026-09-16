@@ -597,7 +597,7 @@ class Evaluation:
                 query_time = str(question["query_time"]).zfill(9)
                 metadata = {"questioner": "A1_JAKE", "questioner_name": "Jake", "perspective": "first-person narrator and camera wearer", "query_time_raw_DHHMMSSFF": question["query_time"], "query_day": int(query_time[0]), "query_time_of_day": f"{query_time[1:3]}:{query_time[3:5]}:{query_time[5:7]}", "query_frame_index": int(query_time[7:9])}
             if self.args.official_open_judge:
-                messages = [{"role": "system", "content": MM_SYSTEM_PROMPT}, {"role": "user", "content": "Question: {}\nMetadata: {}\nGroundtruth answer: {}\nCandidate answer: {}\nYour response: ".format(question["question"], json.dumps(metadata, ensure_ascii=False), question["reference_answer"], answer["candidate_answer"])}]
+                messages = [{"role": "system", "content": RUBRIC}, {"role": "user", "content": "Question: {}\nMetadata: {}\nGroundtruth answer: {}\nCandidate answer: {}\nYour response: ".format(question["question"], json.dumps(metadata, ensure_ascii=False), question["reference_answer"], answer["candidate_answer"])}]
                 if self.args.time_format == 'mmlifelong':
                     messages[1]['content'] = f"Question: {question['question']}\nGroundtruth answer: {question['reference_answer']}\nCandidate answer: {answer['candidate_answer']}\nYour response: "
                 traces = directory / "traces"
@@ -916,7 +916,7 @@ async def main_async(args):
             raise ValueError("The official Open judge applies only to the open dataset")
         args.openai_judge = True
         args.mm_lifelong_judge = True
-        RUBRIC = MM_SYSTEM_PROMPT
+        RUBRIC = MM_SYSTEM_PROMPT.split('\nEgoLife metadata rules:', 1)[0] if args.time_format == 'mmlifelong' else MM_SYSTEM_PROMPT
         JUDGE_VERSION = "mm-lifelong-official-openai-gpt-5"
     elif args.mm_lifelong_judge:
         RUBRIC = Path(__file__).with_name("mm_lifelong_rubric.txt").read_text()
