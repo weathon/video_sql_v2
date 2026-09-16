@@ -230,7 +230,8 @@ class HarnessContext:
         path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
         print(f"{name} model={request['model']} content_parts={len(content)} trace={path}", flush=True)
         try:
-            for attempt in range(1, QA_LENGTH_RETRIES + 2):
+            length_retries = 0 if self.time_format == 'mmlifelong' else QA_LENGTH_RETRIES
+            for attempt in range(1, length_retries + 2):
                 self.reserve_model_call(name)
                 raw = await self.client.responses.with_raw_response.parse(**request, text_format=text_format)
                 payload = json.loads(raw.content)
@@ -239,6 +240,8 @@ class HarnessContext:
                 recorded = {"response_id": payload["id"], "agent": name, "model": payload["model"], "usage": payload["usage"], "service_tier": payload["service_tier"], "status": "response." + payload["status"]}
                 self.response_usage[payload["id"]] = recorded
                 artifact["api_usage"].append(recorded)
+                if self.time_format == 'mmlifelong':
+                    break
                 if payload["status"] == "incomplete" and payload["incomplete_details"]["reason"] == "max_output_tokens":
                     artifact["length_retries"].append(payload)
                     path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")

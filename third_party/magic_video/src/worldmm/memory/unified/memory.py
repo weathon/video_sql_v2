@@ -746,6 +746,7 @@ class UnifiedMemory:
         max_frames_per_clip: int = 16,
         max_total_frames: int = 64,
         _current_total_frames: int = 0,
+        all_results=None,
     ) -> List[RetrievedItem]:
         """Convert (GraphNode, score) pairs to RetrievedItem objects compatible
         with WorldMemory._render_retrieved_items_for_qa().
@@ -792,7 +793,7 @@ class UnifiedMemory:
                     n.node_type == NodeType.EPISODE and n.start_ts == node.start_ts
                     and n.end_ts == node.end_ts
                     and getattr(n, '_broadcast_id', None) == getattr(node, '_broadcast_id', None)
-                    for n, _ in results
+                    for n, _ in (results if all_results is None else all_results)
                 )
                 if not has_episode:
                     ep_node = self._full_graph.nodes.get(ep_id) if self._full_graph else None
@@ -928,13 +929,12 @@ class MultiGraphUnifiedMemory:
         return all_results[:top_k]
 
     def format_results(self, results, visual_memory, **kwargs) -> List["RetrievedItem"]:
-        """Delegate to the first memory's format_results.
-        Items inherit _broadcast_id from their source nodes."""
+        """Format ranked nodes with their source memory and a shared frame budget."""
         items = []
         total_frames = kwargs.pop('_current_total_frames', 0)
         for node, score in results:
             memory = self._memories[node._broadcast_id]
-            fresh = memory.format_results([(node, score)], visual_memory, _current_total_frames=total_frames, **kwargs)
+            fresh = memory.format_results([(node, score)], visual_memory, _current_total_frames=total_frames, all_results=results, **kwargs)
             total_frames += sum(len(item.content) for item in fresh if item.memory_type == 'visual')
             items.extend(fresh)
         return items

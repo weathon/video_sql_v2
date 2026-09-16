@@ -158,7 +158,7 @@ def classify_failure(record):
         category, cause = "maintenance", "server_http_error"
     elif types & {'RateLimitError', 'HTTPStatusError'}:
         category, cause = 'maintenance', 'external_service_error'
-    elif types & {'ValidationError', 'JSONDecodeError'} and record['trace_files']:
+    elif types & {'ValidationError', 'JSONDecodeError'} and any('/openai/lib/_parsing/' in frame['file'] for frame in record['error']['frames']) and record['trace_files']:
         category, cause = 'algorithm', 'invalid_structured_model_output'
     elif 'Judge did not return a completed judgment' in message:
         category, cause = 'algorithm', 'invalid_judge_output'
@@ -564,6 +564,8 @@ class Evaluation:
                 record['maintenance'] = record['classification']['category'] != 'algorithm'
                 (directory / "error.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
                 print(f"ANSWER_FAILED method={method} id={question['id']} attempt={attempt} error={type(error).__name__}: {error} evidence={record['error_file']}", flush=True)
+                if record['maintenance']:
+                    raise
             finally:
                 self.progress["progress/answer/active"] -= 1
                 if harness is not None:
@@ -688,6 +690,8 @@ class Evaluation:
                 outcome['classification'] = classify_failure(failure_record)
                 outcome['maintenance'] = outcome['classification']['category'] != 'algorithm'
                 print(f"JUDGE_FAILED method={method} id={question['id']} attempt={attempt} error={type(error).__name__}: {error} trace={path}", flush=True)
+                if outcome['maintenance']:
+                    raise
             finally:
                 self.progress["progress/judge/active"] -= 1
                 path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
