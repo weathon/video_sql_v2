@@ -303,7 +303,7 @@ class MultiVideoUnifiedMemory(MultiGraphUnifiedMemory):
                 items.append(item)
             elif node.node_type == NodeType.VISUAL_CLIP:
                 if (video_id, node.start_ts, node.end_ts) not in episode_intervals:
-                    item = RetrievedItem('episodic', f'[{node.start_ts}s - {node.end_ts}s] {node.text}', '', 0)
+                    item = RetrievedItem('episodic', f'{node.display_text()} {node.text}', '', 0)
                     item._broadcast_id = video_id
                     items.append(item)
                 remaining = max_total_frames - total_frames
@@ -395,8 +395,6 @@ def run_magic(question: str, query_time: int | None, run_dir: Path, artifact_roo
     finally:
         (api.traces / f"magic-{uuid4().hex}.json").write_text(json.dumps(initialization, ensure_ascii=False))
     reasoning_prompt = copy.deepcopy(mm_reasoning_template if time_format == 'mmlifelong' else reasoning_template)
-    if time_format == 'mmlifelong':
-        reasoning_prompt[0]['content'] = reasoning_prompt[0]['content'].split('# Few-shot Examples:')[0]
     reasoning_prompt[0]["content"] = reasoning_prompt[0]["content"].replace('If decision = "answer": Do NOT include "search_query".', 'If decision = "answer": Set "search_query" to null.').replace('"search_query": "<str>"', '"search_query": "<str>" | null').replace('"decision": "answer"\n}', '"decision": "answer",\n  "search_query": null\n}')
     final_prompt = copy.deepcopy(mm_qa_template if time_format == 'mmlifelong' else qa_template)
     if not mcq:
