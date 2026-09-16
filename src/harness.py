@@ -793,6 +793,8 @@ async def sample_frames(
         raise ValueError(f"Video interval extends beyond query time {context.query_time_s}")
     if not sources[0]["timeline_start_s"] <= start_s < end_s <= sources[-1]["timeline_end_s"]:
         raise ValueError("sample interval extends beyond available source media")
+    if not any(max(start_s, source["timeline_start_s"]) < min(end_s, source["timeline_end_s"]) for source in sources):
+        raise ValueError(f"No source video overlaps interval {start_s}–{end_s}; choose an interval from retrieved video evidence.")
     if not math.isfinite(fps) or fps <= 0:
         raise ValueError("fps must be finite and positive")
     if remaining_images == 0:
