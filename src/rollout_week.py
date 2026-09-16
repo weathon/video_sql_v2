@@ -54,7 +54,7 @@ def retryable(error):
     for item in exception_chain(error):
         if isinstance(item, (AgentRaised, InvalidTrace, ModelBehaviorError, ValidationError, openai.LengthFinishReasonError, openai.ContentFilterFinishReasonError, openai.APIConnectionError, openai.APITimeoutError, openai.RateLimitError, openai.InternalServerError, httpx.TransportError, httpx2.TransportError)):
             return True
-        if isinstance(item, openai.BadRequestError) and item.code == 'context_length_exceeded':
+        if isinstance(item, openai.BadRequestError) and (item.code == 'context_length_exceeded' or any(text in str(item).lower() for text in ('maximum context length', 'context length exceeded', 'context window exceeded'))):
             return True
         if isinstance(item, httpx.HTTPStatusError) and (item.response.status_code == 429 or item.response.status_code >= 500):
             return True
