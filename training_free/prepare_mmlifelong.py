@@ -45,7 +45,7 @@ def prepare(root):
             node.text = normalize_text(node.text)
             node.metadata['video_id'] = video_id
             for field in ('subject', 'predicate', 'object'):
-                if field in node.metadata:
+                if field in node.metadata and isinstance(node.metadata[field], str):
                     node.metadata[field] = normalize_text(node.metadata[field])
             if node.node_type.value == 'visual_clip':
                 node.metadata['clip_key'] = f"{node.metadata['video_path']}:{node.start_ts}-{node.end_ts}"
