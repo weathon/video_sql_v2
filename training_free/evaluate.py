@@ -23,7 +23,7 @@ import wandb
 import weave
 from dotenv import load_dotenv
 from prometheus_client.parser import text_string_to_metric_families
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 from wandb.sdk.lib.runid import generate_id
 
 from third_party.trace2skill.tracing_bridge import init_weave
@@ -46,7 +46,7 @@ JUDGE_VERSION = 2
 COUNTERS = {"input_tokens": "vllm:prompt_tokens_total", "cached_tokens": "vllm:prompt_tokens_cached_total", "output_tokens": "vllm:generation_tokens_total"}
 GAUGES = ("vllm:num_requests_running", "vllm:num_requests_waiting")
 LOCAL_TOKEN_RATES = {"uncached_input": 0.15, "output": 0.47, "cached_input": 0.016}
-ATTEMPTS = (1, 2)
+ATTEMPTS = (1, 2, 3, 4)
 
 
 class Judgment(BaseModel):
@@ -156,13 +156,19 @@ def classify_failure(record):
         category, cause = "maintenance", "server_connection_or_timeout"
     elif "InternalServerError" in types:
         category, cause = "maintenance", "server_http_error"
+    elif types & {'RateLimitError', 'HTTPStatusError'}:
+        category, cause = 'maintenance', 'external_service_error'
+    elif types & {'ValidationError', 'JSONDecodeError'} and record['trace_files']:
+        category, cause = 'algorithm', 'invalid_structured_model_output'
+    elif 'Judge did not return a completed judgment' in message:
+        category, cause = 'algorithm', 'invalid_judge_output'
     elif types & {"FileNotFoundError", "PermissionError", "IsADirectoryError", "NotADirectoryError", "EOFError", "UnpicklingError"}:
         category, cause = "maintenance", "missing_unreadable_or_corrupt_file"
     elif types & {"ModuleNotFoundError", "ImportError", "NameError", "UnboundLocalError", "AttributeError", "TypeError", "KeyError", "IndexError", "AssertionError"}:
         category, cause = "maintenance", "implementation_error"
     elif types & {"MemoryError", "OutOfMemoryError"} or any(text in lower for text in ("cuda out of memory", "cuda error", "device-side assert", "nccl error", "engine is dead")):
         category, cause = "maintenance", "hardware_or_engine_failure"
-    elif any(text in message for text in ("Database/embedding IDs differ", "Missing offline", "Graph visual embedding differs", "Invalid video frame metadata", "Frame decode failed", "missing actual reasoning", "completed response did not include usage")):
+    elif any(text in message for text in ("Database/embedding IDs differ", "Missing offline", "Graph visual embedding differs", "Invalid video frame metadata", "Frame decode failed", "missing actual reasoning", "no actual reasoning", "completed response did not include usage")):
         category, cause = "maintenance", "invalid_required_artifact_or_service_response"
     return {"category": category, "cause": cause, "evidence": evidence}
 
@@ -340,9 +346,9 @@ class Evaluation:
                         baseline_path.write_text(json.dumps(baseline, indent=2) + "\n")
                     if samples["process_start_time_seconds"] != baseline["samples"]["process_start_time_seconds"]:
                         raise RuntimeError("Server restarted during this run; live token accounting requires reconciliation")
-                    payload = {"monitor/timestamp": timestamp, **self.progress.copy()}
                     if self.args.method == 'sql' and self.args.concurrent_magic_reference:
-                        loop.call_soon_threadsafe(self.update_overlap)
+                        self.update_overlap()
+                    payload = {"monitor/timestamp": timestamp, **self.progress.copy()}
                     totals, rates = {}, {}
                     for key, metric in COUNTERS.items():
                         start, now = baseline["samples"][metric], samples[metric]
@@ -387,6 +393,12 @@ class Evaluation:
                     await self.finish_phase(path, phase)
             for method in ("magic", "sql") if self.args.method == "latency" else (self.args.method,):
                 await self.evaluate_method(method)
+            if self.args.method == 'sql' and self.args.concurrent_magic_reference:
+                while not (self.args.magic_reference / 'magic/metrics.json').exists():
+                    await asyncio.sleep(1)
+                self.update_overlap()
+                comparison = {'reference': str(self.args.magic_reference), 'accuracy_definition': 'score >= 4' if self.args.mm_lifelong_judge else 'score == 5', 'metrics': {key: value for key, value in self.progress.items() if key.startswith('overlap/')}, 'ids': sorted(self.completed_scores.keys() & self.magic_scores.keys(), key=int)}
+                (self.args.run_dir / 'overlap-comparison.json').write_text(json.dumps(comparison, ensure_ascii=False, indent=2) + '\n')
         finally:
             self.monitor_stop.set()
 
@@ -480,7 +492,7 @@ class Evaluation:
         async with self.semaphore:
             directory.mkdir(parents=True, exist_ok=True)
             question_root = directory.parent.parent
-            record = {"id": question["id"], "method": method, "attempt": attempt, "question_input": {"question": question["question"], "query_time": question["query_time"]}, "trace_dir": str(directory), "maintenance": False}
+            record = {"id": question["id"], "method": method, "attempt": attempt, "question_input": {"question": question["question"], "query_time": question["query_time"]}, "trace_dir": str(directory)}
             question_prompt = question["question"]
             if self.args.dataset == "mcq":
                 question_prompt += "\n\nOptions:\n" + "\n".join(f"{letter}. {question['choices'][letter]}" for letter in "ABCD") + ("\n\nSelect exactly one option. Your final answer must end with a line of the form Answer: X where X is the option letter A, B, C, or D." if method == "magic" else "\n\nSelect exactly one option. The answer you submit with submit_answer must end with a line of the form Answer: X where X is the option letter A, B, C, or D.")
@@ -496,7 +508,8 @@ class Evaluation:
                     candidate, answered_at = await asyncio.to_thread(run_magic, question_prompt, question["query_time"], directory, self.args.artifact_root, self.args.base_url, EMBEDDING_URL, self.args.model, self.args.reasoning_effort, self.args.dataset == "mcq", self.args.time_format)
                     status = "answered"
                 else:
-                    harness = VideoSQLHarness(database=self.args.artifact_root / "questions" / f"{question['id']}.duckdb", embedding_index=self.args.artifact_root / "embeddings", media_map=self.args.artifact_root / "media-map.json", skill_dir=Path(__file__).resolve().parent / ("skills" if self.args.semantic_search == "ppr" else "skills-vector"), run_dir=directory, model_name=self.args.model, api_key="EMPTY", embedding_url=EMBEDDING_URL, embedding_model=EMBEDDING_MODEL, query_time=question["query_time"], base_url=self.args.base_url, clip_qa_video=True, reasoning_effort=self.args.reasoning_effort, semantic_search_mode=self.args.semantic_search, time_format=self.args.time_format)
+                    database = self.args.artifact_root / 'index.duckdb' if self.args.time_format == 'mmlifelong' else self.args.artifact_root / 'questions' / f"{question['id']}.duckdb"
+                    harness = VideoSQLHarness(database=database, embedding_index=self.args.artifact_root / "embeddings", media_map=self.args.artifact_root / "media-map.json", skill_dir=Path(__file__).resolve().parent / ("skills" if self.args.semantic_search == "ppr" else "skills-vector"), run_dir=directory, model_name=self.args.model, api_key="EMPTY", embedding_url=EMBEDDING_URL, embedding_model=EMBEDDING_MODEL, query_time=question["query_time"], base_url=self.args.base_url, clip_qa_video=True, reasoning_effort=self.args.reasoning_effort, semantic_search_mode=self.args.semantic_search, time_format=self.args.time_format)
                     session = await harness.answer(question_prompt)
                     answered_at = time.perf_counter()
                     candidate, status = session.answer, session.status
@@ -547,13 +560,10 @@ class Evaluation:
                 record["error"] = {"chain": chain, "traceback": traceback.format_exc(), "frames": [{"file": frame.filename, "line": frame.lineno, "name": frame.name, "source": frame.line} for frame in traceback.extract_tb(error.__traceback__)]}
                 record["error_file"] = str(directory / "error.json")
                 record["trace_files"] = sorted(str(path) for path in directory.rglob("*") if path.suffix in (".json", ".jsonl") and "traces" in path.parts)
+                record['classification'] = classify_failure(record)
+                record['maintenance'] = record['classification']['category'] != 'algorithm'
                 (directory / "error.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
                 print(f"ANSWER_FAILED method={method} id={question['id']} attempt={attempt} error={type(error).__name__}: {error} evidence={record['error_file']}", flush=True)
-                classification = classify_failure(record)
-                record['classification'] = classification
-                record['maintenance'] = classification['cause'] in ('server_connection_or_timeout', 'server_http_error')
-                if classification['category'] != 'algorithm' and not record['maintenance']:
-                    raise
             finally:
                 self.progress["progress/answer/active"] -= 1
                 if harness is not None:
@@ -580,9 +590,8 @@ class Evaluation:
                     self.update_overlap()
                 print(f"JUDGE method={method} id={question['id']} attempt={attempt} score={outcome['score']}", flush=True)
                 return
-            if self.args.time_format == 'mmlifelong':
-                metadata = {'dataset': 'MM-Lifelong', 'split': 'month/val'}
-            else:
+            metadata = None
+            if self.args.time_format == 'egolife':
                 query_time = str(question["query_time"]).zfill(9)
                 metadata = {"questioner": "A1_JAKE", "questioner_name": "Jake", "perspective": "first-person narrator and camera wearer", "query_time_raw_DHHMMSSFF": question["query_time"], "query_day": int(query_time[0]), "query_time_of_day": f"{query_time[1:3]}:{query_time[3:5]}:{query_time[5:7]}", "query_frame_index": int(query_time[7:9])}
             if self.args.official_open_judge:
@@ -627,13 +636,15 @@ class Evaluation:
                     print(f"JUDGE method={method} id={question['id']} attempt={attempt} request_attempts={request_attempt} score={score}", flush=True)
                     return
             messages = [{"role": "system", "content": RUBRIC}, {"role": "user", "content": json.dumps({"question": question["question"], "metadata": metadata, "reference_answer": question["reference_answer"], "candidate_answer": answer["candidate_answer"]}, ensure_ascii=False)}]
+            if self.args.time_format == 'mmlifelong':
+                messages[1]['content'] = f"Question: {question['question']}\nGroundtruth answer: {question['reference_answer']}\nCandidate answer: {answer['candidate_answer']}\nYour response: "
             trace = {"request": {"model": self.judge_model, "messages": messages, "reasoning_effort": "xhigh", "response_format": {"type": "json_schema", "json_schema": {"name": self.judgment_type.__name__, "schema": self.judgment_type.model_json_schema(), "strict": True}}}, "response": None, "error": None}
             traces = directory / "traces"
             traces.mkdir()
             path = traces / "judge.json"
             path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
             print(f"JUDGE request method={method} id={question['id']} attempt={attempt} trace={path}", flush=True)
-            outcome = {"id": question["id"], "attempt": attempt, "trace_file": str(path), "maintenance": False}
+            outcome = {"id": question["id"], "attempt": attempt, "trace_file": str(path)}
             self.progress["progress/judge/started"] += 1
             self.progress["progress/judge/active"] += 1
             try:
@@ -673,11 +684,10 @@ class Evaluation:
                     with self.log_lock:
                         self.cloud_requests_without_response += 1
                 outcome.update({"outcome": "failed", "error": trace["error"]})
+                failure_record = {'error': {'chain': [{'type': type(item).__name__, 'message': str(item)} for item in exception_chain(error)], 'frames': [{'file': frame.filename, 'name': frame.name} for frame in traceback.extract_tb(error.__traceback__)]}, 'error_file': str(path), 'trace_files': [str(path)], 'question_input': {'question': question['question'], 'query_time': question['query_time']}}
+                outcome['classification'] = classify_failure(failure_record)
+                outcome['maintenance'] = outcome['classification']['category'] != 'algorithm'
                 print(f"JUDGE_FAILED method={method} id={question['id']} attempt={attempt} error={type(error).__name__}: {error} trace={path}", flush=True)
-                outcome['maintenance'] = isinstance(error, (openai.APIConnectionError, openai.APITimeoutError, openai.InternalServerError))
-                model_error = isinstance(error, (ValidationError, openai.LengthFinishReasonError, openai.ContentFilterFinishReasonError)) or (isinstance(error, ValueError) and str(error).startswith('Judge did not return a completed judgment:'))
-                if not outcome['maintenance'] and not model_error:
-                    raise
             finally:
                 self.progress["progress/judge/active"] -= 1
                 path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
@@ -717,22 +727,11 @@ class Evaluation:
                     for question, directory in work:
                         await self.answer(method, question, attempt, directory)
                         root = self.args.run_dir / method / "questions" / str(question["id"])
-                        for retry in ATTEMPTS[ATTEMPTS.index(attempt) + 1:]:
-                            if (root / "answer.json").exists():
-                                break
-                            previous = root / f"answer-attempt-{retry}.json"
-                            if previous.exists() and not json.loads(previous.read_text())["maintenance"]:
-                                continue
-                            retry_directory = root / f"answer-attempt-{retry}" / uuid4().hex
-                            phase["trace_dirs"].append(str(retry_directory))
-                            path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
-                            await self.answer(method, question, retry, retry_directory)
                         if (root / "answer.json").exists():
-                            if not (root / 'judge-attempt-1.json').exists():
-                                judge_directory = root / "judge-attempt-1" / uuid4().hex
-                                phase["trace_dirs"].append(str(judge_directory))
-                                path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
-                                await self.judge(method, question, 1, judge_directory)
+                            judge_directory = root / "judge-attempt-1" / uuid4().hex
+                            phase["trace_dirs"].append(str(judge_directory))
+                            path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
+                            await self.judge(method, question, 1, judge_directory)
 
                 async with asyncio.TaskGroup() as group:
                     for _ in range(min(self.args.concurrency, len(pending))):
@@ -743,6 +742,18 @@ class Evaluation:
                         group.create_task(self.answer(method, question, attempt, directory) if kind == "answer" else self.judge(method, question, attempt, directory))
         finally:
             await self.finish_phase(path, phase)
+        maintenance = []
+        for question, _ in pending:
+            root = self.args.run_dir / method / 'questions' / str(question['id'])
+            paths = [root / f'{kind}-attempt-{attempt}.json']
+            if phase_kind == 'answer_and_judge' and (root / 'judge-attempt-1.json').exists():
+                paths.append(root / 'judge-attempt-1.json')
+            for record_path in paths:
+                record = json.loads(record_path.read_text())
+                if record['outcome'] == 'failed' and record['maintenance']:
+                    maintenance.append(str(record_path))
+        if maintenance:
+            raise RuntimeError(f'Maintenance errors require repair and resuming the same attempt; no questions have been excluded: {maintenance}')
 
     async def evaluate_method(self, method):
         if method == "sql" and self.args.answers_from is None and self.args.semantic_search == "ppr":
@@ -781,17 +792,7 @@ class Evaluation:
             print(f"REJUDGE reused_answers_from={self.args.answers_from} questions={len(self.questions)}", flush=True)
         else:
             for attempt in ATTEMPTS:
-                while True:
-                    await self.batch(method, 'answer', attempt, self.questions)
-                    retry = []
-                    for question in self.questions:
-                        root = self.args.run_dir / method / 'questions' / str(question['id'])
-                        path = root / f'answer-attempt-{attempt}.json'
-                        if not (root / 'answer.json').exists() and path.exists() and json.loads(path.read_text())['maintenance']:
-                            retry.append(question['id'])
-                    if not retry:
-                        break
-                    print(f'MAINTENANCE_RETRY method={method} stage=answer attempt={attempt} ids={retry}', flush=True)
+                await self.batch(method, "answer", attempt, self.questions)
         answerable, failures = [], []
         for question in self.questions:
             root = self.args.run_dir / method / "questions" / str(question["id"])
@@ -808,17 +809,7 @@ class Evaluation:
         if self.args.method == "sql":
             self.update_overlap()
         for attempt in ATTEMPTS:
-            while True:
-                await self.batch(method, 'judge', attempt, answerable)
-                retry = []
-                for question in answerable:
-                    root = self.args.run_dir / method / 'questions' / str(question['id'])
-                    path = root / f'judge-attempt-{attempt}.json'
-                    if not (root / 'judgment.json').exists() and path.exists() and json.loads(path.read_text())['maintenance']:
-                        retry.append(question['id'])
-                if not retry:
-                    break
-                print(f'MAINTENANCE_RETRY method={method} stage=judge attempt={attempt} ids={retry}', flush=True)
+            await self.batch(method, "judge", attempt, answerable)
         unresolved_judges = [question["id"] for question in answerable if not (self.args.run_dir / method / "questions" / str(question["id"]) / "judgment.json").exists()]
         for question_id in unresolved_judges:
             root = self.args.run_dir / method / "questions" / str(question_id)
@@ -898,10 +889,13 @@ class Evaluation:
 
 
 async def main_async(args):
-    global RUBRIC, JUDGE_VERSION, PD_URL, EMBEDDING_URL
-    PD_URL, EMBEDDING_URL = args.pd_url.rstrip('/'), args.embedding_url.rstrip('/')
+    global RUBRIC, JUDGE_VERSION, PD_URL, EMBEDDING_URL, BASE_URL, ATTEMPTS
+    PD_URL, EMBEDDING_URL, BASE_URL = args.pd_url, args.embedding_url, args.base_url
     if args.time_format == 'mmlifelong':
+        if args.dataset != 'open' or args.openai_judge or args.official_open_judge or args.no_reasoning_effort or (args.method == 'sql' and args.semantic_search != 'vector'):
+            raise ValueError('MM-Lifelong requires original open QA, local xhigh judge, and SQL vector semantic search')
         args.mm_lifelong_judge = True
+        ATTEMPTS = (1, 2)
     args.reasoning_effort = None if args.no_reasoning_effort else "xhigh"
     if args.official_open_judge:
         if args.dataset != "open":
@@ -913,6 +907,9 @@ async def main_async(args):
     elif args.mm_lifelong_judge:
         RUBRIC = Path(__file__).with_name("mm_lifelong_rubric.txt").read_text()
         JUDGE_VERSION = "mm-lifelong-openai-gpt-5.6-terra" if args.openai_judge else "mm-lifelong"
+        if args.time_format == 'mmlifelong':
+            RUBRIC = MM_SYSTEM_PROMPT.split('Output format (strictly follow):', 1)[0] + 'Return the analysis in the structured justification field and the final integer from 0 to 5 in the score field.'
+            JUDGE_VERSION = 'mm-lifelong-month-qwen38-xhigh'
     if args.dataset == "mcq":
         RUBRIC = "Exact match between the single selected option letter and the EgoLifeQA answer letter"
         JUDGE_VERSION = "mcq-option-letter"
@@ -958,9 +955,9 @@ async def main_async(args):
     if not questions or args.concurrency < 1:
         raise ValueError("Evaluation requires questions and positive concurrency")
     config = {"method": args.method, "dataset": args.dataset, "artifact_root": str(args.artifact_root), "model": args.model, "base_url": args.base_url, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "judge_model": "gpt-5" if args.official_open_judge else OPENAI_JUDGE_MODEL if args.openai_judge else args.model, "judge_api": "exact_option_letter" if args.dataset == "mcq" else "openai" if args.openai_judge else "local", "reasoning_effort": args.reasoning_effort, "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": len(ATTEMPTS), "judge_attempts": "unlimited" if args.official_open_judge else len(ATTEMPTS), "questions": questions, "judge_rubric": RUBRIC, "judge_version": JUDGE_VERSION, "answer_source_run_dir": str(args.answers_from) if args.answers_from is not None else None, "investigation_call_limit": INVESTIGATION_CALL_LIMIT if args.answers_from is None else None, "live_metrics_interval_seconds": 1, "live_metrics_source": str(args.vllm_log) if args.vllm_log is not None else "openai_response_usage" if args.openai_judge else "prometheus"}
-    config.update({'time_format': args.time_format, 'gpu_ids': args.gpu_ids})
     if args.method == "sql":
         config.update({"retrieval_method": f"sql_{args.semantic_search}_semantic" if args.answers_from is None else "saved_answers", "live_magic_reference": str(args.magic_reference), "concurrent_magic_reference": args.concurrent_magic_reference, "overlap_accuracy_definition": "score >= 4" if args.mm_lifelong_judge else "score == 5"})
+    config.update({'time_format': args.time_format, 'gpu_ids': args.gpu_ids})
     config_path = args.run_dir / "config.json"
     if config_path.exists():
         saved = json.loads(config_path.read_text())
@@ -1001,8 +998,8 @@ if __name__ == "__main__":
     parser.add_argument("--base-url", default=BASE_URL)
     parser.add_argument('--pd-url', default=PD_URL)
     parser.add_argument('--embedding-url', default=EMBEDDING_URL)
-    parser.add_argument('--gpu-ids', nargs='+', type=int, default=[4, 5, 6])
-    parser.add_argument('--time-format', choices=['egolife', 'mmlifelong'], default='egolife')
+    parser.add_argument('--gpu-ids', type=int, nargs='+', default=[4, 5, 6])
+    parser.add_argument('--time-format', choices=('egolife', 'mmlifelong'), default='egolife')
     parser.add_argument("--no-reasoning-effort", action="store_true", help="Send no reasoning_effort to the answer model")
     parser.add_argument("--semantic-search", choices=("ppr", "vector"), default="ppr", help="vector restores the original per-table cosine semantic_search and its skills")
     parser.add_argument("--vllm-log", type=Path, help="Tail this vLLM log for throughput lines instead of scraping /metrics")
