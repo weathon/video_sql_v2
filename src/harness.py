@@ -282,6 +282,8 @@ def exception_chain(error: BaseException) -> list[BaseException]:
 
 
 def tool_error_json(_context: Any, error: Exception) -> str:
+    if isinstance(error, sqlglot.errors.TokenError):
+        return json.dumps({"error": str(error)}, ensure_ascii=False)
     for item in exception_chain(error):
         if isinstance(item, (FileNotFoundError, RuntimeError, httpx.HTTPError, KeyError, TypeError, AttributeError, IndexError, NameError)):
             raise item
