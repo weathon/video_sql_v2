@@ -44,7 +44,8 @@ from pydantic import BaseModel
 
 from training_free.normalize import normalize_text
 from training_free.ppr import search_graph
-from training_free.index_schema import SCHEMA, MM_SCHEMA, SEARCH_TABLES, fact_interval, timestamp_seconds
+from training_free.index_schema import SCHEMA, SEARCH_TABLES, fact_interval, timestamp_seconds
+from training_free.mmlifelong_data import MM_SCHEMA
 
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -55,6 +56,8 @@ FRAME_SIZE = (854, 480)
 CLIP_IMAGE_LIMIT = 650
 TOOL_REMINDER_CHARACTERS = 10_000
 INVESTIGATION_CALL_LIMIT = 60
+QA_MAX_OUTPUT_TOKENS = 16384
+QA_LENGTH_RETRIES = 3
 SHARED_VECTORS = {}
 SHARED_ROW_IDS = {}
 
@@ -107,7 +110,7 @@ class HarnessContext:
     embedding_model: str
     embedding_client: httpx.AsyncClient
     query_time: int | None
-    time_format: str = 'egolife'
+    time_format: Literal['egolife', 'mmlifelong'] = 'egolife'
     semantic_search_mode: Literal["ppr", "vector"] = "ppr"
     clip_qa_video: bool = False
     compactions: int = 0
@@ -156,7 +159,7 @@ class HarnessContext:
         for source in self.sources:
             source["path"] = str(self.media_map.parent / source["relative_path"])
         if self.time_format == 'mmlifelong':
-            self.query_time_s = float('inf')
+            self.query_time_s = None
             return
         source_times = [item["timeline_start_s"] for item in self.sources]
         time = str(self.query_time).zfill(9)
@@ -217,22 +220,34 @@ class HarnessContext:
             raise
 
     async def summary_response(self, name: str, instructions: str, content: list[dict[str, Any]], text_format: type[BaseModel]):
-        request = {"model": self.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": self.model_settings.reasoning, "store": self.model_settings.store, "include": self.model_settings.response_include, "extra_body": self.model_settings.extra_body}
+        request = {"model": self.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": self.model_settings.reasoning, "store": self.model_settings.store, "include": self.model_settings.response_include, "extra_body": self.model_settings.extra_body, "max_output_tokens": QA_MAX_OUTPUT_TOKENS}
+        if self.time_format == 'mmlifelong':
+            del request['max_output_tokens']
         if self.model_settings.extra_args is not None:
             request.update(self.model_settings.extra_args)
         path = self.run_dir / "traces" / f"{name}-{uuid.uuid4().hex}.json"
-        artifact = {"agent": {"name": name, "model": request["model"], "tools": []}, "api": "responses", "input": stripped_json(request), "tool_calls": [], "api_usage": [], "error": None}
+        artifact = {"agent": {"name": name, "model": request["model"], "tools": []}, "api": "responses", "input": stripped_json(request), "tool_calls": [], "api_usage": [], "length_retries": [], "error": None}
         path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
         print(f"{name} model={request['model']} content_parts={len(content)} trace={path}", flush=True)
         try:
-            self.reserve_model_call(name)
-            raw = await self.client.responses.with_raw_response.parse(**request, text_format=text_format)
-            payload = json.loads(raw.content)
-            if payload["usage"] is None:
-                raise RuntimeError(f"{name} response {payload['id']} has no usage")
-            recorded = {"response_id": payload["id"], "agent": name, "model": payload["model"], "usage": payload["usage"], "service_tier": payload["service_tier"], "status": "response." + payload["status"]}
-            self.response_usage[payload["id"]] = recorded
-            artifact["api_usage"].append(recorded)
+            for attempt in range(1, QA_LENGTH_RETRIES + 2):
+                self.reserve_model_call(name)
+                raw = await self.client.responses.with_raw_response.parse(**request, text_format=text_format)
+                payload = json.loads(raw.content)
+                if payload["usage"] is None:
+                    raise RuntimeError(f"{name} response {payload['id']} has no usage")
+                recorded = {"response_id": payload["id"], "agent": name, "model": payload["model"], "usage": payload["usage"], "service_tier": payload["service_tier"], "status": "response." + payload["status"]}
+                self.response_usage[payload["id"]] = recorded
+                artifact["api_usage"].append(recorded)
+                if payload["status"] == "incomplete" and payload["incomplete_details"]["reason"] == "max_output_tokens":
+                    artifact["length_retries"].append(payload)
+                    path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+                    print(f"{name} hit max_output_tokens={QA_MAX_OUTPUT_TOKENS} attempt={attempt} trace={path}", flush=True)
+                    if attempt > QA_LENGTH_RETRIES:
+                        artifact["response"] = payload
+                        raise InvalidTrace(f"{name} exceeded max_output_tokens={QA_MAX_OUTPUT_TOKENS} on {attempt} attempts")
+                    continue
+                break
             artifact["response"] = payload
             if payload["status"] == "completed":
                 self.path_responses.append(recorded)
@@ -754,10 +769,12 @@ async def sample_frames(
 ) -> list[tuple[dict[str, Any], bytes]]:
     sources = context.sources
     if context.time_format == 'mmlifelong':
-        sources = [source for source in context.sources if source['video_id'] == video_id]
-        if len(sources) != 1:
-            raise ValueError(f'clip_qa requires a video_id from the retrieved evidence: {video_id!r}')
-    if end_s > context.query_time_s:
+        if video_id is None:
+            raise ValueError('MM-Lifelong clip_qa requires video_id from retrieved evidence')
+        sources = [source for source in sources if source['video_id'] == video_id]
+        if not sources:
+            raise ValueError(f'Unknown video_id: {video_id}')
+    if context.query_time_s is not None and end_s > context.query_time_s:
         raise ValueError(f"Video interval extends beyond query time {context.query_time_s}")
     if not sources[0]["timeline_start_s"] <= start_s < end_s <= sources[-1]["timeline_end_s"]:
         raise ValueError("sample interval extends beyond available source media")
@@ -838,6 +855,8 @@ async def sample_frames(
                         "video_path": source["path"],
                         "recipe_path": media_root / f"frame-{frame_id}.json", "crop": crop,
                     }
+                    if context.time_format == 'mmlifelong':
+                        frame['video_id'] = video_id
                     sampled.append((frame, image_jpeg_bytes(decoded.to_image(), crop)))
             return sampled
 
@@ -929,7 +948,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         sql: str,
         question: str | None = None,
     ) -> str:
-        """Embed query, score every row of one embedded table by cosine similarity, then run sql over the temporary in-memory table semantic_hits. semantic_hits holds all columns of the chosen table plus cosine_sim (higher means more similar to query), native start_ts/end_ts, and start_s/end_s in seconds for clip_qa. The schema describes the dataset's time format and video identity. Use sql to rank by cosine_sim, filter or order by time, filter or sort by names or text, or aggregate. visual_clip matches the video embedding; episode matches caption text. With question=null, return up to 100 result rows with long text cells shortened; supply question to request a separate QA answer from the complete result.
+        """Embed query, score every row of one embedded table by cosine similarity, then run sql over the temporary in-memory table semantic_hits. semantic_hits holds all columns of the chosen table plus cosine_sim (higher means more similar to query), start_ts and end_ts (DHHMMSSFF, added for topic_facts and event_steps), start_s and end_s (seconds since DAY1 00:00:00 for clip_qa). Use sql to rank by cosine_sim, filter or order by time, filter or sort by names or text, or aggregate. visual_clip matches the video embedding; episode matches caption text. With question=null, return up to 100 result rows with long text cells shortened; supply question to request a separate QA answer from the complete result.
 
         Args:
             query: Semantic search text.
@@ -1057,7 +1076,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         if name not in filenames:
             raise ValueError(f"unknown skill: {name}")
         if context.time_format == 'mmlifelong' and name in ('sql-schema', 'semantic-search'):
-            return (Path(__file__).parent / 'skills-mmlifelong' / f'{name}.md').read_text()
+            return (Path(__file__).parent / 'skills-month' / filenames[name]).read_text()
         return (context.skill_dir / filenames[name]).read_text()
 
     @function_tool(failure_error_function=None)
@@ -1072,7 +1091,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
 
     @function_tool(failure_error_function=tool_error_json)
     async def clip_qa(start_s: float, end_s: float, fps: float, question: str, video_id: str | None = None) -> list[Any]:
-        """Use only after retrieval has clearly located the relevant interval and a specific unresolved detail requires viewing images. MM-Lifelong requires video_id from the retrieved evidence and seconds within that video; EgoLife uses null video_id and seconds since DAY1. Do not use clip_qa for broad search or to scan speculative intervals. Inspect at most 20 minutes of source media sampled at the supplied fps. Choose fps for the detail or action being checked; sampling must fit within 650 images. Returns an answer with evidence images and actual source times."""
+        """Use only after retrieval has clearly located the relevant interval and a specific unresolved detail requires viewing images. Do not use clip_qa for broad search or to scan speculative intervals. Inspect at most 20 minutes of source media sampled at the supplied fps. Choose fps for the detail or action being checked; sampling must fit within 650 images. Returns an answer with evidence images and actual source times."""
         if not math.isfinite(start_s) or not math.isfinite(end_s) or start_s < 0 or end_s <= start_s:
             raise ValueError("clip interval must be finite, non-negative and increasing")
         if end_s - start_s > 1200:
@@ -1085,7 +1104,9 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             frame["recipe_path"].write_text(json.dumps(stripped_json(recipe), ensure_ascii=False, indent=2) + "\n")
             encoded_frames.append(base64.b64encode(jpeg_bytes).decode())
         instructions = "Answer the visual question using only the supplied ordered frame sequence. Return unknown when the visible evidence is insufficient. Cite supporting frames with zero-based evidence_frame_indices; answered requires at least one evidence frame. Use the supplied actual source times when referring to the source timeline."
-        prompt = json.dumps({"question": normalize_text(question), "video_id": video_id, "start_s": start_s, "end_s": end_s, "fps": fps, "frame_times_s": [frame["time_s"] for frame, _ in sampled]}, ensure_ascii=False)
+        prompt = json.dumps({"question": normalize_text(question), "start_s": start_s, "end_s": end_s, "fps": fps, "frame_times_s": [frame["time_s"] for frame, _ in sampled]}, ensure_ascii=False)
+        if context.time_format == 'mmlifelong':
+            prompt = f'Video {video_id}. Times are seconds within this video.\n' + prompt
         if context.clip_qa_video:
             content = [{"type": "text", "text": prompt}, {"type": "video_url", "video_url": {"url": "data:video/jpeg;base64," + ",".join(encoded_frames)}}]
             request = {"model": context.model.model, "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}], "extra_body": {"media_io_kwargs": {"video": {"num_frames": -1, "fps": fps, "frames_indices": list(range(len(sampled))), "total_num_frames": len(sampled), "duration": len(sampled) / fps, "do_sample_frames": False}}, "mm_processor_kwargs": {"do_sample_frames": False}}}
@@ -1117,8 +1138,8 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                 text=json.dumps(
                     {
                         "status": submission.status,
-                        "video_id": video_id,
                         "answer": submission.answer,
+                        "video_id": video_id,
                         "evidence_times_s": [
                             sampled[index][0]["time_s"]
                             for index in submission.evidence_frame_indices
@@ -1148,6 +1169,9 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                 )
         return outputs
 
+    if context.time_format == 'mmlifelong':
+        vector_search.description = vector_search.description.replace('start_ts and end_ts (DHHMMSSFF, added for topic_facts and event_steps), start_s and end_s (seconds since DAY1 00:00:00 for clip_qa)', 'video_id, start_ts/end_ts and start_s/end_s (seconds within the identified video, including fractional seconds)')
+        clip_qa.description += ' MM-Lifelong requires video_id from the retrieved evidence. start_s/end_s are seconds within that video.'
     answer_tools = [
         run_sql,
         semantic_search if context.semantic_search_mode == "ppr" else vector_search,
@@ -1175,11 +1199,11 @@ class VideoSQLHarness:
         embedding_model: str,
         *,
         query_time: int | None,
-        time_format: str = 'egolife',
         base_url: str = OPENAI_BASE_URL,
         clip_qa_video: bool = False,
         reasoning_effort: str | None = "xhigh",
         semantic_search_mode: Literal["ppr", "vector"] = "ppr",
+        time_format: Literal['egolife', 'mmlifelong'] = 'egolife',
     ) -> None:
         client = AsyncOpenAI(
             api_key=api_key, base_url=base_url, max_retries=0,
@@ -1276,7 +1300,7 @@ class VideoSQLHarness:
                 + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
             )
         if self.context.time_format == 'mmlifelong':
-            base_instructions = base_instructions.replace('WHERE start_ts >= 200000000 AND end_ts < 300000000', "WHERE video_id = '14' AND start_ts >= 600 AND end_ts < 1200").replace('requested day/time', 'requested video/time')
+            base_instructions = base_instructions.replace('WHERE start_ts >= 200000000 AND end_ts < 300000000', "WHERE video_id = '14' AND start_ts >= 300 AND end_ts < 600").replace('requested day/time', 'requested video/time')
         self.context.base_instructions = base_instructions
         self.context.compactions = compactions
         agent = Agent(
@@ -1291,7 +1315,10 @@ class VideoSQLHarness:
             f"- {skill['name']}: {skill['description']}" for skill in self.catalog
         )
         if input_items is None:
-            input_items = f'Question: {question}\nSearch all 14 videos in the database. Timestamps are seconds within video_id.\n\nAvailable skills:\n{skills}' if self.context.time_format == 'mmlifelong' else f"Question: {normalize_text(question)}\nQuery time: {self.context.query_time} (EgoLife DHHMMSSFF); {self.context.query_time_s} seconds since DAY1 00:00:00.\n\nAvailable skills:\n{skills}"
+            if self.context.time_format == 'mmlifelong':
+                input_items = f'Question: {question}\nAll indexed broadcasts are available. Identify videos by video_id and use seconds within each video.\n\nAvailable skills:\n{skills}'
+            else:
+                input_items = f"Question: {normalize_text(question)}\nQuery time: {self.context.query_time} (EgoLife DHHMMSSFF); {self.context.query_time_s} seconds since DAY1 00:00:00.\n\nAvailable skills:\n{skills}"
         trace_files = []
         while True:
             final_turn = self.context.answer_context_reached
