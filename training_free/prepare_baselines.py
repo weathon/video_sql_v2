@@ -204,19 +204,19 @@ async def embed_text(root: Path, endpoint: str) -> None:
     print(f'TEXT_COMPLETE unique_texts={len(texts)}', flush=True)
 
 
-def cache_caption_clip(caption: dict, source: dict, root: Path) -> dict:
+def cache_caption_clip(caption: dict, source: dict, root: Path, time_format: str = 'egolife') -> dict:
     from worldmm.memory.unified.nodes import caption_to_timestamps, make_visual_id
 
     start_ts, end_ts = caption_to_timestamps(caption)
-    start_s = start_ts if 'start_sec' in caption else timestamp_seconds(start_ts, source['fps'])
-    end_s = end_ts if 'end_sec' in caption else timestamp_seconds(end_ts, source['fps'])
+    start_s = float(start_ts) if time_format == 'mmlifelong' else timestamp_seconds(start_ts, source['fps'])
+    end_s = float(end_ts) if time_format == 'mmlifelong' else timestamp_seconds(end_ts, source['fps'])
     first = max(0, round((start_s - source['timeline_start_s']) * source['fps']))
     stop = min(source['total_frames'], round((end_s - source['timeline_start_s']) * source['fps']))
     if first >= stop:
         raise ValueError(f'Caption has no frames in its associated video: {caption}')
     relative = Path(source['relative_path']).relative_to('videos')
-    if 'start_sec' in caption:
-        relative = relative.with_suffix('') / f'{start_ts}-{end_ts}.mp4'
+    if time_format == 'mmlifelong':
+        relative = Path(source['video_id']) / f'{start_s}-{end_s}.mp4'
     clip = root / 'videos/caption-clips' / relative
     metadata_path = root / 'clip-metadata' / relative.with_suffix('.json')
     if metadata_path.exists():
@@ -233,10 +233,6 @@ def cache_caption_clip(caption: dict, source: dict, root: Path) -> dict:
         command = None
     else:
         command = ['ffmpeg', '-hide_banner', '-nostdin', '-y', '-v', 'error', '-threads', '1', '-i', source['path'], '-map', '0:v:0', '-an', '-vf', f'trim=start_frame={first}:end_frame={stop},setpts=PTS-STARTPTS', '-filter_threads', '1', '-fps_mode', 'passthrough', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '0', '-threads', '1', str(clip)]
-        if 'start_sec' in caption:
-            command[command.index('-i'):command.index('-i')] = ['-ss', str(first / source['fps'])]
-            command[command.index('-vf') + 1] = f'trim=end_frame={stop-first},setpts=PTS-STARTPTS'
-            command[-1:-1] = ['-frames:v', str(stop - first)]
         print(f'CACHE_CLIP source={source["path"]} frames={first}:{stop} output={clip}', flush=True)
         metadata_path.with_suffix('.command.json').write_text(json.dumps(command))
         result = subprocess.run(command, capture_output=True, text=True)
@@ -252,16 +248,20 @@ def cache_caption_clip(caption: dict, source: dict, root: Path) -> dict:
     numerator, denominator = map(int, stream['avg_frame_rate'].split('/'))
     if int(stream['nb_frames']) != stop - first or numerator / denominator != source['fps']:
         raise ValueError(f'Cached clip frame count or fps differs: {clip}: {stream}')
-    node_id = f"{caption['video_id']}:vis:{start_ts}-{end_ts}" if 'start_sec' in caption else make_visual_id(caption['date'], str(caption['start_time']))
+    node_id = f"{source['video_id']}:vis_{start_ts}_{end_ts}" if time_format == 'mmlifelong' else make_visual_id(caption['date'], str(caption['start_time']))
     info = {'node_id': node_id, 'original_path': caption['video_path'], 'path': str(clip), 'relative_path': str(clip.relative_to(root)), 'source_relative_path': source['relative_path'], 'caption_start_ts': start_ts, 'caption_end_ts': end_ts, 'caption_start_s': start_s, 'caption_end_s': end_s, 'source_first_frame': first, 'source_stop_frame': stop, 'timeline_start_s': source['timeline_start_s'] + first / source['fps'], 'timeline_end_s': source['timeline_start_s'] + stop / source['fps'], 'fps': source['fps'], 'total_frames': stop - first, 'stream': stream, 'command': command}
+    if time_format == 'mmlifelong':
+        info['video_id'] = source['video_id']
+        info['clip_key'] = caption['clip_key']
     metadata_path.write_text(json.dumps(info, ensure_ascii=False, indent=2))
     return info
 
 
-async def embed_video(root: Path, endpoint: str, time_format='egolife') -> None:
+async def embed_video(root: Path, endpoint: str, time_format: str = 'egolife') -> None:
     sources = {row['original_path']: row for row in json.loads((root / 'media-map.json').read_text())['sources']}
-    captions = json.loads((root / ('magic/captions.json' if time_format == 'mmlifelong' else 'magic/captions/A1_JAKE_30sec.json')).read_text())
-    paths = {(f"{row['video_path']}:{float(row['start_sec'])}-{float(row['end_sec'])}" if time_format == 'mmlifelong' else row['video_path']): row for row in captions}
+    caption_file = 'mmlifelong_30sec.json' if time_format == 'mmlifelong' else 'A1_JAKE_30sec.json'
+    captions = json.loads((root / 'magic/captions' / caption_file).read_text())
+    paths = {row['clip_key'] if time_format == 'mmlifelong' else row['video_path']: row for row in captions}
     directory = root / 'embedding-shards/video-grouped'
     directory.mkdir(parents=True, exist_ok=True)
     semaphore = asyncio.Semaphore(64)
@@ -270,7 +270,7 @@ async def embed_video(root: Path, endpoint: str, time_format='egolife') -> None:
     async with httpx.AsyncClient(timeout=None, limits=httpx.Limits(max_connections=64)) as client:
         async def one(index: int, path: str) -> None:
             async with semaphore:
-                info = await asyncio.get_running_loop().run_in_executor(clip_executor, cache_caption_clip, paths[path], sources[paths[path]['video_path']], root)
+                info = await asyncio.get_running_loop().run_in_executor(clip_executor, cache_caption_clip, paths[path], sources[paths[path]['video_path']], root, time_format)
                 clips[path] = info
                 shard_directory = directory / f'{index // 1000:03d}'
                 shard_directory.mkdir(exist_ok=True)
@@ -304,7 +304,7 @@ async def embed_video(root: Path, endpoint: str, time_format='egolife') -> None:
     print(f'VIDEO_COMPLETE videos={len(paths)}', flush=True)
 
 
-def assemble(root: Path, time_format='egolife') -> None:
+def assemble(root: Path) -> None:
     from worldmm.memory.unified.graph import MultimodalGraph
 
     vectors = {'': np.zeros(4096, dtype=np.float32)}
@@ -316,16 +316,13 @@ def assemble(root: Path, time_format='egolife') -> None:
     for path in sorted((root / 'embedding-shards/video-grouped').glob('*/*.npz')):
         with np.load(path, allow_pickle=False) as shard:
             visual[str(shard['video_path'])] = shard['vector']
-    graph_paths = sorted((root / 'magic').glob('*/graph-unembedded.pkl')) if time_format == 'mmlifelong' else [root / 'graph-unembedded.pkl']
-    visual_nodes = {}
-    for graph_path in graph_paths:
-        graph = MultimodalGraph.load(str(graph_path))
-        for node in graph.nodes.values():
-            node.text_embedding = vectors[node.text]
-            if node.node_type.value == 'visual_clip':
-                node.visual_embedding = visual[node.metadata['clip_key'] if time_format == 'mmlifelong' else node.metadata['video_path']]
-                visual_nodes[node.id] = node.visual_embedding
-        graph.save(str(graph_path.with_name('graph.pkl') if time_format == 'mmlifelong' else root / 'magic/graph.pkl'))
+    graph = MultimodalGraph.load(str(root / 'graph-unembedded.pkl'))
+    for node in graph.nodes.values():
+        node.text_embedding = vectors[node.text]
+        if node.node_type.value == 'visual_clip':
+            key = node.metadata['clip_key'] if 'clip_key' in node.metadata else node.metadata['video_path']
+            node.visual_embedding = visual[key]
+    graph.save(str(root / 'magic/graph.pkl'))
     with (root / 'magic/visual_embeddings.pkl').open('wb') as output:
         pickle.dump(visual, output)
     directory = root / 'embeddings'
@@ -341,22 +338,15 @@ def assemble(root: Path, time_format='egolife') -> None:
             if table == 'visual_clip':
                 matrix = np.lib.format.open_memmap(directory / f'{table}.video_vectors.npy', mode='w+', dtype=np.float32, shape=(len(records), 4096))
                 for index, (node_id, _) in enumerate(records):
-                    matrix[index] = visual_nodes[node_id]
+                    matrix[index] = graph.nodes[node_id].visual_embedding
                 matrix.flush()
     print('ASSEMBLED graph, visual pickle and searchable matrices', flush=True)
 
 
-def databases(root: Path, time_format='egolife') -> None:
+def databases(root: Path) -> None:
     questions = json.loads((root / 'questions.json').read_text())
     directory = root / 'questions'
     directory.mkdir(exist_ok=True)
-    if time_format == 'mmlifelong':
-        for question in questions:
-            path = directory / f"{question['id']}.duckdb"
-            if not path.exists():
-                os.link(root / 'index.duckdb', path)
-        print(f'DATABASES_COMPLETE questions={len(questions)} scope=all_videos', flush=True)
-        return
     with duckdb.connect(str(root / 'index.duckdb'), read_only=True) as full:
         facts = full.execute('SELECT id, time FROM topic_facts').fetchall()
         intervals = [(row_id, *interval) for row_id, time in facts if (interval := fact_interval(time)) is not None]
@@ -398,18 +388,18 @@ def main() -> None:
     parser.add_argument('stage', choices=['prepare', 'media', 'embed-text', 'embed-video', 'assemble', 'databases'])
     parser.add_argument('--root', type=Path, default=Path('/raid/videosql-video-artifacts'))
     parser.add_argument('--embedding-url', default='http://127.0.0.1:8114/v1')
-    parser.add_argument('--time-format', choices=['egolife', 'mmlifelong'], default='egolife')
+    parser.add_argument('--time-format', choices=('egolife', 'mmlifelong'), default='egolife')
     args = parser.parse_args()
     args.root.mkdir(parents=True, exist_ok=True)
     if args.stage == 'prepare':
         if args.time_format == 'mmlifelong':
-            from training_free.prepare_mmlifelong import prepare as prepare_mm
+            from training_free.mmlifelong_data import prepare as prepare_mm
             prepare_mm(args.root)
         else:
             prepare(args.root)
     elif args.stage == 'media':
         if args.time_format == 'mmlifelong':
-            from training_free.prepare_mmlifelong import media as media_mm
+            from training_free.mmlifelong_data import media as media_mm
             media_mm(args.root)
         else:
             media(args.root)
@@ -418,9 +408,12 @@ def main() -> None:
     elif args.stage == 'embed-video':
         asyncio.run(embed_video(args.root, args.embedding_url, args.time_format))
     elif args.stage == 'assemble':
-        assemble(args.root, args.time_format)
+        assemble(args.root)
     elif args.stage == 'databases':
-        databases(args.root, args.time_format)
+        if args.time_format == 'mmlifelong':
+            print(f'DATABASES_COMPLETE shared_full_database={args.root / "index.duckdb"}', flush=True)
+        else:
+            databases(args.root)
 
 
 if __name__ == '__main__':
