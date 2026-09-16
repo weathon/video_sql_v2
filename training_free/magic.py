@@ -190,15 +190,18 @@ class MagicFrames:
         trace = {"request": {"tool": "extract_frames", "video_path": video_path, "fps": fps, "max_frames": max_frames, "start_sec": start_sec, "end_sec": end_sec}, "response": None, "error": None}
         print(f"MAGIC frames request: {video_path}, max_frames={max_frames}", flush=True)
         try:
-            key = f'{Path(video_path).stem}:{float(start_sec)}:{float(end_sec)}' if self.time_format == 'mmlifelong' else video_path
-            clip = self.clips[key]
-            if self.time_format == 'mmlifelong':
-                start_sec, end_sec = None, None
+            clip = self.clips[video_path]
             physical_path = self.artifact_root / clip["relative_path"]
             with av.open(str(physical_path)) as container:
                 stream = container.streams.video[0]
-                video_fps = float(stream.average_rate)
+                video_fps = clip['fps'] if self.time_format == 'mmlifelong' else float(stream.average_rate)
                 total_frames = stream.frames
+                first_frame = 0
+                if self.time_format == 'mmlifelong':
+                    first_frame = max(0, round(start_sec * video_fps))
+                    total_frames = min(total_frames, round(end_sec * video_fps)) - first_frame
+                    container.seek(int(first_frame / video_fps / float(stream.time_base)), stream=stream)
+                    start_sec, end_sec = None, None
                 if video_fps <= 0 or total_frames <= 0:
                     raise ValueError(f"Invalid video frame metadata: {physical_path}, fps={video_fps}, frames={total_frames}")
                 duration = total_frames / video_fps
@@ -218,13 +221,16 @@ class MagicFrames:
                 decoded = {}
                 metadata = {}
                 for frame_index, frame in enumerate(container.decode(stream)):
+                    if self.time_format == 'mmlifelong':
+                        frame_index = round(float(frame.pts * frame.time_base) * video_fps) - first_frame
                     if frame_index in wanted:
                         image = frame.to_image()
                         image_path = self.api.images / f"magic-{uuid4().hex}.jpg"
                         image.save(image_path, format="JPEG", quality=90)
                         image.info["magic_image_path"] = str(image_path)
                         decoded[frame_index] = FrameEntry(video_path=video_path, frame_index=frame_index, timestamp_sec=frame_index / video_fps, frame=image)
-                        metadata[frame_index] = {"frame_index": frame_index, "source_frame_index": clip["source_first_frame"] + frame_index, "timestamp_sec": frame_index / video_fps, "time_s": clip["timeline_start_s"] + float(frame.pts * frame.time_base), "pts": frame.pts, "time_base": str(frame.time_base), "image_path": str(image_path), "size": list(image.size)}
+                        source_first = first_frame if self.time_format == 'mmlifelong' else clip['source_first_frame']
+                        metadata[frame_index] = {"frame_index": frame_index, "source_frame_index": source_first + frame_index, "timestamp_sec": frame_index / video_fps, "time_s": clip["timeline_start_s"] + float(frame.pts * frame.time_base), "pts": frame.pts, "time_base": str(frame.time_base), "image_path": str(image_path), "size": list(image.size)}
                     if frame_index == frame_indices[-1]:
                         break
                 frames = [decoded[index] for index in frame_indices]
@@ -274,7 +280,7 @@ def load_magic_artifacts(artifact_root, time_format='egolife'):
             for memory in memories.values():
                 memory.index(float('inf'))
             captions = {g: json.loads((source / f'captions/mmlifelong_{g}.json').read_text()) for g in ('30sec', '3min', '10min', '1h')}
-            ARTIFACTS[artifact_root] = {'memories': memories, 'captions': captions, 'clips': json.loads((artifact_root / 'clip-map.json').read_text())}
+            ARTIFACTS[artifact_root] = {'memories': memories, 'captions': captions, 'clips': {row['original_path']: row for row in json.loads((artifact_root / 'media-map.json').read_text())['sources']}}
             return ARTIFACTS[artifact_root]
         memory = UnifiedMemory(None, str(source / "graph.pkl"), chain_mode="facts")
         memory.load(topic_chain_facts_path=str(source / "topic_chains/topic_chains.json"), event_chain_path=str(source / "event_chains/step3_enriched_chains.json"))

@@ -204,19 +204,17 @@ async def embed_text(root: Path, endpoint: str) -> None:
     print(f'TEXT_COMPLETE unique_texts={len(texts)}', flush=True)
 
 
-def cache_caption_clip(caption: dict, source: dict, root: Path, time_format: str = 'egolife') -> dict:
+def cache_caption_clip(caption: dict, source: dict, root: Path) -> dict:
     from worldmm.memory.unified.nodes import caption_to_timestamps, make_visual_id
 
     start_ts, end_ts = caption_to_timestamps(caption)
-    start_s = float(start_ts) if time_format == 'mmlifelong' else timestamp_seconds(start_ts, source['fps'])
-    end_s = float(end_ts) if time_format == 'mmlifelong' else timestamp_seconds(end_ts, source['fps'])
+    start_s = timestamp_seconds(start_ts, source['fps'])
+    end_s = timestamp_seconds(end_ts, source['fps'])
     first = max(0, round((start_s - source['timeline_start_s']) * source['fps']))
     stop = min(source['total_frames'], round((end_s - source['timeline_start_s']) * source['fps']))
     if first >= stop:
         raise ValueError(f'Caption has no frames in its associated video: {caption}')
     relative = Path(source['relative_path']).relative_to('videos')
-    if time_format == 'mmlifelong':
-        relative = Path(source['video_id']) / f'{start_s}-{end_s}.mp4'
     clip = root / 'videos/caption-clips' / relative
     metadata_path = root / 'clip-metadata' / relative.with_suffix('.json')
     if metadata_path.exists():
@@ -233,10 +231,6 @@ def cache_caption_clip(caption: dict, source: dict, root: Path, time_format: str
         command = None
     else:
         command = ['ffmpeg', '-hide_banner', '-nostdin', '-y', '-v', 'error', '-threads', '1', '-i', source['path'], '-map', '0:v:0', '-an', '-vf', f'trim=start_frame={first}:end_frame={stop},setpts=PTS-STARTPTS', '-filter_threads', '1', '-fps_mode', 'passthrough', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '0', '-threads', '1', str(clip)]
-        if time_format == 'mmlifelong':
-            command[command.index('-i'):command.index('-i')] = ['-ss', str(first / source['fps'])]
-            command[command.index('-vf') + 1] = f'trim=end_frame={stop-first},setpts=PTS-STARTPTS'
-            command[-1:-1] = ['-frames:v', str(stop - first)]
         print(f'CACHE_CLIP source={source["path"]} frames={first}:{stop} output={clip}', flush=True)
         metadata_path.with_suffix('.command.json').write_text(json.dumps(command))
         result = subprocess.run(command, capture_output=True, text=True)
@@ -244,19 +238,16 @@ def cache_caption_clip(caption: dict, source: dict, root: Path, time_format: str
         if result.returncode:
             print(f'CACHE_CLIP error source={source["path"]}: {result.stderr}', flush=True)
             result.check_returncode()
-    probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate,r_frame_rate,nb_frames,duration,width,height,pix_fmt', '-of', 'json', str(clip)], capture_output=True, text=True)
+    probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate,nb_frames,duration,width,height,pix_fmt', '-of', 'json', str(clip)], capture_output=True, text=True)
     if probe.returncode:
         print(f'CACHE_CLIP ffprobe error path={clip}: {probe.stderr}', flush=True)
         probe.check_returncode()
     stream = json.loads(probe.stdout)['streams'][0]
-    numerator, denominator = map(int, stream['r_frame_rate' if time_format == 'mmlifelong' else 'avg_frame_rate'].split('/'))
+    numerator, denominator = map(int, stream['avg_frame_rate'].split('/'))
     if int(stream['nb_frames']) != stop - first or numerator / denominator != source['fps']:
         raise ValueError(f'Cached clip frame count or fps differs: {clip}: {stream}')
-    node_id = f"{source['video_id']}:vis_{start_ts}_{end_ts}" if time_format == 'mmlifelong' else make_visual_id(caption['date'], str(caption['start_time']))
+    node_id = make_visual_id(caption['date'], str(caption['start_time']))
     info = {'node_id': node_id, 'original_path': caption['video_path'], 'path': str(clip), 'relative_path': str(clip.relative_to(root)), 'source_relative_path': source['relative_path'], 'caption_start_ts': start_ts, 'caption_end_ts': end_ts, 'caption_start_s': start_s, 'caption_end_s': end_s, 'source_first_frame': first, 'source_stop_frame': stop, 'timeline_start_s': source['timeline_start_s'] + first / source['fps'], 'timeline_end_s': source['timeline_start_s'] + stop / source['fps'], 'fps': source['fps'], 'total_frames': stop - first, 'stream': stream, 'command': command}
-    if time_format == 'mmlifelong':
-        info['video_id'] = source['video_id']
-        info['clip_key'] = caption['clip_key']
     metadata_path.write_text(json.dumps(info, ensure_ascii=False, indent=2))
     return info
 
@@ -269,13 +260,16 @@ async def embed_video(root: Path, endpoint: str, time_format: str = 'egolife') -
     directory = root / 'embedding-shards/video-grouped'
     directory.mkdir(parents=True, exist_ok=True)
     semaphore = asyncio.Semaphore(64)
-    clip_executor = ThreadPoolExecutor(max_workers=10)
+    clip_executor = ThreadPoolExecutor(max_workers=10) if time_format == 'egolife' else None
     clips = {}
     async with httpx.AsyncClient(timeout=None, limits=httpx.Limits(max_connections=64)) as client:
         async def one(index: int, path: str) -> None:
             async with semaphore:
-                info = await asyncio.get_running_loop().run_in_executor(clip_executor, cache_caption_clip, paths[path], sources[paths[path]['video_path']], root, time_format)
-                clips[path] = info
+                if time_format == 'mmlifelong':
+                    info = sources[paths[path]['video_path']]
+                else:
+                    info = await asyncio.get_running_loop().run_in_executor(clip_executor, cache_caption_clip, paths[path], sources[paths[path]['video_path']], root)
+                    clips[path] = info
                 shard_directory = directory / f'{index // 1000:03d}'
                 shard_directory.mkdir(exist_ok=True)
                 output = shard_directory / f'{index:06d}.npz'
@@ -285,6 +279,10 @@ async def embed_video(root: Path, endpoint: str, time_format: str = 'egolife') -
                             raise ValueError(f'Video shard ID or sampling mismatch: {output}')
                     return
                 request = {'model': 'qwen3-vl-embedding-8b', 'messages': [{'role': 'user', 'content': [{'type': 'video_url', 'video_url': {'url': Path(info['path']).as_uri()}}]}], 'media_io_kwargs': {'video': {'video_backend': 'qwen3_vl_uniform', 'backend': 'torchcodec', 'trace_path': info['path'], 'num_frames': -1, 'num_ffmpeg_threads': 4, 'seek_mode': 'exact'}}, 'mm_processor_kwargs': {'do_sample_frames': False}}
+                if time_format == 'mmlifelong':
+                    first = max(0, round(float(paths[path]['start_sec']) * info['fps']))
+                    stop = min(info['total_frames'], round(float(paths[path]['end_sec']) * info['fps']))
+                    request['media_io_kwargs']['video'].update({'start_frame': first, 'stop_frame': stop, 'source_fps': info['fps'], 'clip_key': path})
                 (shard_directory / f'{index:06d}-request.json').write_text(json.dumps(request))
                 response = await client.post(endpoint.rstrip('/') + '/embeddings', json=request)
                 if response.is_error:
@@ -303,8 +301,10 @@ async def embed_video(root: Path, endpoint: str, time_format: str = 'egolife') -
                 for index, path in enumerate(paths):
                     group.create_task(one(index, path))
         finally:
-            clip_executor.shutdown(wait=True, cancel_futures=True)
-    (root / 'clip-map.json').write_text(json.dumps(clips, ensure_ascii=False))
+            if clip_executor is not None:
+                clip_executor.shutdown(wait=True, cancel_futures=True)
+    if time_format == 'egolife':
+        (root / 'clip-map.json').write_text(json.dumps(clips, ensure_ascii=False))
     print(f'VIDEO_COMPLETE videos={len(paths)}', flush=True)
 
 
