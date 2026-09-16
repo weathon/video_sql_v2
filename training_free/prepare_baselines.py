@@ -244,12 +244,12 @@ def cache_caption_clip(caption: dict, source: dict, root: Path, time_format: str
         if result.returncode:
             print(f'CACHE_CLIP error source={source["path"]}: {result.stderr}', flush=True)
             result.check_returncode()
-    probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate,nb_frames,duration,width,height,pix_fmt', '-of', 'json', str(clip)], capture_output=True, text=True)
+    probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate,r_frame_rate,nb_frames,duration,width,height,pix_fmt', '-of', 'json', str(clip)], capture_output=True, text=True)
     if probe.returncode:
         print(f'CACHE_CLIP ffprobe error path={clip}: {probe.stderr}', flush=True)
         probe.check_returncode()
     stream = json.loads(probe.stdout)['streams'][0]
-    numerator, denominator = map(int, stream['avg_frame_rate'].split('/'))
+    numerator, denominator = map(int, stream['r_frame_rate' if time_format == 'mmlifelong' else 'avg_frame_rate'].split('/'))
     if int(stream['nb_frames']) != stop - first or numerator / denominator != source['fps']:
         raise ValueError(f'Cached clip frame count or fps differs: {clip}: {stream}')
     node_id = f"{source['video_id']}:vis_{start_ts}_{end_ts}" if time_format == 'mmlifelong' else make_visual_id(caption['date'], str(caption['start_time']))

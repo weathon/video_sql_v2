@@ -135,14 +135,14 @@ def media(root: Path) -> None:
         if output.exists():
             records.append(json.loads(output.read_text()))
             continue
-        command = ['ffprobe', '-v', 'error', '-threads', '1', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate,duration,nb_frames,time_base', '-of', 'json', str(target)]
+        command = ['ffprobe', '-v', 'error', '-threads', '1', '-select_streams', 'v:0', '-show_entries', 'stream=r_frame_rate,duration,nb_frames,time_base', '-of', 'json', str(target)]
         print(f'MEDIA_PROBE video_id={video_id} path={target}', flush=True)
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode:
             print(f'MEDIA_ERROR {result.stderr}', flush=True)
             result.check_returncode()
         stream = json.loads(result.stdout)['streams'][0]
-        numerator, denominator = map(int, stream['avg_frame_rate'].split('/'))
+        numerator, denominator = map(int, stream['r_frame_rate'].split('/'))
         info = {'video_id': video_id, 'path': str(target), 'relative_path': str(target.relative_to(root)), 'original_path': f'data/MM-Lifelong/month/{video_id}.mp4', 'timeline_start_s': 0.0, 'timeline_end_s': float(stream['duration']), 'fps': numerator / denominator, 'duration': float(stream['duration']), 'total_frames': int(stream['nb_frames']), 'command': command}
         output.parent.mkdir(exist_ok=True)
         output.write_text(json.dumps(info, ensure_ascii=False, indent=2))
