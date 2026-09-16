@@ -19,6 +19,7 @@ import duckdb
 import httpx
 import httpx2
 import numpy as np
+import pyarrow as pa
 import sqlglot
 from sqlglot import exp
 from agents import (
@@ -42,46 +43,24 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel
 
 from src.normalize import normalize_text
+from training_free.ppr import search_graph
+from training_free.index_schema import SCHEMA, SEARCH_TABLES, fact_interval, timestamp_seconds
+from training_free.mmlifelong_data import MM_SCHEMA
 
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 REQUEST_TRACE = ContextVar("request_trace")
-CONTEXT_LIMIT = 314573
-COMPACTION_THRESHOLD = 178_000
-ANSWER_CONTEXT_LIMIT = 128_000
 FRAME_SIZE = (854, 480)
 # Keep the existing sampling allowance when switching providers; this is not a
 # model-specific image token estimate. Context accounting uses returned usage.
 CLIP_IMAGE_LIMIT = 650
 TOOL_REMINDER_CHARACTERS = 10_000
-SEARCH_TABLES = {
-    "episodes": "text",
-    "entities": "name",
-    "semantic_triples": "text",
-    "topic_facts": "fact",
-    "event_steps": "description",
-    "object_states": "text",
-    "visual_clips": "text",
-}
-SCHEMA = """
-episodes(row_id, start_s, end_s, granularity, text)
-entities(row_id, name, normalized_name, first_seen_s, last_seen_s, frequency)
-semantic_triples(row_id, caption_30sec_row_id, snapshot_s, subject, predicate, object, text)
-topic_chains(row_id, entity, has_lifecycle, level, scope_id, start_s, end_s, summary)
-topic_facts(row_id, chain_row_id, caption_30sec_row_id, time_s, fact)
-event_chains(row_id, name, chain_type, level, scope_id, start_s, end_s, summary)
-event_steps(row_id, chain_row_id, caption_start_row_id, caption_end_row_id, step_index, start_s, end_s, description)
-visual_clips(row_id, start_s, end_s, text)
-object_states(row_id, episode_3min_row_id, caption_30sec_row_id, start_s, end_s, object, status, text)
-graph_edges(row_id, src_row_id, dst_row_id, edge_type, weight)
-topic_fact_evidence(row_id, fact_row_id, caption_30sec_row_id)
-event_step_evidence(row_id, step_row_id, caption_30sec_row_id)
-""".strip()
-COMPACTION_INSTRUCTION = """
-Stop calling tools. Produce a trusted handoff that preserves the question, established evidence,
-unresolved branches, useful row IDs and time intervals, and the exact next investigation steps.
-Do not answer the question in this handoff.
-""".strip()
+ANSWER_CONTEXT_LIMIT = 128_000
+INVESTIGATION_CALL_LIMIT = 60
+QA_MAX_OUTPUT_TOKENS = 16384
+QA_LENGTH_RETRIES = 3
+SHARED_VECTORS = {}
+SHARED_ROW_IDS = {}
 
 
 class AgentRaised(Exception):
@@ -93,6 +72,10 @@ class InvalidTrace(Exception):
 
 
 class AnswerContextLimit(Exception):
+    pass
+
+
+class InvestigationBudgetExhausted(Exception):
     pass
 
 
@@ -127,11 +110,17 @@ class HarnessContext:
     embedding_url: str
     embedding_model: str
     embedding_client: httpx.AsyncClient
+    query_time: int | None
+    model_limiter: asyncio.Semaphore
+    time_format: Literal['egolife', 'mmlifelong'] = 'egolife'
+    semantic_search_mode: Literal["ppr", "vector"] = "ppr"
     clip_qa_video: bool = False
-    context_limit: int = CONTEXT_LIMIT
-    compaction_threshold: int = COMPACTION_THRESHOLD
     compactions: int = 0
     answer_turns: int = 0
+    investigation_calls: int = 0
+    final_calls: int = 0
+    final_answer_mode: bool = False
+    eligible_positions: dict[str, np.ndarray] = field(init=False)
     answer_context_tokens: int = 0
     answer_context_reached: bool = False
     base_instructions: str = ""
@@ -154,20 +143,47 @@ class HarnessContext:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         (self.run_dir / "traces").mkdir(exist_ok=True)
         (self.run_dir / "media").mkdir(exist_ok=True)
-        self.vectors = {}
-        self.row_ids = {}
-        for table in SEARCH_TABLES:
-            self.row_ids[table] = np.load(
-                self.embedding_index / f"{table}.row_ids.npy",
-                mmap_mode="r",
-                allow_pickle=False,
-            )
-            self.vectors[table] = np.load(
-                self.embedding_index / f"{table}.vectors.npy",
-                mmap_mode="r",
-                allow_pickle=False,
-            )
+        key = str(self.embedding_index)
+        if key not in SHARED_VECTORS:
+            SHARED_ROW_IDS[key] = {table: np.load(self.embedding_index / f"{table}.row_ids.npy", mmap_mode="r", allow_pickle=False) for table in SEARCH_TABLES}
+            SHARED_VECTORS[key] = {table: np.load(self.embedding_index / (f"{table}.video_vectors.npy" if table == "visual_clip" else f"{table}.vectors.npy"), mmap_mode="r", allow_pickle=False) for table in SEARCH_TABLES}
+        self.vectors = SHARED_VECTORS[key]
+        self.row_ids = SHARED_ROW_IDS[key]
+        self.eligible_positions = {}
+        with duckdb.connect(str(self.database), read_only=True, config={"enable_external_access": "false", "allow_unsigned_extensions": "false"}) as connection:
+            for table in SEARCH_TABLES:
+                allowed = np.asarray([row[0] for row in connection.execute(f"SELECT id FROM {table} ORDER BY id").fetchall()], dtype=self.row_ids[table].dtype)
+                positions = np.searchsorted(self.row_ids[table], allowed)
+                if (positions >= len(self.row_ids[table])).any() or not np.array_equal(self.row_ids[table][positions], allowed):
+                    raise RuntimeError(f"Database/embedding IDs differ for {table}")
+                self.eligible_positions[table] = positions
         self.sources = json.loads(self.media_map.read_text())["sources"]
+        for source in self.sources:
+            source["path"] = str(self.media_map.parent / source["relative_path"])
+        if self.time_format == 'mmlifelong' or self.query_time is None:
+            self.query_time_s = None
+            return
+        source_times = [item["timeline_start_s"] for item in self.sources]
+        time = str(self.query_time).zfill(9)
+        coarse = (int(time[0]) - 1) * 86400 + int(time[1:3]) * 3600 + int(time[3:5]) * 60 + int(time[5:7])
+        source_index = int(np.searchsorted(source_times, coarse, side="right")) - 1
+        if source_index < 0:
+            raise ValueError("Question time precedes the source media")
+        source = self.sources[source_index]
+        self.query_time_s = timestamp_seconds(self.query_time, source["fps"])
+
+    def reserve_model_call(self, role: str) -> None:
+        if role == "judge":
+            return
+        if self.final_answer_mode and role == "memory-retrieval":
+            if self.final_calls:
+                raise InvestigationBudgetExhausted("The single final-answer request was already used")
+            self.final_calls += 1
+        else:
+            if self.investigation_calls >= INVESTIGATION_CALL_LIMIT:
+                raise InvestigationBudgetExhausted(f"The {INVESTIGATION_CALL_LIMIT} investigation model calls are exhausted; use the final-answer request")
+            self.investigation_calls += 1
+        print(f"MODEL_CALL role={role} investigation={self.investigation_calls} final={self.final_calls}", flush=True)
 
     async def clip_response(self, request: dict[str, Any], call_id: str, frame_files: list[str]):
         path = self.run_dir / "traces" / f"clip-{call_id}.json"
@@ -175,10 +191,13 @@ class HarnessContext:
         path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
         print(f"clip_qa model={request['model']} api={artifact['api']} frames={len(frame_files)} trace={path}", flush=True)
         try:
-            if self.clip_qa_video:
-                raw = await self.client.chat.completions.with_raw_response.parse(**request, response_format=ClipSubmission)
-            else:
-                raw = await self.client.responses.with_raw_response.parse(**request, text_format=ClipSubmission)
+            self.reserve_model_call("clip-qa")
+            REQUEST_TRACE.set({"trace_dir": str(path.parent), "trace_file": str(path), "agent": "clip-qa"})
+            async with self.model_limiter:
+                if self.clip_qa_video:
+                    raw = await self.client.chat.completions.with_raw_response.parse(**request, response_format=ClipSubmission)
+                else:
+                    raw = await self.client.responses.with_raw_response.parse(**request, text_format=ClipSubmission)
             payload = json.loads(raw.content)
             artifact["response"] = payload
             path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
@@ -205,25 +224,42 @@ class HarnessContext:
             raise
 
     async def summary_response(self, name: str, instructions: str, content: list[dict[str, Any]], text_format: type[BaseModel]):
-        request = {"model": self.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": self.model_settings.reasoning, "store": self.model_settings.store, "include": self.model_settings.response_include, "extra_body": self.model_settings.extra_body}
+        request = {"model": self.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": self.model_settings.reasoning, "store": self.model_settings.store, "include": self.model_settings.response_include, "extra_body": self.model_settings.extra_body, "max_output_tokens": QA_MAX_OUTPUT_TOKENS}
+        if self.time_format == 'mmlifelong':
+            del request['max_output_tokens']
         if self.model_settings.extra_args is not None:
             request.update(self.model_settings.extra_args)
         path = self.run_dir / "traces" / f"{name}-{uuid.uuid4().hex}.json"
-        artifact = {"agent": {"name": name, "model": request["model"], "tools": []}, "api": "responses", "input": stripped_json(request), "tool_calls": [], "api_usage": [], "error": None}
+        artifact = {"agent": {"name": name, "model": request["model"], "tools": []}, "api": "responses", "input": stripped_json(request), "tool_calls": [], "api_usage": [], "length_retries": [], "error": None}
         path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
         print(f"{name} model={request['model']} content_parts={len(content)} trace={path}", flush=True)
         try:
-            raw = await self.client.responses.with_raw_response.parse(**request, text_format=text_format)
-            payload = json.loads(raw.content)
+            length_retries = 0 if self.time_format == 'mmlifelong' else QA_LENGTH_RETRIES
+            for attempt in range(1, length_retries + 2):
+                self.reserve_model_call(name)
+                REQUEST_TRACE.set({"trace_dir": str(path.parent), "trace_file": str(path), "agent": name})
+                async with self.model_limiter:
+                    raw = await self.client.responses.with_raw_response.parse(**request, text_format=text_format)
+                payload = json.loads(raw.content)
+                if payload["usage"] is None:
+                    raise RuntimeError(f"{name} response {payload['id']} has no usage")
+                recorded = {"response_id": payload["id"], "agent": name, "model": payload["model"], "usage": payload["usage"], "service_tier": payload["service_tier"], "status": "response." + payload["status"]}
+                self.response_usage[payload["id"]] = recorded
+                artifact["api_usage"].append(recorded)
+                if self.time_format == 'mmlifelong':
+                    break
+                if payload["status"] == "incomplete" and payload["incomplete_details"]["reason"] == "max_output_tokens":
+                    artifact["length_retries"].append(payload)
+                    path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+                    print(f"{name} hit max_output_tokens={QA_MAX_OUTPUT_TOKENS} attempt={attempt} trace={path}", flush=True)
+                    if attempt > QA_LENGTH_RETRIES:
+                        artifact["response"] = payload
+                        raise InvalidTrace(f"{name} exceeded max_output_tokens={QA_MAX_OUTPUT_TOKENS} on {attempt} attempts")
+                    continue
+                break
             artifact["response"] = payload
-            path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
-            if payload["usage"] is None:
-                raise RuntimeError(f"{name} response {payload['id']} has no usage")
-            recorded = {"response_id": payload["id"], "agent": name, "model": payload["model"], "usage": payload["usage"], "service_tier": payload["service_tier"], "status": "response." + payload["status"]}
-            self.response_usage[payload["id"]] = recorded
             if payload["status"] == "completed":
                 self.path_responses.append(recorded)
-            artifact["api_usage"] = [recorded]
             path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
             response = raw.parse()
             if response.status != "completed" or response.output_parsed is None:
@@ -247,11 +283,9 @@ def exception_chain(error: BaseException) -> list[BaseException]:
 
 def tool_error_json(_context: Any, error: Exception) -> str:
     for item in exception_chain(error):
-        if isinstance(item, FileNotFoundError):
+        if isinstance(item, (FileNotFoundError, RuntimeError, httpx.HTTPError)):
             raise item
-        if isinstance(item, APIError) and (
-            item.code == "insufficient_quota" or "no credits remaining" in str(item).lower()
-        ):
+        if isinstance(item, APIError):
             raise item
     return json.dumps({"error": str(error)}, ensure_ascii=False)
 
@@ -387,7 +421,7 @@ def save_trace(
             }
         )
         if response.response_id in context.response_states:
-            raw_responses[-1]["prefix_state"] = context.response_states[response.response_id]
+            raw_responses[-1]["prefix_file"] = context.response_states[response.response_id]
         if response.response_id in context.response_usage:
             raw_responses[-1]["api_usage"] = context.response_usage[response.response_id]
     payload = {
@@ -485,13 +519,32 @@ async def run_stream(
         async def invoke_tool(tool_context: ToolContext, arguments: str, original=tool.on_invoke_tool):
             context.tool_counter += 1
             tool_id = context.tool_counter
-            if answering and context.answer_context_reached and tool_context.tool_name != "submit_answer":
-                output = json.dumps({"error": f"Context reached {ANSWER_CONTEXT_LIMIT} tokens. This tool was not executed. Return the final answer from existing evidence immediately."})
-            else:
+            raw_arguments = None
+            if tool_context.tool_name in ("semantic_search", "run_sql") and context.semantic_search_mode == "vector":
+                parsed = json.loads(arguments)
+                coerced = [key for key in ("question",) if key in parsed and parsed[key] in ("None", "")]
+                if coerced:
+                    raw_arguments = arguments
+                    parsed.update({key: None for key in coerced})
+                    arguments = json.dumps(parsed, ensure_ascii=False)
+                    print(f"{tool_context.tool_name} nullable arguments coerced: {raw_arguments} -> {arguments}", flush=True)
+            tool_trace = context.run_dir / "traces" / f"tool-{tool_context.tool_call_id}.json"
+            tool_record = {"tool_id": tool_id, "call_id": tool_context.tool_call_id, "name": tool_context.tool_name, "arguments": arguments, "raw_arguments": raw_arguments, "output": None, "error": None}
+            tool_trace.write_text(json.dumps(tool_record, ensure_ascii=False) + "\n")
+            try:
                 output = await original(tool_context, arguments)
+            except BaseException as error:
+                tool_record["error"] = {"type": type(error).__name__, "message": str(error)}
+                tool_trace.write_text(json.dumps(tool_record, ensure_ascii=False) + "\n")
+                print(f"TOOL_ERROR name={tool_context.tool_name} arguments={arguments} error={error}", flush=True)
+                raise
+            tool_record["output"] = stripped_json(output)
+            tool_trace.write_text(json.dumps(tool_record, ensure_ascii=False) + "\n")
             record = {"tool_id": tool_id, "call_id": tool_context.tool_call_id,
                       "name": tool_context.tool_name, "arguments": arguments,
                       "original_output": stripped_json(output), "replacements": []}
+            if raw_arguments is not None:
+                record["raw_arguments"] = raw_arguments
             context.tool_calls[tool_id] = record
             context.tool_ids[tool_context.tool_call_id] = tool_id
             tool_calls.append(record)
@@ -526,7 +579,7 @@ async def run_stream(
     else:
         agent = agent.clone(tools=wrapped_tools)
     answering = agent.name == "memory-retrieval" and label == "answer"
-    max_turns = None if answering else 100
+    max_turns = None
     header = {
         "agent": {
             "name": agent.name,
@@ -546,10 +599,7 @@ async def run_stream(
         "run_config": {
             "reasoning_item_id_policy": context.run_config.reasoning_item_id_policy,
             "max_turns": max_turns,
-            "answer_context_limit": ANSWER_CONTEXT_LIMIT,
             "watch_context": watch_context,
-            "context_limit": context.context_limit,
-            "compaction_threshold": context.compaction_threshold,
         },
     }
     events_path = context.run_dir / "traces" / f"{label}-events-{uuid.uuid4().hex}.jsonl"
@@ -580,35 +630,17 @@ async def run_stream(
                         item = {**item, "output": output}
                 items.append(item)
             latest_tool_id = next((context.tool_ids[item["call_id"]] for item in reversed(items) if item.get("type") == "function_call_output"), None)
-            if answering and watch_context:
-                count = await context.client.responses.input_tokens.count(
-                    model=context.model.model, instructions=data.model_data.instructions, input=items,
-                    reasoning=agent.model_settings.reasoning,
-                    tools=[{"type": "function", "name": tool.name, "description": tool.description, "parameters": tool.params_json_schema, "strict": tool.strict_json_schema} for tool in agent.tools],
-                )
-                context.answer_context_tokens = count.input_tokens
-                context.answer_context_reached |= count.input_tokens >= ANSWER_CONTEXT_LIMIT
-                events.write(json.dumps({"type": "answer_context_count", "input_tokens": count.input_tokens, "limit": ANSWER_CONTEXT_LIMIT}) + "\n")
-                if context.answer_context_reached:
-                    raise AnswerContextLimit(f"Investigation context reached {ANSWER_CONTEXT_LIMIT} tokens")
-            request = {"agent": agent.name}
+            request = {"agent": agent.name, "trace_dir": str(context.run_dir / "traces")}
             if agent.name == "memory-retrieval":
-                # Persist the exact caller-visible image bytes used by this request.
-                # Recipes remain available for analysis and replacement counting.
-                for item in items:
-                    if item.get("type") != "function_call_output" or not isinstance(item["output"], list):
-                        continue
-                    for index, part in enumerate(item["output"]):
-                        if part["type"] == "input_image":
-                            filename = json.loads(item["output"][index - 1]["text"])["filename"]
-                            (context.run_dir / "media" / Path(filename).with_suffix(".jpg")).write_bytes(
-                                base64.b64decode(part["image_url"].split(",", 1)[1]))
                 notes = context.run_dir / "agent_notes.jsonl"
                 snapshot = {
                     "input": stripped_json(items), "agent": header["agent"],
                     "base_instructions": context.base_instructions,
                     "compactions": context.compactions,
                     "answer_turns": context.answer_turns,
+                    "investigation_calls": context.investigation_calls,
+                    "final_calls": context.final_calls,
+                    "final_answer_mode": context.final_answer_mode,
                     "answer_context_tokens": context.answer_context_tokens,
                     "answer_context_reached": context.answer_context_reached,
                     "tool_counter": context.tool_counter,
@@ -616,7 +648,7 @@ async def run_stream(
                     "tool_ids": dict(context.tool_ids),
                     "tool_outputs": stripped_json(context.tool_outputs),
                     "notes": notes.read_text() if notes.exists() else None,
-                    "media_files": sorted(str(p) for p in (context.run_dir / "media").iterdir()),
+                    "media_recipes": {p.name: json.loads(p.read_text()) for p in sorted((context.run_dir / "media").glob("frame-*.json"))},
                     "path_responses": copy.deepcopy(context.path_responses),
                     "prior_histories": copy.deepcopy(context.path_histories),
                 }
@@ -624,12 +656,15 @@ async def run_stream(
                     expected = context.expected_prefix
                     if snapshot["input"] != expected["input"] or snapshot["agent"] != expected["agent"]:
                         raise RuntimeError("Restored branch differs from the original model request")
-                    for key in ("base_instructions", "compactions", "answer_turns", "answer_context_tokens", "answer_context_reached", "tool_counter", "tool_calls", "tool_ids", "tool_outputs", "notes"):
+                    for key in ("base_instructions", "compactions", "answer_turns", "investigation_calls", "final_calls", "final_answer_mode", "answer_context_tokens", "answer_context_reached", "tool_counter", "tool_calls", "tool_ids", "tool_outputs", "notes", "media_recipes"):
                         if snapshot[key] != expected[key]:
                             raise RuntimeError(f"Restored branch state differs: {key}")
                     events.write(json.dumps({"type": "prefix_verified", "input": snapshot["input"]}, ensure_ascii=False) + "\n")
                     context.expected_prefix = None
-                request["snapshot"] = snapshot
+                snapshot_path = context.run_dir / "traces" / f"prefix-{context.answer_turns:03d}-{uuid.uuid4().hex}.json"
+                snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False) + "\n")
+                request["snapshot_file"] = str(snapshot_path)
+            context.reserve_model_call(agent.name)
             if answering:
                 context.answer_turns += 1
             REQUEST_TRACE.set(request)
@@ -640,17 +675,10 @@ async def run_stream(
         events.write(json.dumps({
             "type": "run_start", **header, "input": stripped_json(input_items),
         }, ensure_ascii=False) + "\n")
-        class AnswerBudgetHooks(RunHooks):
-            async def on_llm_end(self, run_context, current_agent, response):
-                if answering and watch_context:
-                    context.answer_context_tokens = response.usage.input_tokens + response.usage.output_tokens
-                    context.answer_context_reached |= context.answer_context_tokens >= ANSWER_CONTEXT_LIMIT
-
         result = Runner.run_streamed(
             agent,
             input_items,
             max_turns=max_turns,
-            hooks=AnswerBudgetHooks(),
             run_config=dataclasses.replace(context.run_config, call_model_input_filter=model_input),
         )
         try:
@@ -677,22 +705,12 @@ async def run_stream(
                 response = event.data.response
                 if response.usage is None:
                     raise RuntimeError("completed response did not include usage")
-                remaining = (
-                    context.context_limit
-                    - response.usage.input_tokens
-                    - response.usage.output_tokens
-                )
-                if answering and watch_context and response.usage.input_tokens + response.usage.output_tokens >= ANSWER_CONTEXT_LIMIT:
-                    context.answer_context_reached = True
-                    result.cancel(mode="after_turn")
-                    context_triggered = True
-                elif watch_context and not answering and remaining <= context.compaction_threshold:
-                    result.cancel(mode="after_turn")
-                    context_triggered = True
-        except AnswerContextLimit:
+                context.response_usage[response.id] = {"response_id": response.id, "agent": agent.name, "model": response.model, "usage": response.usage.model_dump(mode="json"), "status": response.status}
+        except InvestigationBudgetExhausted:
             answer_limit_reached = True
             context_triggered = True
-            events.write(json.dumps({"type": "answer_context_limit", "tokens": context.answer_context_tokens, "limit": ANSWER_CONTEXT_LIMIT}) + "\n")
+            context.answer_context_reached = True
+            events.write(json.dumps({"type": "investigation_budget_exhausted", "investigation_calls": context.investigation_calls, "final_calls": context.final_calls}) + "\n")
         except BaseException as error:
             caught = error
             if isinstance(error, asyncio.CancelledError):
@@ -721,7 +739,7 @@ async def run_stream(
     return result, context_triggered, trace_file
 
 
-def image_jpeg_bytes(original: Image.Image, crop: tuple[int, int, int, int]) -> bytes:
+def image_jpeg_bytes(original: Image.Image, crop: tuple[int, int, int, int], render: dict[str, Any]) -> bytes:
     left, top, right, bottom = crop
     width, height = original.size
     cropped = original.convert("RGB").crop((
@@ -730,9 +748,9 @@ def image_jpeg_bytes(original: Image.Image, crop: tuple[int, int, int, int]) -> 
         math.ceil(width * right / 1000),
         math.ceil(height * bottom / 1000),
     ))
-    rendered = ImageOps.contain(cropped, FRAME_SIZE)
+    rendered = ImageOps.contain(cropped, tuple(render["max_size"]))
     output = io.BytesIO()
-    rendered.save(output, format="JPEG", quality=90)
+    rendered.save(output, format=render["format"], quality=render["quality"])
     return output.getvalue()
 
 
@@ -751,7 +769,7 @@ def frame_jpeg_bytes(frame: dict[str, Any]) -> bytes:
     if process.returncode != 0 or not process.stdout:
         raise RuntimeError(f"Frame decode failed: {command}; exit={process.returncode}; {process.stderr.decode(errors='replace')}")
     with Image.open(io.BytesIO(process.stdout)) as original:
-        return image_jpeg_bytes(original, frame["crop"])
+        return image_jpeg_bytes(original, frame["crop"], frame["render"])
 
 
 async def sample_frames(
@@ -762,8 +780,18 @@ async def sample_frames(
     crop: tuple[int, int, int, int],
     call_id: str,
     remaining_images: int,
+    video_id: str | None = None,
 ) -> list[tuple[dict[str, Any], bytes]]:
-    if not context.sources[0]["timeline_start_s"] <= start_s < end_s <= context.sources[-1]["timeline_end_s"]:
+    sources = context.sources
+    if context.time_format == 'mmlifelong':
+        if video_id is None:
+            raise ValueError('MM-Lifelong clip_qa requires video_id from retrieved evidence')
+        sources = [source for source in sources if source['video_id'] == video_id]
+        if not sources:
+            raise ValueError(f'Unknown video_id: {video_id}')
+    if context.query_time_s is not None and end_s > context.query_time_s:
+        raise ValueError(f"Video interval extends beyond query time {context.query_time_s}")
+    if not sources[0]["timeline_start_s"] <= start_s < end_s <= sources[-1]["timeline_end_s"]:
         raise ValueError("sample interval extends beyond available source media")
     if not math.isfinite(fps) or fps <= 0:
         raise ValueError("fps must be finite and positive")
@@ -773,7 +801,7 @@ async def sample_frames(
     sample_dir = media_root / f"sample-{call_id}-{uuid.uuid4().hex}"
     sample_dir.mkdir()
     frames = []
-    for source_index, source in enumerate(context.sources):
+    for source_index, source in enumerate(sources):
         overlap_start = max(start_s, source["timeline_start_s"])
         overlap_end = min(end_s, source["timeline_end_s"])
         if overlap_start >= overlap_end:
@@ -841,8 +869,11 @@ async def sample_frames(
                         "source_timeline_start_s": source["timeline_start_s"],
                         "video_path": source["path"],
                         "recipe_path": media_root / f"frame-{frame_id}.json", "crop": crop,
+                        "render": {"max_size": list(FRAME_SIZE), "format": "JPEG", "quality": 90},
                     }
-                    sampled.append((frame, image_jpeg_bytes(decoded.to_image(), crop)))
+                    if context.time_format == 'mmlifelong':
+                        frame['video_id'] = video_id
+                    sampled.append((frame, image_jpeg_bytes(decoded.to_image(), crop, frame["render"])))
             return sampled
 
         frames.extend(await asyncio.to_thread(decode_sample))
@@ -883,115 +914,166 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         )
         return submission.model_dump_json()
 
-    def semantic_search_error(tool_context: Any, error: Exception) -> str:
-        if isinstance(error, (httpx.HTTPError, RuntimeError, FileNotFoundError)):
+    @function_tool(failure_error_function=tool_error_json)
+    async def semantic_search(query: str, n: int, pre_sql: str | None = None, post_sql: str | None = None) -> str:
+        """Retrieve evidence by semantic meaning using MAGIC PPR. Use this when semantic matching is needed, not as a default first step. run_sql handles direct SQL queries. query is the natural-language clue; n is the maximum PPR hit count before post SQL. Optional pre_sql selects exactly one id column from the question database; memory_nodes unions entity, episode, semantic, and visual_clip. It limits seeds and graph propagation to those IDs, for example yesterday. Optional post_sql instead queries only ppr_hits(id, node_type, text, start_ts, end_ts, start_s, end_s, metadata JSON, rank, score) to filter, order, project, or aggregate the retrieved nodes. Usually choose one SQL stage according to purpose: pre limits search scope, post refines semantic hits. Both are allowed when necessary. Null means no SQL at that stage. Returns evidence rows directly without an additional LLM QA call. Multiscale quotas may return fewer than n hits."""
+        if n <= 0:
+            raise ValueError("n must be positive")
+        query = normalize_text(query)
+        request = {"model": context.embedding_model, "input": [query]}
+        trace = {"query": query, "n": n, "pre_sql": pre_sql, "post_sql": post_sql, "query_time": context.query_time, "embedding_request": request}
+        path = context.run_dir / "traces" / f"ppr-{uuid.uuid4().hex}.json"
+        print(f"PPR request query={query!r} n={n} pre_sql={pre_sql!r} post_sql={post_sql!r} trace={path}", flush=True)
+        try:
+            response = await context.embedding_client.post(context.embedding_url.rstrip("/") + "/embeddings", json=request)
+            trace["embedding_status"] = response.status_code
+            trace["embedding_response"] = response.text
+            response.raise_for_status()
+            data = response.json()["data"]
+            if len(data) != 1 or data[0]["index"] != 0:
+                raise RuntimeError(f"Invalid PPR embedding response indexes: {data}")
+            vector = np.asarray(data[0]["embedding"], dtype=np.float32)
+            if vector.shape != (4096,) or not np.isfinite(vector).all() or np.linalg.norm(vector) == 0:
+                raise RuntimeError(f"Invalid PPR query embedding: {vector.shape}")
+            result = await asyncio.to_thread(search_graph, context, query, vector, n, pre_sql, post_sql, trace)
+            trace["result"] = result
+            print(f"PPR result candidates={result['candidate_count']} hits={result['ppr_hit_count']} rows={len(result['rows'])}", flush=True)
+            return json.dumps(result, ensure_ascii=False, default=lambda value: json_value(value, None))
+        finally:
+            path.write_text(json.dumps(trace, ensure_ascii=False, indent=2, default=lambda value: json_value(value, None)) + "\n")
+
+    def vector_search_error(tool_context: Any, error: Exception) -> str:
+        if isinstance(error, (httpx.HTTPError, RuntimeError, FileNotFoundError, APIError)):
             raise error
         return json.dumps(
             {
                 "error": str(error),
                 "arguments": tool_context.tool_arguments,
-                "expected_schema": semantic_search.params_json_schema,
-                "correction": (
-                    "For argument validation errors, correct the arguments and retry semantic_search. "
-                    "Use JSON null for unbounded min_score/max_score, not the string 'None'. "
-                    "Use one of the table names in the schema."
-                ),
+                "expected_schema": vector_search.params_json_schema,
+                "correction": "For argument validation errors, correct the arguments and retry semantic_search. Use JSON null for question when no QA answer is needed, not the string 'None'. Use one of the table names in the schema. sql must be one read-only SELECT or WITH query over semantic_hits.",
             },
             ensure_ascii=False,
         )
 
-    @function_tool(failure_error_function=semantic_search_error)
-    async def semantic_search(
+    @function_tool(name_override="semantic_search", failure_error_function=vector_search_error)
+    async def vector_search(
         query: str,
         table: Literal[
-            "episodes", "entities", "semantic_triples", "topic_facts",
-            "event_steps", "object_states", "visual_clips",
+            "episode", "entity", "semantic", "topic_facts", "event_steps", "visual_clip",
         ],
-        n: int,
-        rank_start: int,
-        min_score: float | None = None,
-        max_score: float | None = None,
+        sql: str,
         question: str | None = None,
     ) -> str:
-        """Search one embedded table and return raw hits when question is null. Optionally supply question to request a separate QA answer from the selected hits. rank_start is one-based and n is the number of ranks.
+        """Embed query, score every row of one embedded table by cosine similarity, then run sql over the temporary in-memory table semantic_hits. semantic_hits holds all columns of the chosen table plus cosine_sim (higher means more similar to query), start_ts and end_ts (DHHMMSSFF, added for topic_facts and event_steps), start_s and end_s (seconds since DAY1 00:00:00 for clip_qa). Use sql to rank by cosine_sim, filter or order by time, filter or sort by names or text, or aggregate. visual_clip matches the video embedding; episode matches caption text. With question=null, return up to 100 result rows with long text cells shortened; supply question to request a separate QA answer from the complete result.
 
         Args:
             query: Semantic search text.
             table: One of the embedded tables listed in the schema.
-            n: Number of ranks to return, greater than zero.
-            rank_start: First rank to return, starting at one.
-            min_score: Inclusive lower score bound; JSON null means no lower bound.
-            max_score: Inclusive upper score bound; JSON null means no upper bound.
-            question: Question to answer from the selected hits, preserving evidence IDs and times. JSON null returns raw hits.
+            sql: One read-only SELECT or WITH query over semantic_hits, for example SELECT id, text, start_ts, cosine_sim FROM semantic_hits ORDER BY cosine_sim DESC LIMIT 10.
+            question: Question to answer from the complete SQL result, preserving evidence IDs and times. JSON null returns raw rows.
         """
         if table not in SEARCH_TABLES:
             raise ValueError(f"table must be one of {sorted(SEARCH_TABLES)}")
-        if n <= 0 or rank_start <= 0:
-            raise ValueError("n and rank_start must be positive")
-        response = await context.embedding_client.post(
-            context.embedding_url.rstrip("/") + "/embeddings",
-            json={"model": context.embedding_model, "input": [normalize_text(query)]},
-        )
-        response.raise_for_status()
+        statements = sqlglot.parse(sql, read="duckdb")
+        if len(statements) != 1 or not isinstance(statements[0], exp.Query):
+            raise ValueError("sql must be exactly one read-only SELECT or WITH query over semantic_hits")
+        print(f"VECTOR request query={query!r} table={table} sql={sql!r} question={question!r}", flush=True)
+        embedding_request = {"model": context.embedding_model, "input": [normalize_text(query)]}
+        if table == 'visual_clip' and context.time_format == 'mmlifelong':
+            embedding_request = {"model": context.embedding_model, "messages": [{"role": "user", "content": [{"type": "text", "text": f"Retrieve video segments that help answer questions about a long-form livestream.\n{query}"}]}]}
+        embedding_path = context.run_dir / "traces" / f"embedding-{uuid.uuid4().hex}.json"
+        embedding_trace = {"request": embedding_request, "response": None, "error": None}
+        embedding_path.write_text(json.dumps(embedding_trace, ensure_ascii=False) + "\n")
+        try:
+            response = await context.embedding_client.post(context.embedding_url.rstrip("/") + "/embeddings", json=embedding_request)
+            embedding_trace["response"] = response.text
+            embedding_trace["status"] = response.status_code
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            embedding_trace["error"] = str(error)
+            print(f"EMBEDDING_ERROR request={embedding_request} error={error}", flush=True)
+            raise
+        finally:
+            embedding_path.write_text(json.dumps(embedding_trace, ensure_ascii=False) + "\n")
         data = response.json()["data"]
         if len(data) != 1 or data[0]["index"] != 0:
             raise RuntimeError(f"invalid embedding response indexes: {data}")
         query_vector = np.asarray(data[0]["embedding"], dtype=np.float32)
         if query_vector.shape != (4096,) or not np.isfinite(query_vector).all():
             raise RuntimeError(f"invalid query vector shape or values: {query_vector.shape}")
-        scores = context.vectors[table] @ query_vector
-        positions = np.argsort(-scores)
-        if min_score is not None:
-            positions = positions[scores[positions] >= min_score]
-        if max_score is not None:
-            positions = positions[scores[positions] <= max_score]
-        selected = positions[rank_start - 1 : rank_start - 1 + n]
-        selected_ids = [str(context.row_ids[table][position]) for position in selected]
-        hits = []
-        if selected_ids:
-            placeholders = ",".join("?" for _ in selected_ids)
-            rows = execute_sql(
-                context.database,
-                f"SELECT * FROM {table} WHERE row_id IN ({placeholders})",
-                None,
-                selected_ids,
-                500 if question is None else None,
-            )
-            by_id = {row["row_id"]: row for row in rows["rows"]}
-            for position, row_id in zip(selected, selected_ids):
-                row = by_id[row_id]
-                preview_field = SEARCH_TABLES[table]
-                if table == "entities":
-                    start_s = row["first_seen_s"]
-                    end_s = row["last_seen_s"]
-                elif table == "semantic_triples":
-                    start_s = row["snapshot_s"]
-                    end_s = row["snapshot_s"]
-                elif table == "topic_facts":
-                    start_s = row["time_s"]
-                    end_s = row["time_s"]
-                else:
-                    start_s = row["start_s"]
-                    end_s = row["end_s"]
-                hits.append(
-                    {
-                        "table": table,
-                        "row_id": row_id,
-                        "start_s": start_s,
-                        "end_s": end_s,
-                        "preview": json_value(row[preview_field], 500 if question is None else None),
-                        "score": float(scores[position]),
-                    }
-                )
+        allowed = context.eligible_positions[table]
+
+        def build_and_query():
+            scores = np.empty(len(allowed), dtype=np.float32)
+            for start in range(0, len(allowed), 4096):
+                end = min(start + 4096, len(allowed))
+                scores[start:end] = context.vectors[table][allowed[start:end]] @ query_vector
+            with duckdb.connect(str(context.database), read_only=True, config={"enable_external_access": "false", "allow_unsigned_extensions": "false"}) as connection:
+                hits = connection.execute(f"SELECT * FROM {table} ORDER BY id").fetch_arrow_table()
+            if not np.array_equal(hits.column("id").to_numpy(zero_copy_only=False), context.row_ids[table][allowed]):
+                raise RuntimeError(f"semantic_hits rows differ from the embedding index for {table}")
+            if context.time_format == 'mmlifelong':
+                start_ts = hits.column('start_ts').to_numpy().astype(np.float64)
+                end_ts = hits.column('end_ts').to_numpy().astype(np.float64)
+            elif table == "topic_facts":
+                intervals = [fact_interval(time) for time in hits.column("time").to_pylist()]
+                start_ts = np.asarray([interval[0] for interval in intervals], dtype=np.int64)
+                end_ts = np.asarray([interval[1] for interval in intervals], dtype=np.int64)
+            elif table == "event_steps":
+                days = [day.removeprefix("DAY") for day in hits.column("day").to_pylist()]
+                start_ts = np.asarray([int(day + clock.replace(":", "") + "00") for day, clock in zip(days, hits.column("start_time").to_pylist())], dtype=np.int64)
+                end_ts = np.asarray([int(day + clock.replace(":", "") + "00") for day, clock in zip(days, hits.column("end_time").to_pylist())], dtype=np.int64)
+            else:
+                start_ts = hits.column("start_ts").to_numpy().astype(np.int64)
+                end_ts = hits.column("end_ts").to_numpy().astype(np.int64)
+            source_times = np.asarray([source["timeline_start_s"] for source in context.sources])
+            source_fps = np.asarray([source["fps"] for source in context.sources])
+            seconds = {}
+            for name, timestamps in (("start_s", start_ts), ("end_s", end_ts)):
+                if context.time_format == 'mmlifelong':
+                    seconds[name] = timestamps
+                    continue
+                coarse = (timestamps // 100000000 - 1) * 86400 + (timestamps // 1000000 % 100) * 3600 + (timestamps // 10000 % 100) * 60 + timestamps // 100 % 100
+                source_index = np.searchsorted(source_times, coarse, side="right") - 1
+                if (source_index < 0).any():
+                    raise ValueError(f"Index timestamp precedes media: {timestamps[source_index < 0][:5]}")
+                seconds[name] = coarse + (timestamps % 100) / source_fps[source_index]
+            if "start_ts" not in hits.column_names:
+                hits = hits.append_column("start_ts", pa.array(start_ts, pa.int64())).append_column("end_ts", pa.array(end_ts, pa.int64()))
+            hits = hits.append_column("cosine_sim", pa.array(scores.astype(np.float64), pa.float64())).append_column("start_s", pa.array(seconds["start_s"], pa.float64())).append_column("end_s", pa.array(seconds["end_s"], pa.float64()))
+            with duckdb.connect(config={"enable_external_access": "false", "allow_unsigned_extensions": "false"}) as memory:
+                memory.register("semantic_rows", hits)
+                memory.execute("CREATE TABLE semantic_hits AS SELECT * FROM semantic_rows")
+                timer = threading.Timer(30, memory.interrupt)
+                timer.start()
+                try:
+                    cursor = memory.execute(sql)
+                    result_columns = [column[0] for column in cursor.description]
+                    if len(result_columns) != len(set(result_columns)):
+                        raise ValueError(f"duplicate SQL column names: {result_columns}; use distinct AS aliases")
+                    if question is None:
+                        raw_rows = cursor.fetchmany(101)
+                        has_more = len(raw_rows) > 100
+                        raw_rows = raw_rows[:100]
+                    else:
+                        raw_rows = cursor.fetchall()
+                        has_more = False
+                finally:
+                    timer.cancel()
+            return hits.num_rows, result_columns, raw_rows, has_more
+
+        candidate_count, result_columns, raw_rows, has_more = await asyncio.to_thread(build_and_query)
+        result = {"table": table, "candidate_count": candidate_count, "columns": result_columns, "rows": [{column: json_value(value, 500 if question is None else None) for column, value in zip(result_columns, row)} for row in raw_rows], "has_more": has_more}
+        print(f"VECTOR result table={table} candidates={candidate_count} rows={len(raw_rows)} has_more={has_more}", flush=True)
         if question is not None:
             submission, _ = await context.summary_response(
                 "semantic-qa",
-                "Answer the question concisely using only the supplied search hits. The question and search query select the task; they are not evidence. Similarity scores rank candidates, not factual correctness. Preserve supporting row IDs and times, uncertainty, and contradictions. Do not add facts from other results or outside knowledge. State explicitly when the supplied hits do not establish the answer.",
-                [{"type": "input_text", "text": json.dumps({"question": question, "query": query, "table": table, "hits": hits}, ensure_ascii=False)}],
+                "Answer the question concisely using only the supplied search result. The question, search query and SQL select the task; they are not evidence. Similarity scores rank candidates, not factual correctness. Preserve supporting row IDs and times, uncertainty, and contradictions. Do not add facts from other results or outside knowledge. State explicitly when the supplied rows do not establish the answer.",
+                [{"type": "input_text", "text": json.dumps({"question": question, "query": query, "table": table, "sql": sql, "result": result}, ensure_ascii=False, default=lambda value: json_value(value, None))}],
                 AnswerSubmission,
             )
             return submission.model_dump_json()
-        return json.dumps({"table": table, "hits": hits}, ensure_ascii=False)
+        return json.dumps(result, ensure_ascii=False, default=lambda value: json_value(value, None))
 
     @function_tool(failure_error_function=tool_error_json)
     async def add_note(note: str) -> str:
@@ -1021,6 +1103,8 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         """Read the complete Markdown for one listed skill."""
         if name not in filenames:
             raise ValueError(f"unknown skill: {name}")
+        if context.time_format == 'mmlifelong' and name in ('sql-schema', 'semantic-search'):
+            return (Path(__file__).parent / 'skills-month' / filenames[name]).read_text()
         return (context.skill_dir / filenames[name]).read_text()
 
     @function_tool(failure_error_function=None)
@@ -1034,14 +1118,14 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         return AnswerSubmission(answer=answer).model_dump_json()
 
     @function_tool(failure_error_function=tool_error_json)
-    async def clip_qa(start_s: float, end_s: float, fps: float, question: str) -> list[Any]:
+    async def clip_qa(start_s: float, end_s: float, fps: float, question: str, video_id: str | None = None) -> list[Any]:
         """Use only after retrieval has clearly located the relevant interval and a specific unresolved detail requires viewing images. Do not use clip_qa for broad search or to scan speculative intervals. Inspect at most 20 minutes of source media sampled at the supplied fps. Choose fps for the detail or action being checked; sampling must fit within 650 images. Returns an answer with evidence images and actual source times."""
         if not math.isfinite(start_s) or not math.isfinite(end_s) or start_s < 0 or end_s <= start_s:
             raise ValueError("clip interval must be finite, non-negative and increasing")
         if end_s - start_s > 1200:
             raise ValueError("clip_qa rejects intervals longer than 20 minutes")
         call_id = uuid.uuid4().hex
-        sampled = await sample_frames(context, start_s, end_s, fps, (0, 0, 1000, 1000), call_id, CLIP_IMAGE_LIMIT)
+        sampled = await sample_frames(context, start_s, end_s, fps, (0, 0, 1000, 1000), call_id, CLIP_IMAGE_LIMIT, video_id)
         encoded_frames = []
         for frame, jpeg_bytes in sampled:
             recipe = {key: value for key, value in frame.items() if key != "recipe_path"}
@@ -1049,9 +1133,13 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             encoded_frames.append(base64.b64encode(jpeg_bytes).decode())
         instructions = "Answer the visual question using only the supplied ordered frame sequence. Return unknown when the visible evidence is insufficient. Cite supporting frames with zero-based evidence_frame_indices; answered requires at least one evidence frame. Use the supplied actual source times when referring to the source timeline."
         prompt = json.dumps({"question": normalize_text(question), "start_s": start_s, "end_s": end_s, "fps": fps, "frame_times_s": [frame["time_s"] for frame, _ in sampled]}, ensure_ascii=False)
+        if context.time_format == 'mmlifelong':
+            prompt = f'Video {video_id}. Times are seconds within this video.\n' + prompt
         if context.clip_qa_video:
             content = [{"type": "text", "text": prompt}, {"type": "video_url", "video_url": {"url": "data:video/jpeg;base64," + ",".join(encoded_frames)}}]
             request = {"model": context.model.model, "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}], "extra_body": {"media_io_kwargs": {"video": {"num_frames": -1, "fps": fps, "frames_indices": list(range(len(sampled))), "total_num_frames": len(sampled), "duration": len(sampled) / fps, "do_sample_frames": False}}, "mm_processor_kwargs": {"do_sample_frames": False}}}
+            if context.model_settings.reasoning.effort is not None:
+                request["reasoning_effort"] = context.model_settings.reasoning.effort
         else:
             content = [{"type": "input_text", "text": prompt}, *[{"type": "input_image", "image_url": "data:image/jpeg;base64," + encoded, "detail": "high"} for encoded in encoded_frames]]
             request = {"model": context.model.model, "instructions": instructions, "input": [{"role": "user", "content": content}], "reasoning": context.model_settings.reasoning, "store": context.model_settings.store, "include": context.model_settings.response_include, "extra_body": context.model_settings.extra_body}
@@ -1079,6 +1167,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                     {
                         "status": submission.status,
                         "answer": submission.answer,
+                        "video_id": video_id,
                         "evidence_times_s": [
                             sampled[index][0]["time_s"]
                             for index in submission.evidence_frame_indices
@@ -1108,9 +1197,12 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                 )
         return outputs
 
+    if context.time_format == 'mmlifelong':
+        vector_search.description = vector_search.description.replace('start_ts and end_ts (DHHMMSSFF, added for topic_facts and event_steps), start_s and end_s (seconds since DAY1 00:00:00 for clip_qa)', 'video_id, start_ts/end_ts and start_s/end_s (seconds within the identified video, including fractional seconds)')
+        clip_qa.description += ' MM-Lifelong requires video_id from the retrieved evidence. start_s/end_s are seconds within that video.'
     answer_tools = [
         run_sql,
-        semantic_search,
+        semantic_search if context.semantic_search_mode == "ppr" else vector_search,
         clip_qa,
         add_note,
         read_notes,
@@ -1134,27 +1226,26 @@ class VideoSQLHarness:
         embedding_url: str,
         embedding_model: str,
         *,
+        query_time: int | None = None,
         base_url: str = OPENAI_BASE_URL,
         clip_qa_video: bool = False,
-        context_limit: int = CONTEXT_LIMIT,
-        compaction_threshold: int = COMPACTION_THRESHOLD,
+        reasoning_effort: str | None = "xhigh",
+        semantic_search_mode: Literal["ppr", "vector"] = "ppr",
+        time_format: Literal['egolife', 'mmlifelong'] = 'egolife',
+        client: AsyncOpenAI,
+        embedding_client: httpx.AsyncClient,
+        model_limiter: asyncio.Semaphore,
     ) -> None:
-        client = AsyncOpenAI(
-            api_key=api_key, base_url=base_url, max_retries=3,
-            timeout=httpx2.Timeout(connect=60, read=900, write=900, pool=900),
-            http_client=DefaultAsyncHttpxClient(
-                limits=httpx2.Limits(max_connections=1000, max_keepalive_connections=256),
-            ),
-        )
         model = OpenAIResponsesModel(model=model_name, openai_client=client)
         model_settings = ModelSettings(
-            reasoning={"effort": "high", "summary": "auto"},
+            reasoning={"effort": reasoning_effort, "summary": "auto"} if reasoning_effort is not None else {"summary": "auto"},
+            parallel_tool_calls=True,
             store=False,
             response_include=["reasoning.encrypted_content"],
             preserve_raw_usage=True,
         )
         run_config = RunConfig(
-            tracing_disabled=False,
+            tracing_disabled=True,
             reasoning_item_id_policy="preserve",
         )
         self.context = HarnessContext(
@@ -1169,19 +1260,22 @@ class VideoSQLHarness:
             run_config=run_config,
             embedding_url=embedding_url,
             embedding_model=embedding_model,
+            query_time=query_time,
+            time_format=time_format,
+            semantic_search_mode=semantic_search_mode,
             clip_qa_video=clip_qa_video,
-            embedding_client=httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
-                limits=httpx.Limits(max_connections=1000, max_keepalive_connections=256),
-            ),
-            context_limit=context_limit,
-            compaction_threshold=compaction_threshold,
+            embedding_client=embedding_client,
+            model_limiter=model_limiter,
         )
         self.answer_tools, self.catalog = make_tools(self.context)
 
     async def restore_prefix(self, snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         context = self.context
         context.answer_turns = snapshot["answer_turns"]
+        context.compactions = snapshot["compactions"]
+        context.investigation_calls = snapshot["investigation_calls"]
+        context.final_calls = snapshot["final_calls"]
+        context.final_answer_mode = snapshot["final_answer_mode"]
         context.answer_context_tokens = snapshot["answer_context_tokens"]
         context.answer_context_reached = snapshot["answer_context_reached"]
         context.tool_counter = snapshot["tool_counter"]
@@ -1192,11 +1286,9 @@ class VideoSQLHarness:
         context.path_histories = copy.deepcopy(snapshot["prior_histories"])
         if snapshot["notes"] is not None:
             (context.run_dir / "agent_notes.jsonl").write_text(snapshot["notes"])
-        for filename in snapshot["media_files"]:
-            source = Path(filename)
-            if source.is_dir():  # sample_video scratch directories are not replay media.
-                continue
-            (context.run_dir / "media" / source.name).write_bytes(source.read_bytes())
+        for filename, recipe in snapshot["media_recipes"].items():
+            (context.run_dir / "media" / filename).write_text(json.dumps(recipe, ensure_ascii=False) + "\n")
+        decoded = {}
         items = copy.deepcopy(snapshot["input"])
         for item in [*items, *(pair[1] for pair in context.tool_outputs.values())]:
             if item.get("type") != "function_call_output" or not isinstance(item["output"], list):
@@ -1204,8 +1296,10 @@ class VideoSQLHarness:
             for index, part in enumerate(item["output"]):
                 if part["type"] == "input_image":
                     filename = json.loads(item["output"][index - 1]["text"])["filename"]
-                    jpeg = context.run_dir / "media" / Path(filename).with_suffix(".jpg")
-                    part["image_url"] = "data:image/jpeg;base64," + base64.b64encode(jpeg.read_bytes()).decode()
+                    if filename not in decoded:
+                        jpeg = await asyncio.to_thread(frame_jpeg_bytes, snapshot["media_recipes"][filename])
+                        decoded[filename] = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+                    part["image_url"] = decoded[filename]
         context.expected_prefix = snapshot
         return items
 
@@ -1221,15 +1315,20 @@ class VideoSQLHarness:
         if base_instructions is None:
             base_instructions = instructions if instructions is not None else (
                 "Answer the user's question by retrieving evidence from the memory database. "
-                "Use submit_answer when finished. The complete database schema is:\n" + SCHEMA
-                + "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text."
+                "Use submit_answer when finished. The complete database schema is:\n" + (MM_SCHEMA if self.context.time_format == 'mmlifelong' else SCHEMA)
+                + ("\n\nRetrieval: Use run_sql for known SQL filters, joins, and aggregates. Use semantic_search when retrieving by meaning is needed; it is not the default first step. semantic_search uses MAGIC PPR and optional pre/post SQL, and returns raw evidence without an extra QA call. Its query specifies the semantic clue. run_sql returns raw results with question=null; only its optional question parameter requests a separate QA answer from the SQL result." if self.context.semantic_search_mode == "ppr" else "\n\nRetrieval: run_sql and semantic_search return raw results with question=null. Their optional question parameter requests a separate QA answer from the retrieved evidence. semantic_search.query specifies the retrieval text; its sql runs after retrieval over the temporary table semantic_hits, which holds every row of the chosen table plus cosine_sim, start_ts, end_ts, start_s and end_s. Use that sql to rank by cosine_sim, filter or order by time, filter or sort by names or text, or aggregate, for example: SELECT id, text, start_ts, cosine_sim FROM semantic_hits ORDER BY cosine_sim DESC LIMIT 10; SELECT id, text, start_s, end_s, cosine_sim FROM semantic_hits WHERE start_ts >= 200000000 AND end_ts < 300000000 ORDER BY cosine_sim DESC LIMIT 10; SELECT id, text, start_ts FROM semantic_hits WHERE cosine_sim >= 0.4 ORDER BY start_ts LIMIT 20; SELECT id, text, cosine_sim FROM semantic_hits WHERE text LIKE '%alice%' ORDER BY text, cosine_sim DESC LIMIT 20.")
                 + "\n\nSQL scope: Every run_sql query, including QA calls, must restrict its result with a relevant outer WHERE, a finite LIMIT, HAVING/QUALIFY, sampling, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Filter to the requested day/time, entity, or row IDs before retrieving detailed text. ORDER BY alone and a QA question do not constrain SQL. Unrestricted queries will be rejected before execution; rewrite them with a real scope constraint. Do not request an entire timeline's tables to answer a question about a few events."
+                + ("" if self.context.semantic_search_mode == "ppr" else " Natural-language columns (text, fact, description, entity names) are casefolded to lowercase, so write LIKE patterns on them in lowercase; ids, time strings and metadata keep their original case.")
                 + "\n\nVisual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals."
-                + f"\n\nInvestigation budget: There is no turn limit. Once your context reaches {ANSWER_CONTEXT_LIMIT} tokens, immediately answer using the evidence already available; further tools are disabled. An investigation that has grown this large is likely stuck, and more searching is unlikely to improve the answer. This cutoff reserves ample context for the final answer. Use focused retrieval and replace bulky results before reaching it."
+                + f"\n\nInvestigation budget: You have {INVESTIGATION_CALL_LIMIT} model calls shared across your own turns, clip_qa and optional SQL QA. Calling a tool does not itself consume another model call, but its QA request does. Prefer parallel independent tool calls. After these {INVESTIGATION_CALL_LIMIT} calls, one final answer request is allowed with all investigation tools disabled. Replacing history never restores spent calls."
                 + "\n\nContext maintenance: Only the latest tool result in your context can be replaced. After reading it, use replace_tool alone before continuing if it is large, even when useful and correct, or if it is invalid. Write replacement yourself and give a brief reason. Summarize only the target result's question and evidence, preserving relevant facts, IDs, times, uncertainty, contradictions, and unresolved details. Other results may be cited explicitly by tool_id, but do not present their evidence as part of this result or substitute a summary of another question. For invalid results, replace the entire content with why it must not be used. All history after the target result through the replacement turn is removed, including reasoning, messages, and tool calls; future reasoning starts from the replacement. Do not combine replace_tool with any other tool call in the same turn. Saving add_note does not replace a tool result."
                 + "\n\nROOT-SKILL (skill loading guidance):\n"
                 + (self.context.skill_dir / "ROOT-SKILL.md").read_text()
             )
+        if self.context.time_format == 'mmlifelong':
+            base_instructions = base_instructions.replace('WHERE start_ts >= 200000000 AND end_ts < 300000000', "WHERE video_id = '14' AND start_ts >= 300 AND end_ts < 600").replace('requested day/time', 'requested video/time')
+        if self.context.time_format == "egolife" and self.context.query_time is None:
+            base_instructions = base_instructions.replace("All rows in this database have already been filtered for the question's cutoff.", "The entire seven-day EgoLife corpus is available, with no question-time cutoff. The camera wearer is Jake / A1_JAKE. DAYn identifies the recording day.")
         self.context.base_instructions = base_instructions
         self.context.compactions = compactions
         agent = Agent(
@@ -1244,13 +1343,19 @@ class VideoSQLHarness:
             f"- {skill['name']}: {skill['description']}" for skill in self.catalog
         )
         if input_items is None:
-            input_items = f"Question: {normalize_text(question)}\n\nAvailable skills:\n{skills}"
+            if self.context.time_format == 'mmlifelong':
+                input_items = f'Question: {question}\nAll indexed broadcasts are available. Identify videos by video_id and use seconds within each video.\n\nAvailable skills:\n{skills}'
+            elif self.context.query_time is None:
+                input_items = f"Question: {question}\nThe entire seven-day EgoLife corpus is available; there is no query-time cutoff.\n\nAvailable skills:\n{skills}"
+            else:
+                input_items = f"Question: {normalize_text(question)}\nQuery time: {self.context.query_time} (EgoLife DHHMMSSFF); {self.context.query_time_s} seconds since DAY1 00:00:00.\n\nAvailable skills:\n{skills}"
         trace_files = []
         while True:
             final_turn = self.context.answer_context_reached
             if final_turn:
+                self.context.final_answer_mode = True
                 agent = agent.clone(
-                    instructions=agent.instructions + f"\n\nThe investigation has reached the {ANSWER_CONTEXT_LIMIT}-token context cutoff. Return the final answer immediately using the supplied answer schema and the evidence already available. Further investigation is unlikely to help. All tools are disabled; do not retrieve more evidence or call any tool.",
+                    instructions=agent.instructions + f"\n\nThe {INVESTIGATION_CALL_LIMIT} investigation model calls are exhausted. This is the single additional final-answer call. Return the final answer immediately using the supplied schema and available evidence. All tools are disabled.",
                     tools=[],
                     output_type=AnswerSubmission,
                     tool_use_behavior="run_llm_again",
@@ -1267,7 +1372,13 @@ class VideoSQLHarness:
             trace_files.append(trace_file)
             history = result.to_input_list()
             if result.final_output is not None:
-                submission = result.final_output if final_turn else AnswerSubmission.model_validate_json(str(result.final_output))
+                if final_turn:
+                    submission = result.final_output
+                elif history[-1]["type"] == "message":
+                    print(f"answer loop ended with a plain message; accepting it as the final answer trace={trace_file}", flush=True)
+                    submission = AnswerSubmission(answer=str(result.final_output))
+                else:
+                    submission = AnswerSubmission.model_validate_json(str(result.final_output))
                 return RolloutSession(
                     answer=submission.answer,
                     status="answered",
@@ -1278,36 +1389,4 @@ class VideoSQLHarness:
                 continue
             if not needs_compaction:
                 raise InvalidTrace("answer loop ended without submit_answer")
-            self.context.compactions += 1
-            original_tools = agent.tools
-            original_behavior = agent.tool_use_behavior
-            agent.tools = []
-            agent.tool_use_behavior = "run_llm_again"
-            compact_result, _, compact_trace = await run_stream(
-                self.context,
-                agent,
-                history
-                + [{"role": "user", "content": COMPACTION_INSTRUCTION}],
-                "compaction",
-                False,
-            )
-            trace_files.append(compact_trace)
-            handoff = str(compact_result.final_output)
-            if self.context.compactions == 3:
-                return RolloutSession(
-                    answer=None,
-                    status="compaction_limit",
-                    trace_files=trace_files,
-                )
-            agent.tools = original_tools
-            agent.tool_use_behavior = original_behavior
-            agent.instructions = (
-                base_instructions
-                + "\n\nTrusted handoff from the same agent's earlier context:\n"
-                + handoff
-            )
-            input_items = "Continue the investigation from the trusted handoff."
-
-    async def close(self) -> None:
-        await self.context.client.close()
-        await self.context.embedding_client.aclose()
+            raise InvalidTrace("Investigation ended without an answer or an exhausted call budget")
