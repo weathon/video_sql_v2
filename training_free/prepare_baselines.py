@@ -233,6 +233,10 @@ def cache_caption_clip(caption: dict, source: dict, root: Path, time_format: str
         command = None
     else:
         command = ['ffmpeg', '-hide_banner', '-nostdin', '-y', '-v', 'error', '-threads', '1', '-i', source['path'], '-map', '0:v:0', '-an', '-vf', f'trim=start_frame={first}:end_frame={stop},setpts=PTS-STARTPTS', '-filter_threads', '1', '-fps_mode', 'passthrough', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '0', '-threads', '1', str(clip)]
+        if time_format == 'mmlifelong':
+            command[command.index('-i'):command.index('-i')] = ['-ss', str(first / source['fps'])]
+            command[command.index('-vf') + 1] = f'trim=end_frame={stop-first},setpts=PTS-STARTPTS'
+            command[-1:-1] = ['-frames:v', str(stop - first)]
         print(f'CACHE_CLIP source={source["path"]} frames={first}:{stop} output={clip}', flush=True)
         metadata_path.with_suffix('.command.json').write_text(json.dumps(command))
         result = subprocess.run(command, capture_output=True, text=True)
