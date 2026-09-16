@@ -510,6 +510,8 @@ def run_magic(question: str, query_time: int | None, run_dir: Path, artifact_roo
                 (api.traces / f"magic-{uuid4().hex}.json").write_text(json.dumps(trace, ensure_ascii=False))
         qa_content = [{"type": "text", "text": full_query + "\n\nContext:\n"}]
         qa_content.extend(memory._render_retrieved_items_interleaved(retrieved_items))
+        if time_format == 'mmlifelong':
+            qa_content.append({'type': 'text', 'text': 'Answer the original question now using the context above. The retrieval rounds are complete.'})
         answer = api.complete(final_prompt + conversation + [{"role": "user", "content": qa_content}])
         return answer, time.perf_counter()
     finally:
