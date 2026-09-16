@@ -283,7 +283,7 @@ def exception_chain(error: BaseException) -> list[BaseException]:
 
 def tool_error_json(_context: Any, error: Exception) -> str:
     for item in exception_chain(error):
-        if isinstance(item, (FileNotFoundError, RuntimeError, httpx.HTTPError)):
+        if isinstance(item, (FileNotFoundError, RuntimeError, httpx.HTTPError, KeyError, TypeError, AttributeError, IndexError, NameError)):
             raise item
         if isinstance(item, APIError):
             raise item
@@ -943,7 +943,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             path.write_text(json.dumps(trace, ensure_ascii=False, indent=2, default=lambda value: json_value(value, None)) + "\n")
 
     def vector_search_error(tool_context: Any, error: Exception) -> str:
-        if isinstance(error, (httpx.HTTPError, RuntimeError, FileNotFoundError, APIError)):
+        if isinstance(error, (httpx.HTTPError, RuntimeError, FileNotFoundError, APIError, KeyError, TypeError, AttributeError, IndexError, NameError)):
             raise error
         return json.dumps(
             {
@@ -1017,8 +1017,8 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                 end_ts = hits.column('end_ts').to_numpy().astype(np.float64)
             elif table == "topic_facts":
                 intervals = [fact_interval(time) for time in hits.column("time").to_pylist()]
-                start_ts = np.asarray([interval[0] for interval in intervals], dtype=np.int64)
-                end_ts = np.asarray([interval[1] for interval in intervals], dtype=np.int64)
+                start_ts = np.asarray([np.nan if interval is None else interval[0] for interval in intervals], dtype=np.float64)
+                end_ts = np.asarray([np.nan if interval is None else interval[1] for interval in intervals], dtype=np.float64)
             elif table == "event_steps":
                 days = [day.removeprefix("DAY") for day in hits.column("day").to_pylist()]
                 start_ts = np.asarray([int(day + clock.replace(":", "") + "00") for day, clock in zip(days, hits.column("start_time").to_pylist())], dtype=np.int64)
@@ -1033,14 +1033,17 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
                 if context.time_format == 'mmlifelong':
                     seconds[name] = timestamps
                     continue
-                coarse = (timestamps // 100000000 - 1) * 86400 + (timestamps // 1000000 % 100) * 3600 + (timestamps // 10000 % 100) * 60 + timestamps // 100 % 100
+                dated = np.isfinite(timestamps)
+                values = timestamps[dated].astype(np.int64)
+                coarse = (values // 100000000 - 1) * 86400 + (values // 1000000 % 100) * 3600 + (values // 10000 % 100) * 60 + values // 100 % 100
                 source_index = np.searchsorted(source_times, coarse, side="right") - 1
                 if (source_index < 0).any():
-                    raise ValueError(f"Index timestamp precedes media: {timestamps[source_index < 0][:5]}")
-                seconds[name] = coarse + (timestamps % 100) / source_fps[source_index]
+                    raise ValueError(f"Index timestamp precedes media: {values[source_index < 0][:5]}")
+                seconds[name] = np.full(len(timestamps), np.nan)
+                seconds[name][dated] = coarse + (values % 100) / source_fps[source_index]
             if "start_ts" not in hits.column_names:
-                hits = hits.append_column("start_ts", pa.array(start_ts, pa.int64())).append_column("end_ts", pa.array(end_ts, pa.int64()))
-            hits = hits.append_column("cosine_sim", pa.array(scores.astype(np.float64), pa.float64())).append_column("start_s", pa.array(seconds["start_s"], pa.float64())).append_column("end_s", pa.array(seconds["end_s"], pa.float64()))
+                hits = hits.append_column("start_ts", pa.array(start_ts, pa.int64(), from_pandas=True)).append_column("end_ts", pa.array(end_ts, pa.int64(), from_pandas=True))
+            hits = hits.append_column("cosine_sim", pa.array(scores.astype(np.float64), pa.float64())).append_column("start_s", pa.array(seconds["start_s"], pa.float64(), from_pandas=True)).append_column("end_s", pa.array(seconds["end_s"], pa.float64(), from_pandas=True))
             with duckdb.connect(config={"enable_external_access": "false", "allow_unsigned_extensions": "false"}) as memory:
                 memory.register("semantic_rows", hits)
                 memory.execute("CREATE TABLE semantic_hits AS SELECT * FROM semantic_rows")
@@ -1105,7 +1108,10 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             raise ValueError(f"unknown skill: {name}")
         if context.time_format == 'mmlifelong' and name in ('sql-schema', 'semantic-search'):
             return (Path(__file__).parent / 'skills-month' / filenames[name]).read_text()
-        return (context.skill_dir / filenames[name]).read_text()
+        content = (context.skill_dir / filenames[name]).read_text()
+        if context.time_format == 'egolife' and context.query_time is None:
+            content = content.replace("The database is already filtered to the question's query time.", "The entire seven-day corpus is available, with no question-time cutoff.")
+        return content
 
     @function_tool(failure_error_function=None)
     async def agent_raise(reason: str) -> str:
