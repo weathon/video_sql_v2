@@ -29,7 +29,8 @@ from worldmm.llm.templates.memory_reasoning_unified_mmlifelong import prompt_tem
 from worldmm.llm.templates.qa_mmlifelong_chain import prompt_template as mm_qa_template
 from worldmm.memory.episodic.memory import CaptionEntry
 from worldmm.memory.memory import WorldMemory
-from worldmm.memory.unified.memory import UnifiedMemory, MultiGraphUnifiedMemory
+from worldmm.memory.unified.memory import MultiGraphUnifiedMemory, UnifiedMemory
+from worldmm.memory.unified.graph import MultimodalGraph
 from worldmm.memory.unified.nodes import NodeType
 from worldmm.memory.utils import RetrievedItem, transform_timestamp
 from worldmm.memory.visual.memory import FrameEntry
@@ -69,6 +70,10 @@ class TimeReference(BaseModel):
 
 class MagicOutputError(ValueError):
     """A model response that the next native reasoning round can correct."""
+
+
+class VideoTimeReference(TimeReference):
+    video_id: str | None
 
 
 class MagicAPI:
@@ -185,8 +190,10 @@ class MagicFrames:
         trace = {"request": {"tool": "extract_frames", "video_path": video_path, "fps": fps, "max_frames": max_frames, "start_sec": start_sec, "end_sec": end_sec}, "response": None, "error": None}
         print(f"MAGIC frames request: {video_path}, max_frames={max_frames}", flush=True)
         try:
-            key = f'{video_path}:{float(start_sec)}-{float(end_sec)}' if self.time_format == 'mmlifelong' else video_path
+            key = f'{Path(video_path).stem}:{float(start_sec)}:{float(end_sec)}' if self.time_format == 'mmlifelong' else video_path
             clip = self.clips[key]
+            if self.time_format == 'mmlifelong':
+                start_sec, end_sec = None, None
             physical_path = self.artifact_root / clip["relative_path"]
             with av.open(str(physical_path)) as container:
                 stream = container.streams.video[0]
@@ -195,8 +202,6 @@ class MagicFrames:
                 if video_fps <= 0 or total_frames <= 0:
                     raise ValueError(f"Invalid video frame metadata: {physical_path}, fps={video_fps}, frames={total_frames}")
                 duration = total_frames / video_fps
-                if self.time_format == 'mmlifelong':
-                    start_sec, end_sec = 0.0, duration
                 start = 0.0 if start_sec is None else start_sec
                 end = duration if end_sec is None else end_sec
                 start = max(0.0, min(start, duration))
@@ -235,28 +240,42 @@ class MagicFrames:
 
 def load_magic_artifacts(artifact_root, time_format='egolife'):
     with ARTIFACT_LOCK:
-        cache_key = (artifact_root, time_format)
-        if cache_key in ARTIFACTS:
-            return ARTIFACTS[cache_key]
+        if artifact_root in ARTIFACTS:
+            return ARTIFACTS[artifact_root]
         source = artifact_root / "magic"
         print(f"MAGIC loading artifacts: {source}", flush=True)
         if time_format == 'mmlifelong':
-            videos = {}
+            graph = MultimodalGraph.load(str(source / 'graph.pkl'))
             with (source / 'visual_embeddings.pkl').open('rb') as handle:
-                visual_embeddings = pickle.load(handle)
-            for video in json.loads((artifact_root / 'media-map.json').read_text())['sources']:
-                video_id = video['video_id']
-                directory = source / video_id
-                memory = UnifiedMemory(None, str(directory / 'graph.pkl'), chain_mode='facts')
-                memory.load(topic_chain_facts_path=str(directory / 'topic_chains.json'))
-                memory._event_chains = [event for event in json.loads((directory / 'event_chains.json').read_text()) if len(event['steps']) >= 2]
-                captions = {gran: json.loads((directory / 'captions' / f'{video_id}_{gran}.json').read_text()) for gran in ('30sec', '3min', '10min', '1h')}
-                for node in memory._full_graph.nodes.values():
-                    if node.node_type == NodeType.VISUAL_CLIP and not np.array_equal(node.visual_embedding, visual_embeddings[node.metadata['clip_key']]):
-                        raise ValueError(f'Graph visual embedding differs from offline visual_embeddings.pkl: {node.id}')
-                videos[video_id] = {'graph': memory._full_graph, 'topics': memory._topic_facts, 'events': memory._event_chains, 'captions': captions}
-            ARTIFACTS[cache_key] = {'videos': videos, 'clips': json.loads((artifact_root / 'clip-map.json').read_text())}
-            return ARTIFACTS[cache_key]
+                visual = pickle.load(handle)
+            memories = {}
+            for node in graph.nodes.values():
+                video_id = node.metadata['video_id']
+                node._broadcast_id = video_id
+                if video_id not in memories:
+                    memory = UnifiedMemory(None, str(source / 'graph.pkl'), chain_mode='facts')
+                    memory._full_graph = MultimodalGraph()
+                    topics = json.loads((source / video_id / 'topic_chains.json').read_text())
+                    memory._topic_facts = {entity: data['facts'] for entity, data in topics.items() if data['has_lifecycle'] and data['facts']}
+                    memory._event_chains = []
+                    for chain in json.loads((source / video_id / 'event_chains.json').read_text()):
+                        steps = []
+                        for step in chain['steps']:
+                            start, end = [sum(float(part) * scale for part, scale in zip(step[field].split(':'), (3600, 60, 1), strict=True)) for field in ('start_time', 'end_time')]
+                            steps.append({'day': '', 'start_ts': start, 'end_ts': end, 'description': step['description']})
+                        if len(steps) >= 2:
+                            memory._event_chains.append({'name': chain['name'], 'key_entities': chain['key_entities'], 'steps': steps})
+                    memories[video_id] = memory
+                memories[video_id]._full_graph.nodes[node.id] = node
+                if node.node_type == NodeType.VISUAL_CLIP and not np.array_equal(node.visual_embedding, visual[node.metadata['clip_key']]):
+                    raise ValueError(f'Graph visual embedding differs from offline visual_embeddings.pkl: {node.id}')
+            for edge in graph.edges:
+                memories[graph.nodes[edge.src_id].metadata['video_id']]._full_graph.edges.append(edge)
+            for memory in memories.values():
+                memory.index(float('inf'))
+            captions = {g: json.loads((source / f'captions/mmlifelong_{g}.json').read_text()) for g in ('30sec', '3min', '10min', '1h')}
+            ARTIFACTS[artifact_root] = {'memories': memories, 'captions': captions, 'clips': json.loads((artifact_root / 'clip-map.json').read_text())}
+            return ARTIFACTS[artifact_root]
         memory = UnifiedMemory(None, str(source / "graph.pkl"), chain_mode="facts")
         memory.load(topic_chain_facts_path=str(source / "topic_chains/topic_chains.json"), event_chain_path=str(source / "event_chains/step3_enriched_chains.json"))
         captions = {}
@@ -274,80 +293,28 @@ def load_magic_artifacts(artifact_root, time_format='egolife'):
         frame_rates = {source["fps"] for source in json.loads((artifact_root / "media-map.json").read_text())["sources"]}
         if len(frame_rates) != 1:
             raise ValueError(f"EgoLife caption timestamp conversion requires the verified common source frame rate: {frame_rates}")
-        ARTIFACTS[cache_key] = {"graph": memory._full_graph, "topics": memory._topic_facts, "events": memory._event_chains, "captions": captions, "clips": clips, "fps": frame_rates.pop()}
-        return ARTIFACTS[cache_key]
-
-
-class MultiVideoUnifiedMemory(MultiGraphUnifiedMemory):
-    def retrieve(self, query, **kwargs):
-        results = []
-        self.retrieval_records = []
-        for video_id, memory in self._memories.items():
-            found = memory.retrieve(query=query, **kwargs)
-            for node, score in found:
-                node._broadcast_id = video_id
-            self.retrieval_records.append({'video_id': video_id, 'query': query, 'results': [{'id': node.id, 'score': score} for node, score in found]})
-            results.extend(found)
-        results.sort(key=lambda pair: pair[1], reverse=True)
-        return results[:kwargs['top_k']]
-
-    def format_results(self, results, visual_memory, max_frames_per_clip, max_total_frames, _current_total_frames):
-        items = []
-        total_frames = _current_total_frames
-        episode_intervals = {(node.metadata['video_id'], node.start_ts, node.end_ts) for node, _ in results if node.node_type == NodeType.EPISODE}
-        for node, _ in results:
-            video_id = node.metadata['video_id']
-            if node.node_type in (NodeType.EPISODE, NodeType.SEMANTIC):
-                item = RetrievedItem('episodic' if node.node_type == NodeType.EPISODE else 'semantic', node.display_text(), '', 0)
-                item._broadcast_id = video_id
-                items.append(item)
-            elif node.node_type == NodeType.VISUAL_CLIP:
-                if (video_id, node.start_ts, node.end_ts) not in episode_intervals:
-                    item = RetrievedItem('episodic', f'{node.display_text()} {node.text}', '', 0)
-                    item._broadcast_id = video_id
-                    items.append(item)
-                remaining = max_total_frames - total_frames
-                if remaining <= 0:
-                    continue
-                entries = visual_memory._extract_frames(node.metadata['video_path'], max_frames=min(max_frames_per_clip, remaining), start_sec=node.start_ts, end_sec=node.end_ts)
-                item = RetrievedItem('visual', [entry.frame for entry in entries], '', 0)
-                item._broadcast_id = video_id
-                item._start_ts = node.start_ts
-                items.append(item)
-                total_frames += len(entries)
-        return items
-
-
-class MMLifelongMemory(WorldMemory):
-    def __init__(self, api, artifact_root, artifacts):
-        self.unified_memory = MultiVideoUnifiedMemory()
-        self.captions = {}
-        for video_id, data in artifacts['videos'].items():
-            memory = UnifiedMemory(api, str(artifact_root / 'magic' / video_id / 'graph.pkl'), chain_mode='facts')
-            memory._full_graph = data['graph']
-            memory._topic_facts = data['topics']
-            memory._event_chains = data['events']
-            self.unified_memory.add(video_id, memory)
-            self.captions[video_id] = data['captions']
-        self.visual_memory = MagicFrames(api, artifact_root, artifacts['clips'], 'mmlifelong')
-
-    def retrieve_by_time(self, start_sec, end_sec):
-        self.temporal_records = []
-        results = []
-        for video_id, captions in self.captions.items():
-            for granularity in ('30sec', '3min'):
-                for row in captions[granularity]:
-                    if row['end_sec'] > start_sec and row['start_sec'] < end_sec and row['text'].strip():
-                        self.temporal_records.append({'video_id': video_id, 'granularity': granularity, **row})
-                        results.append(f"[Video {video_id}] [{row['start_sec']}s - {row['end_sec']}s] ({granularity})\n{row['text']}")
-        return '\n\n'.join(results)
+        ARTIFACTS[artifact_root] = {"graph": memory._full_graph, "topics": memory._topic_facts, "events": memory._event_chains, "captions": captions, "clips": clips, "fps": frame_rates.pop()}
+        return ARTIFACTS[artifact_root]
 
 
 class MagicMemory(WorldMemory):
     """Independent online state; inherited formatting reads shared artifact data."""
 
-    def __init__(self, api, artifact_root, artifacts):
+    def __init__(self, api, artifact_root, artifacts, time_format='egolife'):
+        self.time_format = time_format
         self.episodic_memory = SimpleNamespace(captions=artifacts["captions"])
+        if time_format == 'mmlifelong':
+            self.unified_memory = MultiGraphUnifiedMemory()
+            for video_id, saved in artifacts['memories'].items():
+                memory = UnifiedMemory(api, str(artifact_root / 'magic/graph.pkl'), chain_mode='facts')
+                memory._full_graph = saved._full_graph
+                memory._active_graph = saved._active_graph
+                memory._indexed_time = float('inf')
+                memory._topic_facts = saved._topic_facts
+                memory._event_chains = saved._event_chains
+                self.unified_memory.add(video_id, memory)
+            self.visual_memory = MagicFrames(api, artifact_root, artifacts['clips'], time_format)
+            return
         self.fps = artifacts["fps"]
         self.unified_memory = UnifiedMemory(api, str(artifact_root / "magic/graph.pkl"), chain_mode="facts")
         self.unified_memory._full_graph = artifacts["graph"]
@@ -355,9 +322,19 @@ class MagicMemory(WorldMemory):
         self.unified_memory._event_chains = artifacts["events"]
         self.visual_memory = MagicFrames(api, artifact_root, artifacts["clips"])
 
-    def retrieve_by_time(self, start_sec, end_sec):
+    def retrieve_by_time(self, start_sec, end_sec, video_id=None):
         results = []
         self.temporal_records = []
+        if self.time_format == 'mmlifelong':
+            for granularity in ('30sec', '3min'):
+                for caption in self.episodic_memory.captions[granularity]:
+                    if video_id is not None and caption['video_id'] != video_id:
+                        continue
+                    start, end = caption['start_sec'], caption['end_sec']
+                    if end > start_sec and start < end_sec and caption['text'].strip():
+                        self.temporal_records.append(caption)
+                        results.append(f"[Video {caption['video_id']}] [{start}s - {end}s] ({granularity})\n{caption['text']}")
+            return '\n\n'.join(results)
         cutoff = self.unified_memory.indexed_time
         for granularity in ("30sec", "3min"):
             for caption in self.episodic_memory.captions[granularity]:
@@ -379,13 +356,11 @@ def run_magic(question: str, query_time: int | None, run_dir: Path, artifact_roo
         question = normalize_text(question)
     initialization = {"request": {"tool": "index", "artifact_root": str(artifact_root), "query_time": query_time}, "response": None, "error": None}
     try:
+        memory = MagicMemory(api, artifact_root, load_magic_artifacts(artifact_root, time_format), time_format)
+        memory.unified_memory.index(float('inf') if time_format == 'mmlifelong' else query_time)
         if time_format == 'mmlifelong':
-            memory = MMLifelongMemory(api, artifact_root, load_magic_artifacts(artifact_root, time_format))
-            memory.unified_memory.index(float('inf'))
-            initialization['response'] = {'video_scope': list(memory.unified_memory._memories), 'graphs': {bid: {'graph_stats': mem._active_graph.stats(), 'text_matrix_shape': list(mem._active_graph._text_emb_matrix.shape), 'visual_matrix_shape': list(mem._active_graph._vis_emb_matrix.shape)} for bid, mem in memory.unified_memory._memories.items()}}
+            initialization['response'] = {'videos': {bid: {'graph_stats': mem._active_graph.stats(), 'text_matrix_shape': list(mem._active_graph._text_emb_matrix.shape), 'visual_matrix_shape': list(mem._active_graph._vis_emb_matrix.shape)} for bid, mem in memory.unified_memory._memories.items()}}
         else:
-            memory = MagicMemory(api, artifact_root, load_magic_artifacts(artifact_root))
-            memory.unified_memory.index(query_time)
             active_graph = memory.unified_memory._active_graph
             initialization["response"] = {"graph_stats": active_graph.stats(), "semantic_snapshot_timestamps": sorted({node.start_ts for node in active_graph.nodes.values() if node.node_type == NodeType.SEMANTIC}), "text_matrix_shape": list(active_graph._text_emb_matrix.shape), "visual_matrix_shape": list(active_graph._vis_emb_matrix.shape)}
     except Exception as exc:
@@ -400,7 +375,7 @@ def run_magic(question: str, query_time: int | None, run_dir: Path, artifact_roo
     if not mcq:
         final_prompt[0]["content"] = final_prompt[0]["content"].replace("Your task is to answer multiple choice questions based on this accumulated context. Always choose the most relevant answer from the given choices based on the evidence provided.", "Your task is to answer open-ended questions based on this accumulated context.").replace("Provide your answer as a single letter (A, B, C, or D) based on the evidence.", "Provide a direct, brief, factual answer to the question based on the evidence.")
         final_prompt[0]["content"] = final_prompt[0]["content"].replace("Choose the answer that best matches the evidence.", "Answer the question based on the evidence.")
-    full_query = f'Query: {question}\nSearch all 14 indexed videos. Timestamps are seconds within the identified video.' if time_format == 'mmlifelong' else f"Query: {question}\nCurrent time: {transform_timestamp(str(query_time))}"
+    full_query = f"Query: {question}\nAll indexed broadcasts are available. Times are seconds within each identified video." if time_format == 'mmlifelong' else f"Query: {question}\nCurrent time: {transform_timestamp(str(query_time))}"
     conversation = []
     round_history = []
     retrieved_items = []
@@ -427,12 +402,13 @@ def run_magic(question: str, query_time: int | None, run_dir: Path, artifact_roo
             if decision.decision == "answer":
                 break
             search_query = normalize_text(decision.search_query)
-            time_prompt = f'Extract the specific clock time or time range from this EgoLife search query. Dates are DAY1 through DAY7; HH:MM means hours and minutes. Return start and end as seconds since DAY1 00:00:00, calculated as (day - 1) * 86400 + hour * 3600 + minute * 60 + second. Resolve today and yesterday relative to the current query date; a clock time without a date refers to that date. For a point reference use 30 seconds on either side. For example, DAY2 at 00:01 gives start=86430 and end=86490; DAY3 from 09:00 to 09:01 gives start=205200 and end=205260. If there is no specific clock time or time range, return start=null and end=null. Current query time: {transform_timestamp(str(query_time))}. Search query: {search_query}'
             if time_format == 'mmlifelong':
-                time_prompt = f'Extract a specific video timestamp or time range from the search query. MM:SS means minutes and seconds; HH:MM:SS means hours, minutes, seconds within a video. Return start and end in seconds. For a point timestamp use 30 seconds on either side, with start no earlier than zero. Calendar dates and time of day are not video timestamps. Return start=null and end=null when no specific video timestamp is present. Search query: {search_query}'
+                time_prompt = f'Extract an explicitly stated video timestamp or interval from this MM-Lifelong search query. Return start/end in seconds within a video; HH:MM:SS is hours:minutes:seconds and MM:SS is minutes:seconds. For a point use 30 seconds on either side, bounded below by zero. Return video_id only when an explicit video identifier is given, otherwise null. Calendar dates, times of day, and event descriptions do not specify video offsets. If no video timestamp is stated, return start=null and end=null. Search query: {search_query}'
+            else:
+                time_prompt = f'Extract the specific clock time or time range from this EgoLife search query. Dates are DAY1 through DAY7; HH:MM means hours and minutes. Return start and end as seconds since DAY1 00:00:00, calculated as (day - 1) * 86400 + hour * 3600 + minute * 60 + second. Resolve today and yesterday relative to the current query date; a clock time without a date refers to that date. For a point reference use 30 seconds on either side. For example, DAY2 at 00:01 gives start=86430 and end=86490; DAY3 from 09:00 to 09:01 gives start=205200 and end=205260. If there is no specific clock time or time range, return start=null and end=null. Current query time: {transform_timestamp(str(query_time))}. Search query: {search_query}'
             time_messages = [{"role": "user", "content": time_prompt}]
             try:
-                time_reference = api.complete(time_messages, TimeReference)
+                time_reference = api.complete(time_messages, VideoTimeReference if time_format == 'mmlifelong' else TimeReference)
             except model_errors as exc:
                 conversation.extend(time_messages)
                 if api.last_assistant is not None:
@@ -447,7 +423,7 @@ def run_magic(question: str, query_time: int | None, run_dir: Path, artifact_roo
             print(f"MAGIC retrieval: round={round_num}, query={search_query}", flush=True)
             try:
                 if time_reference.start is not None:
-                    content = memory.retrieve_by_time(time_reference.start, time_reference.end)
+                    content = memory.retrieve_by_time(time_reference.start, time_reference.end, time_reference.video_id if time_format == 'mmlifelong' else None)
                     if content:
                         retrieved_items.append(RetrievedItem("episodic", content, search_query, round_num))
                     round_history.append({"round_num": round_num, "decision": "search", "memory_type": "temporal", "search_query": search_query, "retrieved_content": content if content else "[No results]"})
@@ -455,8 +431,6 @@ def run_magic(question: str, query_time: int | None, run_dir: Path, artifact_roo
                     continue
                 raw_results = memory.unified_memory.retrieve(search_query, top_k=16, target_node_types=[NodeType.EPISODE, NodeType.SEMANTIC, NodeType.VISUAL_CLIP], alpha=0.7, seed_top_k=5, damping=0.85, bm25_weight=0.3)
                 trace["response"] = {"raw_results": [{"id": node.id, "node_type": node.node_type.value, "start_ts": node.start_ts, "end_ts": node.end_ts, "text": node.text, "metadata": node.metadata, "score": score} for node, score in raw_results]}
-                if time_format == 'mmlifelong':
-                    trace['response']['per_video_retrieval'] = memory.unified_memory.retrieval_records
                 new_results = [(node, score) for node, score in raw_results if node.id not in retrieved_node_ids]
                 trace["response"]["new_node_ids"] = [node.id for node, _ in new_results]
                 retrieved_node_ids.update(node.id for node, _ in new_results)
@@ -468,32 +442,46 @@ def run_magic(question: str, query_time: int | None, run_dir: Path, artifact_roo
                 total_visual_frames += round_frame_count
                 chain_facts = memory.unified_memory.get_chain_facts_for_results(new_results, query_time=query_time, query_text=question, embedding_model=api, min_hits=1, max_topic_chains=3, max_event_chains=1, topic_sim_threshold=0.7, event_chain_sim_threshold=0.7, event_chain_min_hits=1, event_chain_granularities=("30sec", "3min"))
                 trace["response"]["chain_facts"] = chain_facts
-                fresh_facts = [fact for fact in chain_facts if ((fact['broadcast_id'],) if time_format == 'mmlifelong' else ()) + (fact["label"], fact["time"], fact["fact"]) not in injected_chain_facts]
+                fresh_facts = [fact for fact in chain_facts if (fact['broadcast_id'] if time_format == 'mmlifelong' else None, fact["label"], fact["time"], fact["fact"]) not in injected_chain_facts]
                 timed_parts = []
                 for item in new_items:
-                    if time_format == 'mmlifelong':
-                        text = item.content if isinstance(item.content, str) else f'[{item._start_ts}s] [{len(item.content)} visual frames]'
-                        timed_parts.append(((int(item._broadcast_id), 0), f'[Video {item._broadcast_id}] [{item.memory_type}] {text}'))
-                    elif item.memory_type == "episodic":
-                        day, hour, minute = map(int, re.match(r'\[DAY(\d+)\s+(\d{1,2}):(\d{2})', item.content).groups())
-                        timed_parts.append(((0, day * 100000 + hour * 3600 + minute * 60), f"[Retrieved episode] {item.content}"))
+                    if item.memory_type == "episodic":
+                        if time_format == 'mmlifelong':
+                            hour, minute, second = map(int, re.match(r'\[(\d+):(\d{2}):(\d{2})', item.content).groups())
+                            item.content += f' [Video {item._broadcast_id}]'
+                            time_key = int(item._broadcast_id) * 100000 + hour * 3600 + minute * 60 + second
+                        else:
+                            day, hour, minute = map(int, re.match(r'\[DAY(\d+)\s+(\d{1,2}):(\d{2})', item.content).groups())
+                            time_key = day * 100000 + hour * 3600 + minute * 60
+                        timed_parts.append(((0, time_key), f"[Retrieved episode] {item.content}"))
                     elif item.memory_type == "semantic":
+                        if time_format == 'mmlifelong':
+                            item.content += f' [Video {item._broadcast_id}]'
                         timed_parts.append(((1, 0), f"[Retrieved semantic] {item.content}"))
                     elif item.memory_type == "visual":
-                        day, clock = divmod(int(item._start_ts), 100000000)
-                        time_key = day * 100000 + (clock // 1000000) * 3600 + ((clock % 1000000) // 10000) * 60 + 0.5
-                        timed_parts.append(((0, time_key), f"[{transform_timestamp(str(item._start_ts))}] [{len(item.content)} visual frames of above episode]"))
+                        if time_format == 'mmlifelong':
+                            time_key = int(item._broadcast_id) * 100000 + item._start_ts + 0.5
+                            stamp = f'Video {item._broadcast_id}: {item._start_ts}s'
+                        else:
+                            day, clock = divmod(int(item._start_ts), 100000000)
+                            time_key = day * 100000 + (clock // 1000000) * 3600 + ((clock % 1000000) // 10000) * 60 + 0.5
+                            stamp = transform_timestamp(str(item._start_ts))
+                        timed_parts.append(((0, time_key), f"[{stamp}] [{len(item.content)} visual frames of above episode]"))
                 text_parts = [text for _, text in sorted(timed_parts, key=lambda part: part[0])]
-                summary = '\n'.join(text_parts + [f"[Video {fact['broadcast_id']}] [{fact['time']}] {fact['fact']}" for fact in fresh_facts]) if time_format == 'mmlifelong' else "\n".join(memory._mix_facts_by_time(text_parts, fresh_facts) if fresh_facts else text_parts)
+                if time_format == 'mmlifelong':
+                    summary = '\n'.join(text_parts + [f"[Video {fact['broadcast_id']}] [{fact['chain_type']}: {fact['label']}] [{fact['time']}] {fact['fact']}" for fact in fresh_facts])
+                else:
+                    summary = "\n".join(memory._mix_facts_by_time(text_parts, fresh_facts) if fresh_facts else text_parts)
                 if round_frame_count:
                     summary += f"\n[{round_frame_count} image frames retrieved]"
                 for fact in fresh_facts:
-                    injected_chain_facts.add(((fact['broadcast_id'],) if time_format == 'mmlifelong' else ()) + (fact["label"], fact["time"], fact["fact"]))
+                    injected_chain_facts.add((fact['broadcast_id'] if time_format == 'mmlifelong' else None, fact["label"], fact["time"], fact["fact"]))
                     content = f"[{fact['time']} - {fact['end_time']}] {fact['fact']}" if fact["chain_type"] == "event" else f"[{fact['time']}] {fact['fact']}"
-                    chain_item = RetrievedItem(f"{fact['chain_type']}_chain", content, search_query, round_num, fact["label"])
+                    item = RetrievedItem(f"{fact['chain_type']}_chain", content, search_query, round_num, fact["label"])
                     if time_format == 'mmlifelong':
-                        chain_item._broadcast_id = fact['broadcast_id']
-                    new_items.append(chain_item)
+                        item._broadcast_id = fact['broadcast_id']
+                        item.content += f" [Video {fact['broadcast_id']}]"
+                    new_items.append(item)
                 for item in new_items:
                     item.query = search_query
                     item.round_num = round_num
@@ -512,6 +500,7 @@ def run_magic(question: str, query_time: int | None, run_dir: Path, artifact_roo
         answer = api.complete(final_prompt + conversation + [{"role": "user", "content": qa_content}])
         return answer, time.perf_counter()
     finally:
-        memory.unified_memory.cleanup()
+        if time_format == 'egolife':
+            memory.unified_memory.cleanup()
         api.llm.close()
         api.embeddings.close()

@@ -786,9 +786,12 @@ class UnifiedMemory:
                 # Don't add episodic item here — caption comes from EPISODE node.
                 # If no EPISODE node for this time range, add caption for context.
                 ep_id = f"ep_{node.start_ts}_{node.end_ts}_30sec"
+                if 'video_id' in node.metadata:
+                    ep_id = f"{node.metadata['video_id']}:{ep_id}"
                 has_episode = any(
                     n.node_type == NodeType.EPISODE and n.start_ts == node.start_ts
                     and n.end_ts == node.end_ts
+                    and getattr(n, '_broadcast_id', None) == getattr(node, '_broadcast_id', None)
                     for n, _ in results
                 )
                 if not has_episode:
@@ -799,12 +802,14 @@ class UnifiedMemory:
                         vis_text = f"[{_fmt_ts(node.start_ts)} - {_fmt_ts(node.end_ts)}] {node.text}"
                     else:
                         vis_text = node.display_text()
-                    items.append(RetrievedItem(
+                    caption_item = RetrievedItem(
                         memory_type = "episodic",
                         content     = vis_text,
                         query       = "",
                         round_num   = 0,
-                    ))
+                    )
+                    caption_item._broadcast_id = getattr(node, '_broadcast_id', None)
+                    items.append(caption_item)
                 remaining = max_total_frames - total_frames
                 if remaining <= 0:
                     continue
@@ -834,6 +839,7 @@ class UnifiedMemory:
                     )
                     # Attach time info so round history can sort correctly
                     vis_item._start_ts = node.start_ts
+                    vis_item._broadcast_id = getattr(node, '_broadcast_id', None)
                     items.append(vis_item)
 
         return items
@@ -916,6 +922,7 @@ class MultiGraphUnifiedMemory:
                 all_results.extend(results)
             except Exception as e:
                 logger.warning(f"Retrieve failed for broadcast {bid}: {e}")
+                raise
         # Sort by score descending, take top-k
         all_results.sort(key=lambda x: x[1], reverse=True)
         return all_results[:top_k]
@@ -923,8 +930,14 @@ class MultiGraphUnifiedMemory:
     def format_results(self, results, visual_memory, **kwargs) -> List["RetrievedItem"]:
         """Delegate to the first memory's format_results.
         Items inherit _broadcast_id from their source nodes."""
-        first = next(iter(self._memories.values()))
-        return first.format_results(results, visual_memory, **kwargs)
+        items = []
+        total_frames = kwargs.pop('_current_total_frames', 0)
+        for node, score in results:
+            memory = self._memories[node._broadcast_id]
+            fresh = memory.format_results([(node, score)], visual_memory, _current_total_frames=total_frames, **kwargs)
+            total_frames += sum(len(item.content) for item in fresh if item.memory_type == 'visual')
+            items.extend(fresh)
+        return items
 
     def get_chain_facts_for_results(self, results, **kwargs):
         """Per-video chain injection: run each video's chain matching on its own results."""
