@@ -23,7 +23,7 @@ import wandb
 import weave
 from dotenv import load_dotenv
 from prometheus_client.parser import text_string_to_metric_families
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from wandb.sdk.lib.runid import generate_id
 
 from third_party.trace2skill.tracing_bridge import init_weave
@@ -46,7 +46,7 @@ JUDGE_VERSION = 2
 COUNTERS = {"input_tokens": "vllm:prompt_tokens_total", "cached_tokens": "vllm:prompt_tokens_cached_total", "output_tokens": "vllm:generation_tokens_total"}
 GAUGES = ("vllm:num_requests_running", "vllm:num_requests_waiting")
 LOCAL_TOKEN_RATES = {"uncached_input": 0.15, "output": 0.47, "cached_input": 0.016}
-ATTEMPTS = (1, 2, 3, 4)
+ATTEMPTS = (1, 2)
 
 
 class Judgment(BaseModel):
@@ -311,7 +311,7 @@ class Evaluation:
                     stopped = self.monitor_stop.wait(max(0, deadline - time.monotonic()))
             return
         pynvml.nvmlInit()
-        devices = {index: pynvml.nvmlDeviceGetHandleByIndex(index) for index in (4, 5, 6)}
+        devices = {index: pynvml.nvmlDeviceGetHandleByIndex(index) for index in self.args.gpu_ids}
         required = {*COUNTERS.values(), *GAUGES, "process_start_time_seconds"}
         baseline_path = self.args.run_dir / "live-baseline.json"
         baseline = json.loads(baseline_path.read_text()) if baseline_path.exists() else None
@@ -341,6 +341,8 @@ class Evaluation:
                     if samples["process_start_time_seconds"] != baseline["samples"]["process_start_time_seconds"]:
                         raise RuntimeError("Server restarted during this run; live token accounting requires reconciliation")
                     payload = {"monitor/timestamp": timestamp, **self.progress.copy()}
+                    if self.args.method == 'sql' and self.args.concurrent_magic_reference:
+                        loop.call_soon_threadsafe(self.update_overlap)
                     totals, rates = {}, {}
                     for key, metric in COUNTERS.items():
                         start, now = baseline["samples"][metric], samples[metric]
@@ -478,7 +480,7 @@ class Evaluation:
         async with self.semaphore:
             directory.mkdir(parents=True, exist_ok=True)
             question_root = directory.parent.parent
-            record = {"id": question["id"], "method": method, "attempt": attempt, "question_input": {"question": question["question"], "query_time": question["query_time"]}, "trace_dir": str(directory)}
+            record = {"id": question["id"], "method": method, "attempt": attempt, "question_input": {"question": question["question"], "query_time": question["query_time"]}, "trace_dir": str(directory), "maintenance": False}
             question_prompt = question["question"]
             if self.args.dataset == "mcq":
                 question_prompt += "\n\nOptions:\n" + "\n".join(f"{letter}. {question['choices'][letter]}" for letter in "ABCD") + ("\n\nSelect exactly one option. Your final answer must end with a line of the form Answer: X where X is the option letter A, B, C, or D." if method == "magic" else "\n\nSelect exactly one option. The answer you submit with submit_answer must end with a line of the form Answer: X where X is the option letter A, B, C, or D.")
@@ -491,10 +493,10 @@ class Evaluation:
             self.progress["progress/answer/active"] += 1
             try:
                 if method == "magic":
-                    candidate, answered_at = await asyncio.to_thread(run_magic, question_prompt, question["query_time"], directory, self.args.artifact_root, self.args.base_url, EMBEDDING_URL, self.args.model, self.args.reasoning_effort, self.args.dataset == "mcq")
+                    candidate, answered_at = await asyncio.to_thread(run_magic, question_prompt, question["query_time"], directory, self.args.artifact_root, self.args.base_url, EMBEDDING_URL, self.args.model, self.args.reasoning_effort, self.args.dataset == "mcq", self.args.time_format)
                     status = "answered"
                 else:
-                    harness = VideoSQLHarness(database=self.args.artifact_root / "questions" / f"{question['id']}.duckdb", embedding_index=self.args.artifact_root / "embeddings", media_map=self.args.artifact_root / "media-map.json", skill_dir=Path(__file__).resolve().parent / ("skills" if self.args.semantic_search == "ppr" else "skills-vector"), run_dir=directory, model_name=self.args.model, api_key="EMPTY", embedding_url=EMBEDDING_URL, embedding_model=EMBEDDING_MODEL, query_time=question["query_time"], base_url=self.args.base_url, clip_qa_video=True, reasoning_effort=self.args.reasoning_effort, semantic_search_mode=self.args.semantic_search)
+                    harness = VideoSQLHarness(database=self.args.artifact_root / "questions" / f"{question['id']}.duckdb", embedding_index=self.args.artifact_root / "embeddings", media_map=self.args.artifact_root / "media-map.json", skill_dir=Path(__file__).resolve().parent / ("skills" if self.args.semantic_search == "ppr" else "skills-vector"), run_dir=directory, model_name=self.args.model, api_key="EMPTY", embedding_url=EMBEDDING_URL, embedding_model=EMBEDDING_MODEL, query_time=question["query_time"], base_url=self.args.base_url, clip_qa_video=True, reasoning_effort=self.args.reasoning_effort, semantic_search_mode=self.args.semantic_search, time_format=self.args.time_format)
                     session = await harness.answer(question_prompt)
                     answered_at = time.perf_counter()
                     candidate, status = session.answer, session.status
@@ -547,6 +549,11 @@ class Evaluation:
                 record["trace_files"] = sorted(str(path) for path in directory.rglob("*") if path.suffix in (".json", ".jsonl") and "traces" in path.parts)
                 (directory / "error.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
                 print(f"ANSWER_FAILED method={method} id={question['id']} attempt={attempt} error={type(error).__name__}: {error} evidence={record['error_file']}", flush=True)
+                classification = classify_failure(record)
+                record['classification'] = classification
+                record['maintenance'] = classification['cause'] in ('server_connection_or_timeout', 'server_http_error')
+                if classification['category'] != 'algorithm' and not record['maintenance']:
+                    raise
             finally:
                 self.progress["progress/answer/active"] -= 1
                 if harness is not None:
@@ -573,8 +580,11 @@ class Evaluation:
                     self.update_overlap()
                 print(f"JUDGE method={method} id={question['id']} attempt={attempt} score={outcome['score']}", flush=True)
                 return
-            query_time = str(question["query_time"]).zfill(9)
-            metadata = {"questioner": "A1_JAKE", "questioner_name": "Jake", "perspective": "first-person narrator and camera wearer", "query_time_raw_DHHMMSSFF": question["query_time"], "query_day": int(query_time[0]), "query_time_of_day": f"{query_time[1:3]}:{query_time[3:5]}:{query_time[5:7]}", "query_frame_index": int(query_time[7:9])}
+            if self.args.time_format == 'mmlifelong':
+                metadata = {'dataset': 'MM-Lifelong', 'split': 'month/val'}
+            else:
+                query_time = str(question["query_time"]).zfill(9)
+                metadata = {"questioner": "A1_JAKE", "questioner_name": "Jake", "perspective": "first-person narrator and camera wearer", "query_time_raw_DHHMMSSFF": question["query_time"], "query_day": int(query_time[0]), "query_time_of_day": f"{query_time[1:3]}:{query_time[3:5]}:{query_time[5:7]}", "query_frame_index": int(query_time[7:9])}
             if self.args.official_open_judge:
                 messages = [{"role": "system", "content": MM_SYSTEM_PROMPT}, {"role": "user", "content": "Question: {}\nMetadata: {}\nGroundtruth answer: {}\nCandidate answer: {}\nYour response: ".format(question["question"], json.dumps(metadata, ensure_ascii=False), question["reference_answer"], answer["candidate_answer"])}]
                 traces = directory / "traces"
@@ -623,7 +633,7 @@ class Evaluation:
             path = traces / "judge.json"
             path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
             print(f"JUDGE request method={method} id={question['id']} attempt={attempt} trace={path}", flush=True)
-            outcome = {"id": question["id"], "attempt": attempt, "trace_file": str(path)}
+            outcome = {"id": question["id"], "attempt": attempt, "trace_file": str(path), "maintenance": False}
             self.progress["progress/judge/started"] += 1
             self.progress["progress/judge/active"] += 1
             try:
@@ -664,6 +674,10 @@ class Evaluation:
                         self.cloud_requests_without_response += 1
                 outcome.update({"outcome": "failed", "error": trace["error"]})
                 print(f"JUDGE_FAILED method={method} id={question['id']} attempt={attempt} error={type(error).__name__}: {error} trace={path}", flush=True)
+                outcome['maintenance'] = isinstance(error, (openai.APIConnectionError, openai.APITimeoutError, openai.InternalServerError))
+                model_error = isinstance(error, (ValidationError, openai.LengthFinishReasonError, openai.ContentFilterFinishReasonError)) or (isinstance(error, ValueError) and str(error).startswith('Judge did not return a completed judgment:'))
+                if not outcome['maintenance'] and not model_error:
+                    raise
             finally:
                 self.progress["progress/judge/active"] -= 1
                 path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
@@ -676,7 +690,10 @@ class Evaluation:
         for question in questions:
             root = self.args.run_dir / method / "questions" / str(question["id"])
             root.mkdir(parents=True, exist_ok=True)
-            if (root / ("answer.json" if kind == "answer" else "judgment.json")).exists() or (root / f"{kind}-attempt-{attempt}.json").exists():
+            if (root / ("answer.json" if kind == "answer" else "judgment.json")).exists():
+                continue
+            previous = root / f'{kind}-attempt-{attempt}.json'
+            if previous.exists() and not json.loads(previous.read_text())['maintenance']:
                 continue
             directory = root / f"{kind}-attempt-{attempt}" / uuid4().hex
             pending.append((question, directory))
@@ -701,10 +718,11 @@ class Evaluation:
                         await self.answer(method, question, attempt, directory)
                         root = self.args.run_dir / method / "questions" / str(question["id"])
                         if (root / "answer.json").exists():
-                            judge_directory = root / "judge-attempt-1" / uuid4().hex
-                            phase["trace_dirs"].append(str(judge_directory))
-                            path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
-                            await self.judge(method, question, 1, judge_directory)
+                            if not (root / 'judge-attempt-1.json').exists():
+                                judge_directory = root / "judge-attempt-1" / uuid4().hex
+                                phase["trace_dirs"].append(str(judge_directory))
+                                path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
+                                await self.judge(method, question, 1, judge_directory)
 
                 async with asyncio.TaskGroup() as group:
                     for _ in range(min(self.args.concurrency, len(pending))):
@@ -753,7 +771,17 @@ class Evaluation:
             print(f"REJUDGE reused_answers_from={self.args.answers_from} questions={len(self.questions)}", flush=True)
         else:
             for attempt in ATTEMPTS:
-                await self.batch(method, "answer", attempt, self.questions)
+                while True:
+                    await self.batch(method, 'answer', attempt, self.questions)
+                    retry = []
+                    for question in self.questions:
+                        root = self.args.run_dir / method / 'questions' / str(question['id'])
+                        path = root / f'answer-attempt-{attempt}.json'
+                        if not (root / 'answer.json').exists() and path.exists() and json.loads(path.read_text())['maintenance']:
+                            retry.append(question['id'])
+                    if not retry:
+                        break
+                    print(f'MAINTENANCE_RETRY method={method} stage=answer attempt={attempt} ids={retry}', flush=True)
         answerable, failures = [], []
         for question in self.questions:
             root = self.args.run_dir / method / "questions" / str(question["id"])
@@ -770,7 +798,17 @@ class Evaluation:
         if self.args.method == "sql":
             self.update_overlap()
         for attempt in ATTEMPTS:
-            await self.batch(method, "judge", attempt, answerable)
+            while True:
+                await self.batch(method, 'judge', attempt, answerable)
+                retry = []
+                for question in answerable:
+                    root = self.args.run_dir / method / 'questions' / str(question['id'])
+                    path = root / f'judge-attempt-{attempt}.json'
+                    if not (root / 'judgment.json').exists() and path.exists() and json.loads(path.read_text())['maintenance']:
+                        retry.append(question['id'])
+                if not retry:
+                    break
+                print(f'MAINTENANCE_RETRY method={method} stage=judge attempt={attempt} ids={retry}', flush=True)
         unresolved_judges = [question["id"] for question in answerable if not (self.args.run_dir / method / "questions" / str(question["id"]) / "judgment.json").exists()]
         for question_id in unresolved_judges:
             root = self.args.run_dir / method / "questions" / str(question_id)
@@ -850,7 +888,10 @@ class Evaluation:
 
 
 async def main_async(args):
-    global RUBRIC, JUDGE_VERSION
+    global RUBRIC, JUDGE_VERSION, PD_URL, EMBEDDING_URL
+    PD_URL, EMBEDDING_URL = args.pd_url.rstrip('/'), args.embedding_url.rstrip('/')
+    if args.time_format == 'mmlifelong':
+        args.mm_lifelong_judge = True
     args.reasoning_effort = None if args.no_reasoning_effort else "xhigh"
     if args.official_open_judge:
         if args.dataset != "open":
@@ -907,6 +948,7 @@ async def main_async(args):
     if not questions or args.concurrency < 1:
         raise ValueError("Evaluation requires questions and positive concurrency")
     config = {"method": args.method, "dataset": args.dataset, "artifact_root": str(args.artifact_root), "model": args.model, "base_url": args.base_url, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "judge_model": "gpt-5" if args.official_open_judge else OPENAI_JUDGE_MODEL if args.openai_judge else args.model, "judge_api": "exact_option_letter" if args.dataset == "mcq" else "openai" if args.openai_judge else "local", "reasoning_effort": args.reasoning_effort, "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": len(ATTEMPTS), "judge_attempts": "unlimited" if args.official_open_judge else len(ATTEMPTS), "questions": questions, "judge_rubric": RUBRIC, "judge_version": JUDGE_VERSION, "answer_source_run_dir": str(args.answers_from) if args.answers_from is not None else None, "investigation_call_limit": INVESTIGATION_CALL_LIMIT if args.answers_from is None else None, "live_metrics_interval_seconds": 1, "live_metrics_source": str(args.vllm_log) if args.vllm_log is not None else "openai_response_usage" if args.openai_judge else "prometheus"}
+    config.update({'time_format': args.time_format, 'gpu_ids': args.gpu_ids})
     if args.method == "sql":
         config.update({"retrieval_method": f"sql_{args.semantic_search}_semantic" if args.answers_from is None else "saved_answers", "live_magic_reference": str(args.magic_reference), "concurrent_magic_reference": args.concurrent_magic_reference, "overlap_accuracy_definition": "score >= 4" if args.mm_lifelong_judge else "score == 5"})
     config_path = args.run_dir / "config.json"
@@ -947,6 +989,10 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", choices=("open", "mcq"), default="open", help="open uses artifact questions.json; mcq uses the original EgoLifeQA choices and exact option-letter scoring")
     parser.add_argument("--model", default=MODEL)
     parser.add_argument("--base-url", default=BASE_URL)
+    parser.add_argument('--pd-url', default=PD_URL)
+    parser.add_argument('--embedding-url', default=EMBEDDING_URL)
+    parser.add_argument('--gpu-ids', nargs='+', type=int, default=[4, 5, 6])
+    parser.add_argument('--time-format', choices=['egolife', 'mmlifelong'], default='egolife')
     parser.add_argument("--no-reasoning-effort", action="store_true", help="Send no reasoning_effort to the answer model")
     parser.add_argument("--semantic-search", choices=("ppr", "vector"), default="ppr", help="vector restores the original per-table cosine semantic_search and its skills")
     parser.add_argument("--vllm-log", type=Path, help="Tail this vLLM log for throughput lines instead of scraping /metrics")
