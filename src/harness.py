@@ -1139,6 +1139,8 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             recipe = {key: value for key, value in frame.items() if key != "recipe_path"}
             frame["recipe_path"].write_text(json.dumps(stripped_json(recipe), ensure_ascii=False, indent=2) + "\n")
             encoded_frames.append(base64.b64encode(jpeg_bytes).decode())
+        if context.clip_qa_video and len(sampled) < 2:
+            raise ValueError(f"Video QA requires at least 2 sampled frames, but this interval and fps produced {len(sampled)}. Adjust the interval or fps using retrieved video evidence.")
         instructions = "Answer the visual question using only the supplied ordered frame sequence. Return unknown when the visible evidence is insufficient. Cite supporting frames with zero-based evidence_frame_indices; answered requires at least one evidence frame. Use the supplied actual source times when referring to the source timeline."
         prompt = json.dumps({"question": normalize_text(question), "start_s": start_s, "end_s": end_s, "fps": fps, "frame_times_s": [frame["time_s"] for frame, _ in sampled]}, ensure_ascii=False)
         if context.time_format == 'mmlifelong':
