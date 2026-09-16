@@ -82,7 +82,7 @@ def collect_usage(trace_dirs, rates=LOCAL_TOKEN_RATES):
                         candidates.append(pending)
                     if document.get("error") is not None and document.get("response") is None and document["error"]["type"] != "InvestigationBudgetExhausted":
                         request = document["request"] if "request" in document else document["input"] if "api" in document else None
-                        if isinstance(request, dict) and request.get("model") in (MODEL, OPENAI_JUDGE_MODEL):
+                        if isinstance(request, dict) and request.get("model") in (MODEL, OPENAI_JUDGE_MODEL, "gpt-5"):
                             candidates.append({"id": f"unreturned-request:{path}", "model": request["model"], "usage": None, "request_without_response": True})
                     if isinstance(document.get("response"), dict):
                         payload = document["response"]
@@ -598,6 +598,8 @@ class Evaluation:
                 metadata = {"questioner": "A1_JAKE", "questioner_name": "Jake", "perspective": "first-person narrator and camera wearer", "query_time_raw_DHHMMSSFF": question["query_time"], "query_day": int(query_time[0]), "query_time_of_day": f"{query_time[1:3]}:{query_time[3:5]}:{query_time[5:7]}", "query_frame_index": int(query_time[7:9])}
             if self.args.official_open_judge:
                 messages = [{"role": "system", "content": MM_SYSTEM_PROMPT}, {"role": "user", "content": "Question: {}\nMetadata: {}\nGroundtruth answer: {}\nCandidate answer: {}\nYour response: ".format(question["question"], json.dumps(metadata, ensure_ascii=False), question["reference_answer"], answer["candidate_answer"])}]
+                if self.args.time_format == 'mmlifelong':
+                    messages[1]['content'] = f"Question: {question['question']}\nGroundtruth answer: {question['reference_answer']}\nCandidate answer: {answer['candidate_answer']}\nYour response: "
                 traces = directory / "traces"
                 traces.mkdir()
                 self.progress["progress/judge/started"] += 1
@@ -616,6 +618,11 @@ class Evaluation:
                         trace["request"]["timeout"] = timeout
                         trace["response"] = raw.http_response.json()
                         path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
+                        usage = trace["response"]["usage"]
+                        tokens = {"input_tokens": usage["prompt_tokens"], "cached_tokens": usage["prompt_tokens_details"]["cached_tokens"], "output_tokens": usage["completion_tokens"]}
+                        with self.log_lock:
+                            for key in COUNTERS:
+                                self.cloud_usage[key] += tokens[key]
                         content = raw.parse().choices[0].message.content.strip()
                         score = parse_mm_score(content)
                         if score < 0:
@@ -624,6 +631,9 @@ class Evaluation:
                         trace["error"] = {"type": type(error).__name__, "message": str(error), "traceback": traceback.format_exc()}
                         if isinstance(error, openai.APIError):
                             trace["error"]["body"] = error.body
+                        if trace["response"] is None:
+                            with self.log_lock:
+                                self.cloud_requests_without_response += 1
                         path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
                         print(f"JUDGE_RETRY method={method} id={question['id']} attempt={request_attempt} error={type(error).__name__}: {error} trace={path}", flush=True)
                         continue
@@ -896,8 +906,8 @@ async def main_async(args):
     global RUBRIC, JUDGE_VERSION, PD_URL, EMBEDDING_URL, BASE_URL, ATTEMPTS
     PD_URL, EMBEDDING_URL, BASE_URL = args.pd_url, args.embedding_url, args.base_url
     if args.time_format == 'mmlifelong':
-        if args.dataset != 'open' or args.openai_judge or args.official_open_judge or args.no_reasoning_effort or (args.method == 'sql' and args.semantic_search != 'vector'):
-            raise ValueError('MM-Lifelong requires original open QA, local xhigh judge, and SQL vector semantic search')
+        if args.dataset != 'open' or (args.openai_judge and not args.official_open_judge) or (args.official_open_judge and args.answers_from is None) or args.no_reasoning_effort or (args.method == 'sql' and args.semantic_search != 'vector'):
+            raise ValueError('MM-Lifelong requires original open QA, local xhigh judge or official-judge rejudging of saved answers, and SQL vector semantic search')
         args.mm_lifelong_judge = True
         ATTEMPTS = (1, 2)
     args.reasoning_effort = None if args.no_reasoning_effort else "xhigh"
