@@ -42,7 +42,7 @@ from openai import APIError, AsyncOpenAI, DefaultAsyncHttpxClient
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
-from src.normalize import normalize_text
+from training_free.normalize import normalize_text
 from training_free.ppr import search_graph
 from training_free.index_schema import SCHEMA, SEARCH_TABLES, fact_interval, timestamp_seconds
 from training_free.mmlifelong_data import MM_SCHEMA
