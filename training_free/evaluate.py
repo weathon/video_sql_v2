@@ -717,6 +717,16 @@ class Evaluation:
                     for question, directory in work:
                         await self.answer(method, question, attempt, directory)
                         root = self.args.run_dir / method / "questions" / str(question["id"])
+                        for retry in ATTEMPTS[ATTEMPTS.index(attempt) + 1:]:
+                            if (root / "answer.json").exists():
+                                break
+                            previous = root / f"answer-attempt-{retry}.json"
+                            if previous.exists() and not json.loads(previous.read_text())["maintenance"]:
+                                continue
+                            retry_directory = root / f"answer-attempt-{retry}" / uuid4().hex
+                            phase["trace_dirs"].append(str(retry_directory))
+                            path.write_text(json.dumps(phase, ensure_ascii=False, indent=2) + "\n")
+                            await self.answer(method, question, retry, retry_directory)
                         if (root / "answer.json").exists():
                             if not (root / 'judge-attempt-1.json').exists():
                                 judge_directory = root / "judge-attempt-1" / uuid4().hex
