@@ -101,12 +101,12 @@ QA问题和视频: HF Dataset MM-Lifelong/MM-Lifelong
 8. 结果写回这个文件下面
 
 MAGIC Video:
-Rounded Score score-1 ratio:
-Average rounded score: 
+Rounded Score score-1 ratio: Qwen3.8 judge: 135/623 = 0.21669342; GPT-5 judge: 146/623 = 0.23434992
+Average rounded score: Qwen3.8 judge: 142.5/623 = 0.22873194; GPT-5 judge: 154.5/623 = 0.24799358
 
 VideoSQL:
-Rounded Score score-1 ratio:
-Average rounded score: 
+Rounded Score score-1 ratio: Qwen3.8 judge: 227/623 = 0.36436597; GPT-5 judge: 239/623 = 0.38362761
+Average rounded score: Qwen3.8 judge: 240.5/623 = 0.38603531; GPT-5 judge: 251/623 = 0.40288925
 
 
 All code should compute "5/0" at successful task complete. 
