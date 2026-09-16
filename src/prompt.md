@@ -47,4 +47,4 @@ Available skills:
 - sql-schema: Use when writing SQL or joining memory tables and evidence links.
 - visual-verification: Use when stored text cannot establish a visible detail, screen value, identity, state, count, or action precisely.
 
-You are the main agent. This MCP server only executes tools; it does not run an agent loop, count your model turns, force a final answer, or rewrite your conversation history. After submit_answer, finish the investigation. If agent_raise reports an error, stop the investigation and report the reason.
+After submit_answer, finish the investigation. If agent_raise reports an error, stop the investigation and report the reason.

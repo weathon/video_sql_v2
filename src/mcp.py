@@ -62,15 +62,8 @@ async def main():
                 tool_id = context.tool_counter
                 call_id = uuid.uuid4().hex
                 arguments = json.dumps({} if params.arguments is None else params.arguments, ensure_ascii=False)
-                raw_arguments = None
-                if params.name in ("run_sql", "semantic_search"):
-                    parsed = json.loads(arguments)
-                    if "question" in parsed and parsed["question"] in ("None", ""):
-                        raw_arguments = arguments
-                        parsed["question"] = None
-                        arguments = json.dumps(parsed, ensure_ascii=False)
                 path = directory / "traces" / f"tool-{call_id}.json"
-                record = {"tool_id": tool_id, "call_id": call_id, "name": params.name, "arguments": arguments, "raw_arguments": raw_arguments, "output": None, "error": None}
+                record = {"tool_id": tool_id, "call_id": call_id, "name": params.name, "arguments": arguments, "output": None, "error": None}
                 path.write_text(json.dumps(record, ensure_ascii=False) + "\n")
                 print(f"TOOL_START name={params.name} arguments={arguments} trace={path}", file=sys.stderr, flush=True)
                 is_error = False
