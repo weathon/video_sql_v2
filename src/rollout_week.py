@@ -147,8 +147,9 @@ class WeekCollector:
                 if not can_retry:
                     raise
                 if any(isinstance(e, (openai.APIConnectionError, httpx.ConnectError, httpx2.ConnectError)) for e in exception_chain(error)):
-                    response = await self.embedding_client.get(str(self.clients[lane].base_url).removesuffix('/v1/') + '/health', timeout=10)
-                    response.raise_for_status()
+                    for url in (str(self.clients[lane].base_url).removesuffix('/v1/') + '/health', self.embedding_url.rstrip('/') + '/models'):
+                        response = await self.embedding_client.get(url, timeout=10)
+                        response.raise_for_status()
                 continue
             answer = {'question_id': question['index'], 'trajectory': name, 'lane': lane, 'attempt': attempt, 'attempt_dir': str(attempt_dir), 'status': 'answered', 'answer': session.answer, 'prefix_file': prefix_file, 'trace_files': session.trace_files, 'investigation_calls': harness.context.investigation_calls, 'final_calls': harness.context.final_calls}
             answer_path.write_text(json.dumps(answer, ensure_ascii=False) + '\n')
