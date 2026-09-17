@@ -151,6 +151,11 @@ class Evaluation:
                 tokens[role] = {"requests": len(records), "unknown_usage": sum(r["usage"] is None for r in records)}
                 for key in ("input_tokens", "output_tokens", "cached_tokens", "total_tokens"):
                     tokens[role][key] = None if any(r["usage"] is None or r["usage"][key] is None for r in records) else sum(r["usage"][key] for r in records)
+                retries = [r for r in records if r["retry"]]
+                tokens[role]["retry_requests"] = len(retries)
+                tokens[role]["retry_unknown_usage"] = sum(r["usage"] is None for r in retries)
+                for key in ("input_tokens", "output_tokens", "cached_tokens", "total_tokens"):
+                    tokens[role]["retry_" + key] = None if any(r["usage"] is None or r["usage"][key] is None for r in retries) else sum(r["usage"][key] for r in retries)
             record = {"event": event, "question_id": question_id, "metrics": metrics, "tokens": tokens}
             with (self.run_dir / "events.jsonl").open("a") as output:
                 output.write(json.dumps(record) + "\n")
@@ -173,7 +178,7 @@ class Evaluation:
             path = trace_dir / "trace.json"
             path.write_text(json.dumps(record, ensure_ascii=False) + "\n")
             print(f"JUDGE_START id={question['id']} attempt={request_attempt} timeout={timeout}", flush=True)
-            usage_record = {"role": "judge", "usage": None}
+            usage_record = {"role": "judge", "usage": None, "retry": request_attempt > 1}
             try:
                 raw = self.judge_client.chat.completions.with_raw_response.create(model="gpt-5", messages=messages, timeout=timeout)
                 record["request"] = json.loads(raw.http_request.content)
@@ -265,7 +270,7 @@ class Evaluation:
                     self.answers.add(question_id)
                 failed = False
             finally:
-                records = usage_records(attempt)
+                records = [{**record, "retry": failures > 0} for record in usage_records(attempt)]
                 (attempt / "usage-summary.json").write_text(json.dumps(records) + "\n")
                 with self.lock:
                     self.records.extend(records)
