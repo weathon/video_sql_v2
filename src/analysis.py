@@ -8,6 +8,7 @@ import argparse
 import dataclasses
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import yaml
@@ -104,6 +105,23 @@ def run_agent(codex, directory, instructions, prompt, output_schema=None):
             raise
 
 
+def analyze_batch(codex, batch, output):
+    paths = sorted(str(path) for path in batch.parent.rglob("*.json"))
+    prompt = f"Batch entry: {batch}\nAll JSON paths in this batch:\n" + json.dumps(paths, ensure_ascii=False, indent=2)
+    directory = output / "analyses" / batch.parent.name
+    directory.mkdir(parents=True, exist_ok=True)
+    prompt_path = directory / "prompt.txt"
+    if prompt_path.exists() and prompt_path.read_text() != prompt:
+        raise ValueError(f"Batch inputs differ from {prompt_path}; use a separate output directory")
+    prompt_path.write_text(prompt)
+    experience_path = directory / "experience.md"
+    if not experience_path.exists():
+        experience = run_agent(codex, directory, ANALYSIS_PROMPT, prompt)
+        experience_path.write_text(experience.strip() + "\n")
+    print(f"EXPERIENCE {experience_path}", flush=True)
+    return experience_path
+
+
 def main(args):
     batches = [path.resolve(strict=True) for path in args.batches]
     names = [path.parent.name for path in batches]
@@ -111,24 +129,18 @@ def main(args):
         raise ValueError("Batch directories must have distinct names within one analysis run")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    experiences = []
     config = CodexConfig(cwd=str(ROOT), config_overrides=("mcp_servers.video_sql.required=true",))
     with Codex(config) as codex:
-        for batch, name in zip(batches, names):
-            paths = sorted(str(path) for path in batch.parent.rglob("*.json"))
-            prompt = f"Batch entry: {batch}\nAll JSON paths in this batch:\n" + json.dumps(paths, ensure_ascii=False, indent=2)
-            directory = output / "analyses" / name
-            directory.mkdir(parents=True, exist_ok=True)
-            prompt_path = directory / "prompt.txt"
-            if prompt_path.exists() and prompt_path.read_text() != prompt:
-                raise ValueError(f"Batch inputs differ from {prompt_path}; use a separate output directory")
-            prompt_path.write_text(prompt)
-            experience_path = directory / "experience.md"
-            if not experience_path.exists():
-                experience = run_agent(codex, directory, ANALYSIS_PROMPT, prompt)
-                experience_path.write_text(experience.strip() + "\n")
-            experiences.append(experience_path)
-            print(f"EXPERIENCE {experience_path}", flush=True)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(analyze_batch, codex, batch, output) for batch in batches]
+            try:
+                for completed, future in enumerate(as_completed(futures), 1):
+                    experience_path = future.result()
+                    print(f"ANALYSIS_PROGRESS {completed}/{len(batches)} experience={experience_path}", flush=True)
+            finally:
+                for future in futures:
+                    future.cancel()
+            experiences = [future.result() for future in futures]
 
         directory = output / "synthesis"
         directory.mkdir(exist_ok=True)
