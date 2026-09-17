@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = "gpt-5.6-terra"
-SYNTHESIS_MODEL = "gpt-5-astra"
+SYNTHESIS_MODEL = "gpt-6-astra"
 ORIGINAL_SKILLS = ROOT / "training_free/skills-vector"
 
 ANALYSIS_PROMPT = """Analyze the supplied rollout batch to learn a short, reusable retrieval lesson.
