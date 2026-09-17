@@ -190,6 +190,7 @@ def main(args):
         cwd=str(ROOT),
         config_overrides=(
             "mcp_servers.video_sql.required=true",
+            'mcp_servers.video_sql.default_tools_approval_mode="approve"',
             "features.use_legacy_landlock=true",
         ),
     )
