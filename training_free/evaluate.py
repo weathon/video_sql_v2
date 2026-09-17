@@ -98,6 +98,7 @@ def collect_usage(trace_dirs, rates=LOCAL_TOKEN_RATES):
                         response_id = response["response_id"] if "response_id" in response else response["id"]
                         usage = response["usage"]
                         record = {"response_id": response_id, "model": response["model"], "usage": usage, "input_tokens": None, "cached_tokens": None, "output_tokens": None, "trace_files": [str(path)]}
+                        record["status"] = response["status"] if "status" in response else "unreturned" if response.get("request_without_response") else "completed"
                         if response.get("request_without_response"):
                             record["request_key"] = response_id
                             record["response_id"] = None
@@ -111,6 +112,8 @@ def collect_usage(trace_dirs, rates=LOCAL_TOKEN_RATES):
                                 record["cached_tokens"] = usage[detail_key]["cached_tokens"]
                         if response_id in responses:
                             previous = responses[response_id]
+                            if record["status"] != "in_progress":
+                                previous["status"] = record["status"]
                             if previous["usage"] is None and usage is not None:
                                 previous["usage"] = usage
                             for key in COUNTERS:
@@ -191,11 +194,11 @@ class Evaluation:
         self.monitor_ready = asyncio.Event()
         self.progress = {f"progress/{kind}/{state}": 0 for kind in ("answer", "judge") for state in ("started", "active", "completed", "failed")}
         existing_usage = collect_usage([args.run_dir], rates=None) if args.openai_judge and args.vllm_log is None else {}
-        incomplete_responses = [record for record in existing_usage.values() if record["response_id"] is not None and any(record[key] is None for key in COUNTERS)]
+        incomplete_responses = [record for record in existing_usage.values() if record["status"] == "completed" and any(record[key] is None for key in COUNTERS)]
         if incomplete_responses:
             raise ValueError(f"Completed OpenAI responses have incomplete usage: {incomplete_responses}")
-        self.cloud_usage = {key: sum(record[key] for record in existing_usage.values() if record["response_id"] is not None) for key in COUNTERS}
-        self.cloud_requests_without_response = sum(record["response_id"] is None for record in existing_usage.values())
+        self.cloud_usage = {key: sum(record[key] for record in existing_usage.values() if record[key] is not None) for key in COUNTERS}
+        self.cloud_requests_without_response = sum(record["usage"] is None for record in existing_usage.values())
         self.magic_scores = {}
         self.completed_scores = {}
         if args.method == "sql":
@@ -452,7 +455,7 @@ class Evaluation:
             if all(value is not None for value in per_request.values()) and per_request != delta:
                 raise RuntimeError(f"OpenAI response usage differs from live counters: phase={path}; response_usage={per_request}; live_delta={delta}")
             phase["response_ids"] = sorted(record["response_id"] for record in usage.values() if record["response_id"] is not None)
-            phase["requests_without_response"] = [record["request_key"] for record in usage.values() if record["response_id"] is None]
+            phase["requests_without_response"] = [record["response_id"] if record["response_id"] is not None else record["request_key"] for record in usage.values() if record["usage"] is None]
             phase["usage_complete"] = not phase["requests_without_response"]
             phase["request_tokens"] = per_request
             phase["provider_tokens"] = delta
@@ -584,7 +587,7 @@ class Evaluation:
                     usage = collect_usage([directory], rates=None)
                     with self.log_lock:
                         for response in usage.values():
-                            if response["response_id"] is None:
+                            if response["usage"] is None:
                                 self.cloud_requests_without_response += 1
                             elif response["usage"] is not None:
                                 for key in COUNTERS:
