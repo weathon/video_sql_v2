@@ -72,12 +72,13 @@ def trace_json(value):
 def run_agent(codex, directory, instructions, prompt, output_schema=None):
     trace_path = directory / f"events-{uuid.uuid4().hex}.jsonl"
     with trace_path.open("w") as trace:
-        request = {"model": MODEL, "effort": "high", "service_tier": "default", "ephemeral": True, "instructions": instructions, "prompt": prompt, "output_schema": output_schema}
+        request = {"model": MODEL, "effort": "high", "service_tier": "default", "ephemeral": False, "instructions": instructions, "prompt": prompt, "output_schema": output_schema}
         trace.write(json.dumps({"request": request}, ensure_ascii=False) + "\n")
         trace.flush()
         print(f"AGENT_START directory={directory} trace={trace_path}", flush=True)
+        thread = None
         try:
-            thread = codex.thread_start(model=MODEL, service_tier="default", ephemeral=True, cwd=str(ROOT), sandbox=Sandbox.full_access, developer_instructions=instructions)
+            thread = codex.thread_start(model=MODEL, service_tier="default", ephemeral=False, cwd=str(ROOT), sandbox=Sandbox.full_access, developer_instructions=instructions)
             trace.write(json.dumps({"thread": trace_json(thread.read().thread)}, ensure_ascii=False) + "\n")
             turn = thread.turn(prompt, effort=ReasoningEffort.high, output_schema=output_schema)
             final_response = None
@@ -103,6 +104,11 @@ def run_agent(codex, directory, instructions, prompt, output_schema=None):
             trace.write(json.dumps({"error": {"type": type(error).__name__, "message": str(error)}}, ensure_ascii=False) + "\n")
             print(f"AGENT_ERROR trace={trace_path} error={type(error).__name__}: {error}", flush=True)
             raise
+        finally:
+            if thread is not None:
+                print(f"AGENT_ARCHIVE thread={thread.id}", flush=True)
+                archived = codex.thread_archive(thread.id)
+                trace.write(json.dumps({"archive": {"thread_id": thread.id, "response": trace_json(archived)}}, ensure_ascii=False) + "\n")
 
 
 def analyze_batch(codex, batch, output):
