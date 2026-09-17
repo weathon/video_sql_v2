@@ -128,7 +128,7 @@ def main(args):
                 questions = [by_id[qid] for qid in args.ids]
             directory = run_root / dataset
             directory.mkdir(exist_ok=True)
-            config = {"dataset": dataset, "model": MODEL, "reasoning_effort": "max", "service_tier": "default", "qa_model": QA_MODEL, "qa_reasoning_effort": settings["reasoning_effort"], "qa_url": args.qa_url, "embedding_url": args.embedding_url, "answer_attempts": settings["attempts"], "judge_model": "gpt-5", "judge_attempts": "unlimited", "concurrency": 5, "denominator": settings["denominator"], "ids": [question["id"] for question in questions], "baseline": str(settings["baseline"])}
+            config = {"dataset": dataset, "model": MODEL, "reasoning_effort": "max", "service_tier": "default", "qa_model": QA_MODEL, "qa_reasoning_effort": settings["reasoning_effort"], "qa_url": args.qa_url, "embedding_url": args.embedding_url, "answer_attempts": settings["attempts"], "judge_model": "gpt-5", "judge_attempts": "unlimited", "concurrency": 2, "denominator": settings["denominator"], "ids": [question["id"] for question in questions], "baseline": str(settings["baseline"])}
             config_path = directory / "config.json"
             if config_path.exists():
                 saved = json.loads(config_path.read_text())
@@ -141,7 +141,7 @@ def main(args):
             run = wandb.init(entity="3dsmile", project="video-sql-v2", name=f"{run_root.name}-{dataset}", id=wandb_id, resume=resume, config=config, dir=str(directory))
             results = {}
             try:
-                with ThreadPoolExecutor(max_workers=5) as pool:
+                with ThreadPoolExecutor(max_workers=2) as pool:
                     for attempt in range(1, settings["attempts"] + 1):
                         pending = [question for question in questions if str(question["id"]) not in results or results[str(question["id"])]["status"] == "retry"]
                         futures = {pool.submit(process_question, codex, judge_client, dataset, question, attempt, directory / "questions" / str(question["id"]), args.qa_url, args.embedding_url): question for question in pending}
