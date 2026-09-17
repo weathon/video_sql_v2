@@ -29,14 +29,14 @@ Compare the main trajectory with its branches from their shared prefixes. Identi
 
 Use the video_sql MCP tools to test specific hypotheses or verify uncertain evidence when that would change the lesson. Read the relevant retrieval skills before applying them. Keep each check tied to the observed divergence. Record whether a conclusion comes from the saved trace or a new check, and do not claim a check succeeded when its tool returned an error.
 
-Return one short paragraph of experience in English, including practical dos and don'ts, the condition under which they apply, and concise supporting trajectory/tool references. Prefer transferable procedures over memorizing this question's answer, names, or dates. This paragraph is your final response. Preserve the input traces and existing skills; the caller saves your response.
+Return one short paragraph of experience in English, including practical dos and don'ts, the condition under which they apply, and concise supporting trajectory/tool references. Prefer transferable procedures over memorizing this question's answer, names, or dates. This paragraph is your final response. Preserve the input traces and existing skills.
 """
 
 SYNTHESIS_PROMPT = """Synthesize the completed rollout-analysis experiences into reusable retrieval skills.
 
 Use Python to read every supplied experience file and inspect the original skill files for their organization and conventions. Consolidate overlapping lessons, reconcile contradictions using their stated evidence and conditions, and retain useful dos and don'ts. Do not invent new experimental findings or turn question-specific answers into rules.
 
-Produce small, focused Markdown skills matching the original format. Each skill needs a descriptive kebab-case name, a routing description, and Markdown content with Introduction, When to use, and Main content sections. Keep relevant original guidance and incorporate the learned procedures. Also return a ROOT-SKILL guide that routes to the resulting skills. The caller writes the YAML front matter and separate files from your structured final response. Read the source files without modifying them.
+Produce small, focused Markdown skills matching the original format. Each skill needs a descriptive kebab-case name, a routing description, and Markdown content with Introduction, When to use, and Main content sections. Keep relevant original guidance and incorporate the learned procedures. Also return a ROOT-SKILL guide that routes to the resulting skills. Return the skills in the required structured format. Read the source files without modifying them.
 """
 
 
@@ -91,7 +91,7 @@ def run_agent(codex, directory, instructions, prompt, output_schema=None):
                 service_tier="default",
                 ephemeral=False,
                 cwd=str(ROOT),
-                sandbox=Sandbox.full_access,
+                sandbox=Sandbox.read_only,
                 developer_instructions=instructions,
             )
             trace.write(
@@ -186,7 +186,11 @@ def main(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     config = CodexConfig(
-        cwd=str(ROOT), config_overrides=("mcp_servers.video_sql.required=true",)
+        cwd=str(ROOT),
+        config_overrides=(
+            "mcp_servers.video_sql.required=true",
+            "features.use_legacy_landlock=true",
+        ),
     )
     with Codex(config) as codex:
         with ThreadPoolExecutor(max_workers=4) as pool:
