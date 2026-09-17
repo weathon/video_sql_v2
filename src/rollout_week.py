@@ -96,7 +96,7 @@ class RecordedResponsesModel(OpenAIResponsesModel):
 
 
 class WeekCollector:
-    def __init__(self, directory, questions, clients, embedding_client, embedding_url, judge_client, run):
+    def __init__(self, directory, questions, clients, embedding_client, embedding_url, judge_client, run, skill_dir, branches_per_question):
         self.directory = directory
         self.questions = {q['index']: q for q in questions}
         self.clients = clients
@@ -104,6 +104,8 @@ class WeekCollector:
         self.embedding_url = embedding_url
         self.judge_client = judge_client
         self.run = run
+        self.skill_dir = skill_dir
+        self.branches_per_question = branches_per_question
         self.limiters = [asyncio.Semaphore(LANE_CONCURRENCY), asyncio.Semaphore(LANE_CONCURRENCY)]
         self.queues = [asyncio.PriorityQueue(), asyncio.PriorityQueue()]
         self.sequence = itertools.count()
@@ -128,7 +130,7 @@ class WeekCollector:
                 archived = directory / f'interrupted-attempt-{attempt}-{uuid.uuid4().hex}'
                 attempt_dir.rename(archived)
                 print(f'RESUME archived={archived}', flush=True)
-            harness = VideoSQLHarness(database=ARTIFACTS / 'index.duckdb', embedding_index=ARTIFACTS / 'embeddings', media_map=ARTIFACTS / 'media-map.json', skill_dir=ROOT / 'training_free/skills-vector', run_dir=attempt_dir, model_name=MODEL, api_key='EMPTY', base_url=str(self.clients[lane].base_url), embedding_url=self.embedding_url, embedding_model='qwen3-vl-embedding-8b', query_time=None, clip_qa_video=True, reasoning_effort=None, semantic_search_mode='vector', client=self.clients[lane], embedding_client=self.embedding_client, model_limiter=self.limiters[lane])
+            harness = VideoSQLHarness(database=ARTIFACTS / 'index.duckdb', embedding_index=ARTIFACTS / 'embeddings', media_map=ARTIFACTS / 'media-map.json', skill_dir=self.skill_dir, run_dir=attempt_dir, model_name=MODEL, api_key='EMPTY', base_url=str(self.clients[lane].base_url), embedding_url=self.embedding_url, embedding_model='qwen3-vl-embedding-8b', query_time=None, clip_qa_video=True, reasoning_effort=None, semantic_search_mode='vector', client=self.clients[lane], embedding_client=self.embedding_client, model_limiter=self.limiters[lane])
             harness.context.model = RecordedResponsesModel(harness.context)
             print(f'ROLLOUT_START question={question["index"]} trajectory={name} lane={lane} attempt={attempt}', flush=True)
             try:
@@ -172,7 +174,7 @@ class WeekCollector:
             if any(item['type'] == 'function_call' for item in response['output']):
                 snapshot = json.loads(Path(trace['prefix_file']).read_text())
                 candidates.append({'name': f'branch-{snapshot["answer_turns"]:03d}', 'prefix_file': trace['prefix_file'], 'source_response': response['id'], 'source_trace': str(trace_file)})
-        selected = self.random.sample(candidates, min(5, len(candidates)))
+        selected = self.random.sample(candidates, min(self.branches_per_question, len(candidates)))
         path.write_text(json.dumps({'question_id': question['index'], 'source_attempt': answer['attempt'], 'candidate_count': len(candidates), 'selected': selected}, ensure_ascii=False) + '\n')
         print(f'BRANCHES question={question["index"]} candidates={len(candidates)} selected={[x["name"] for x in selected]}', flush=True)
         return selected
@@ -312,7 +314,7 @@ async def main(args):
     audit = {'dataset': str(DATASET / 'week/test.json'), 'week_media_map': str(WEEK_MEDIA_MAP), 'egolife_media_map': str(ARTIFACTS / 'media-map.json'), 'questions': len(all_questions), 'video_files': len(source_names), 'checked_intervals': intervals, 'day_offsets': offsets, 'byte_identical_sample_files': compared}
     (directory / 'data-audit.json').write_text(json.dumps(audit, indent=2) + '\n')
     print('DATA_READY ' + json.dumps(audit), flush=True)
-    config = {'dataset': str(DATASET / 'week/test.json'), 'artifact_root': str(ARTIFACTS), 'question_ids': [q['index'] for q in questions], 'base_urls': args.base_urls, 'embedding_url': args.embedding_url, 'model': MODEL, 'judge_model': JUDGE_MODEL, 'lane_concurrency': LANE_CONCURRENCY, 'attempts': ATTEMPTS, 'branches_per_question': 5, 'mean_weighting': 'mean_within_question_then_across_questions', 'query_time': None}
+    config = {'dataset': str(DATASET / 'week/test.json'), 'artifact_root': str(ARTIFACTS), 'question_ids': [q['index'] for q in questions], 'base_urls': args.base_urls, 'embedding_url': args.embedding_url, 'model': MODEL, 'judge_model': JUDGE_MODEL, 'lane_concurrency': LANE_CONCURRENCY, 'attempts': ATTEMPTS, 'branches_per_question': args.branches_per_question, 'skill_dir': str(args.skill_dir.resolve()), 'mean_weighting': 'mean_within_question_then_across_questions', 'query_time': None}
     config_path = directory / 'config.json'
     if config_path.exists():
         saved = json.loads(config_path.read_text())
@@ -334,7 +336,7 @@ async def main(args):
             if expected not in [item['id'] for item in response.json()['data']]:
                 raise RuntimeError(f'Unexpected model at {url}: {response.text}')
         run = wandb.init(entity='3dsmile', project='video-sql-v2', id=wandb_id, name=directory.name, config=config, resume=resume, dir=str(directory))
-        collector = WeekCollector(directory, questions, clients, embedding_client, args.embedding_url, judge_client, run)
+        collector = WeekCollector(directory, questions, clients, embedding_client, args.embedding_url, judge_client, run, args.skill_dir.resolve(), args.branches_per_question)
         lanes = {question['index']: int(position >= len(all_questions) // 2) for position, question in enumerate(all_questions)}
         for question in questions:
             batch_path = directory / 'questions' / str(question['index']) / 'batch.json'
@@ -370,5 +372,7 @@ if __name__ == '__main__':
     parser.add_argument('--run-dir', type=Path, default=ROOT / 'runs/mmlifelong-week/collection')
     parser.add_argument('--base-urls', nargs=2, default=['http://127.0.0.1:8310/v1', 'http://127.0.0.1:8311/v1'])
     parser.add_argument('--embedding-url', default='http://127.0.0.1:8214/v1')
+    parser.add_argument('--skill-dir', type=Path, default=ROOT / 'training_free/skills-vector')
+    parser.add_argument('--branches-per-question', type=int, choices=range(6), default=5)
     parser.add_argument('--ids', nargs='+', type=int)
     asyncio.run(main(parser.parse_args()))
