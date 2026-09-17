@@ -14,21 +14,14 @@ import wandb
 from dotenv import load_dotenv
 from openai import OpenAI
 from openai_codex import Codex, CodexConfig
-from pydantic import BaseModel, Field
 from wandb.sdk.lib.runid import generate_id
 
-from training_free.codex_harness import DATASETS, MODEL, QA_MODEL, RETRYABLE, ROOT, InvalidTrace, answer_question
-from training_free.evaluate_mm_official import SYSTEM_PROMPT
-
-
-class Judgment(BaseModel):
-    analysis: str
-    score: int = Field(strict=True, ge=0, le=5)
+from training_free.codex_harness import DATASETS, MODEL, QA_MODEL, RETRYABLE, ROOT, answer_question
+from training_free.evaluate_mm_official import SYSTEM_PROMPT, parse_score
 
 
 def judge_answer(client, dataset, question, answer, directory):
     rubric = SYSTEM_PROMPT.split("\nEgoLife metadata rules:", 1)[0] if dataset == "month" else SYSTEM_PROMPT
-    rubric = rubric.replace("Output format (strictly follow):\nAnalysis:\n<your analysis>\n\nFinal Score:\n<an integer from 0 to 5>", "Return the analysis and final integer score in the supplied structured schema.")
     prompt = f"Question: {question['question']}\n"
     if dataset == "egolife":
         query_time = str(question["query_time"]).zfill(9)
@@ -45,21 +38,20 @@ def judge_answer(client, dataset, question, answer, directory):
         path.write_text(json.dumps(trace, ensure_ascii=False) + "\n")
         print(f"JUDGE_START dataset={dataset} id={question['id']} attempt={attempt} trace={path}", flush=True)
         try:
-            raw = client.chat.completions.with_raw_response.parse(**request, response_format=Judgment)
+            raw = client.chat.completions.with_raw_response.create(**request)
             trace["request"] = json.loads(raw.http_request.content)
             trace["response"] = raw.http_response.json()
-            message = raw.parse().choices[0]
-            if message.finish_reason != "stop" or message.message.parsed is None:
-                raise InvalidTrace("Judge did not return a completed judgment")
-            judgment = message.message.parsed.model_dump()
+            content = raw.parse().choices[0].message.content.strip()
+            score = parse_score(content)
+            if score < 0:
+                raise ValueError(f"Invalid official judge output: {content}")
+            judgment = {"analysis": content, "score": score}
             judgment["trace_file"] = str(path)
             (directory / "judgment.json").write_text(json.dumps(judgment, ensure_ascii=False) + "\n")
             return judgment
-        except BaseException as error:
+        except Exception as error:
             trace["error"] = {"type": type(error).__name__, "message": str(error), "traceback": traceback.format_exc()}
             print(f"JUDGE_ERROR dataset={dataset} id={question['id']} error={error} trace={path}", flush=True)
-            if not isinstance(error, RETRYABLE):
-                raise
         finally:
             path.write_text(json.dumps(trace, ensure_ascii=False) + "\n")
 
@@ -146,7 +138,7 @@ def main(args):
             else:
                 wandb_id, resume = generate_id(), "never"
                 config_path.write_text(json.dumps({"evaluation": config, "wandb_id": wandb_id}, ensure_ascii=False, indent=2) + "\n")
-            run = wandb.init(entity="3dsmile", project="video-sql-v2", name=f"{run_root.name}-{dataset}", id=wandb_id, resume=resume, config=config, dir=str(directory), settings=wandb.Settings(x_disable_stats=True))
+            run = wandb.init(entity="3dsmile", project="video-sql-v2", name=f"{run_root.name}-{dataset}", id=wandb_id, resume=resume, config=config, dir=str(directory))
             results = {}
             try:
                 with ThreadPoolExecutor(max_workers=5) as pool:
