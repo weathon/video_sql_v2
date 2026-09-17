@@ -27,7 +27,7 @@ from training_free.mmlifelong_data import MM_SCHEMA
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL = "gpt-5.6-terra"
+MODEL = "gpt-6-astra"
 QA_MODEL = "Qwen/Qwen3.8-27B-FP8"
 EMBEDDING_MODEL = "qwen3-vl-embedding-8b"
 RETRYABLE = (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError, LengthFinishReasonError, httpx.TransportError, ValidationError, json.JSONDecodeError, InvalidTrace)
