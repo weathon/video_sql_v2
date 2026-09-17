@@ -1081,7 +1081,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         """Read the complete Markdown for one listed skill."""
         if name not in filenames:
             raise ValueError(f"unknown skill: {name}")
-        if context.time_format == 'mmlifelong' and name in ('sql-schema', 'semantic-search'):
+        if context.time_format == 'mmlifelong' and context.skill_dir.resolve() == (Path(__file__).parent / 'skills-vector').resolve() and name in ('sql-schema', 'semantic-search'):
             return (Path(__file__).parent / 'skills-month' / filenames[name]).read_text()
         return (context.skill_dir / filenames[name]).read_text()
 

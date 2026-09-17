@@ -32,7 +32,7 @@ from training_free.index_schema import SEARCH_TABLES
 from training_free.magic import load_magic_artifacts, run_magic
 from training_free.normalize import normalize_text
 from training_free.prepare_baselines import QA_SOURCE
-from training_free.evaluate_mm_official import SYSTEM_PROMPT as MM_SYSTEM_PROMPT, parse_score as parse_mm_score
+from training_free.evaluate_mm_official import SYSTEM_PROMPT as MM_SYSTEM_PROMPT
 
 
 MODEL = "Qwen/Qwen3.8-27B-FP8"
@@ -199,17 +199,20 @@ class Evaluation:
         self.magic_scores = {}
         self.completed_scores = {}
         if args.method == "sql":
-            reference = args.magic_reference
+            reference = args.untrained_reference if args.untrained_reference is not None else args.magic_reference
+            self.reference = reference
+            self.reference_name = "untrained" if args.untrained_reference is not None else "magic"
+            reference_method = "sql" if args.untrained_reference is not None else "magic"
             reference_config = json.loads((reference / "config.json").read_text())["evaluation"]
             if reference_config["judge_rubric"] != RUBRIC or reference_config["judge_version"] != JUDGE_VERSION:
-                raise ValueError("Live MAGIC comparison requires the same judge rubric and version")
+                raise ValueError("Live overlap comparison requires the same judge rubric and version")
             reference_questions = {str(question["id"]): question for question in reference_config["questions"]}
             for question in questions:
                 qid = str(question["id"])
-                if reference_questions[qid] != question:
-                    raise ValueError(f"MAGIC comparison question differs: {qid}")
-                if not args.concurrent_magic_reference:
-                    result = json.loads((reference / "magic/questions" / qid / "result.json").read_text())
+                if qid in reference_questions and reference_questions[qid] != question:
+                    raise ValueError(f"Overlap comparison question differs: {qid}")
+                if qid in reference_questions and not args.concurrent_magic_reference:
+                    result = json.loads((reference / reference_method / "questions" / qid / "result.json").read_text())
                     if result["category"] != "maintenance":
                         self.magic_scores[qid] = result["score"]
                 judgment = args.run_dir / "sql/questions" / qid / "judgment.json"
@@ -233,13 +236,15 @@ class Evaluation:
         if ids:
             ours = [self.completed_scores[qid] for qid in ids]
             magic = [self.magic_scores[qid] for qid in ids]
-            payload.update({"overlap/sql_mean_score": sum(ours) / len(ids), "overlap/magic_mean_score": sum(magic) / len(ids), "overlap/sql_accuracy": sum(score == 5 for score in ours) / len(ids), "overlap/magic_accuracy": sum(score == 5 for score in magic) / len(ids)})
+            reference = self.reference_name
+            payload.update({"overlap/sql_mean_score": sum(ours) / len(ids), f"overlap/{reference}_mean_score": sum(magic) / len(ids), "overlap/sql_accuracy": sum(score == 5 for score in ours) / len(ids), f"overlap/{reference}_accuracy": sum(score == 5 for score in magic) / len(ids)})
             if self.args.mm_lifelong_judge:
-                for name, scores in (("sql", ours), ("magic", magic)):
+                for name, scores in (("sql", ours), (reference, magic)):
                     payload[f"overlap/{name}_accuracy"] = sum(score >= 4 for score in scores) / len(ids)
                     payload[f"overlap/{name}_mapped_mean_score"] = sum(1 if score >= 4 else 0.5 if score == 3 else 0 for score in scores) / len(ids)
-            payload["overlap/mean_score_delta"] = payload["overlap/sql_mean_score"] - payload["overlap/magic_mean_score"]
-            payload["overlap/accuracy_delta"] = payload["overlap/sql_accuracy"] - payload["overlap/magic_accuracy"]
+                payload["overlap/mapped_mean_score_delta"] = payload["overlap/sql_mapped_mean_score"] - payload[f"overlap/{reference}_mapped_mean_score"]
+            payload["overlap/mean_score_delta"] = payload["overlap/sql_mean_score"] - payload[f"overlap/{reference}_mean_score"]
+            payload["overlap/accuracy_delta"] = payload["overlap/sql_accuracy"] - payload[f"overlap/{reference}_accuracy"]
         self.progress.update(payload)
         with self.log_lock:
             self.run.log(payload)
@@ -509,7 +514,7 @@ class Evaluation:
                     status = "answered"
                 else:
                     database = self.args.artifact_root / 'index.duckdb' if self.args.time_format == 'mmlifelong' else self.args.artifact_root / 'questions' / f"{question['id']}.duckdb"
-                    harness = VideoSQLHarness(database=database, embedding_index=self.args.artifact_root / "embeddings", media_map=self.args.artifact_root / "media-map.json", skill_dir=Path(__file__).resolve().parent / ("skills" if self.args.semantic_search == "ppr" else "skills-vector"), run_dir=directory, model_name=self.args.model, api_key="EMPTY", embedding_url=EMBEDDING_URL, embedding_model=EMBEDDING_MODEL, query_time=question["query_time"], base_url=self.args.base_url, clip_qa_video=True, reasoning_effort=self.args.reasoning_effort, semantic_search_mode=self.args.semantic_search, time_format=self.args.time_format)
+                    harness = VideoSQLHarness(database=database, embedding_index=self.args.artifact_root / "embeddings", media_map=self.args.artifact_root / "media-map.json", skill_dir=self.args.skill_dir, run_dir=directory, model_name=self.args.model, api_key="EMPTY", embedding_url=EMBEDDING_URL, embedding_model=EMBEDDING_MODEL, query_time=question["query_time"], base_url=self.args.base_url, clip_qa_video=True, reasoning_effort=self.args.reasoning_effort, semantic_search_mode=self.args.semantic_search, time_format=self.args.time_format)
                     session = await harness.answer(question_prompt)
                     answered_at = time.perf_counter()
                     candidate, status = session.answer, session.status
@@ -575,6 +580,15 @@ class Evaluation:
                     (question_root / f"answer-attempt-{attempt}.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
                 if harness is not None:
                     await harness.close()
+                if self.args.openai_judge and self.args.vllm_log is None:
+                    usage = collect_usage([directory], rates=None)
+                    with self.log_lock:
+                        for response in usage.values():
+                            if response["response_id"] is None:
+                                self.cloud_requests_without_response += 1
+                            elif response["usage"] is not None:
+                                for key in COUNTERS:
+                                    self.cloud_usage[key] += response[key]
 
     async def judge(self, method, question, attempt, directory):
         async with self.semaphore:
@@ -624,9 +638,10 @@ class Evaluation:
                             for key in COUNTERS:
                                 self.cloud_usage[key] += tokens[key]
                         content = raw.parse().choices[0].message.content.strip()
-                        score = parse_mm_score(content)
-                        if score < 0:
+                        scores = re.findall(r"(?im)^\s*Final Score:\s*([0-5])\s*$", content)
+                        if len(scores) != 1:
                             raise ValueError(f"Invalid official judge output: {content}")
+                        score = int(scores[0])
                     except Exception as error:
                         trace["error"] = {"type": type(error).__name__, "message": str(error), "traceback": traceback.format_exc()}
                         if isinstance(error, openai.APIError):
@@ -866,7 +881,7 @@ class Evaluation:
         (self.args.run_dir / method / "metrics.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
         if self.args.method == "sql":
             ids = sorted(self.completed_scores.keys() & self.magic_scores.keys(), key=int)
-            comparison = {"reference": str(self.args.magic_reference), "accuracy_definition": "score >= 4" if self.args.mm_lifelong_judge else "score == 5", "metrics": {key: value for key, value in self.progress.items() if key.startswith("overlap/")}, "ids": ids}
+            comparison = {"reference": str(self.reference), "accuracy_definition": "score >= 4" if self.args.mm_lifelong_judge else "score == 5", "metrics": {key: value for key, value in self.progress.items() if key.startswith("overlap/")}, "ids": ids}
             (self.args.run_dir / "overlap-comparison.json").write_text(json.dumps(comparison, ensure_ascii=False, indent=2) + "\n")
         with self.log_lock:
             self.run.log({f"{method}/{key}": value for key, value in summary.items() if isinstance(value, (int, float))})
@@ -906,8 +921,8 @@ async def main_async(args):
     global RUBRIC, JUDGE_VERSION, PD_URL, EMBEDDING_URL, BASE_URL, ATTEMPTS
     PD_URL, EMBEDDING_URL, BASE_URL = args.pd_url, args.embedding_url, args.base_url
     if args.time_format == 'mmlifelong':
-        if args.dataset != 'open' or (args.openai_judge and not args.official_open_judge) or (args.official_open_judge and args.answers_from is None) or args.no_reasoning_effort or (args.method == 'sql' and args.semantic_search != 'vector'):
-            raise ValueError('MM-Lifelong requires original open QA, local xhigh judge or official-judge rejudging of saved answers, and SQL vector semantic search')
+        if args.dataset != 'open' or (args.openai_judge and not args.official_open_judge) or args.no_reasoning_effort or (args.method == 'sql' and args.semantic_search != 'vector'):
+            raise ValueError('MM-Lifelong requires original open QA, local xhigh or official GPT-5 judging, and SQL vector semantic search')
         args.mm_lifelong_judge = True
         ATTEMPTS = (1, 2)
     args.reasoning_effort = None if args.no_reasoning_effort else "xhigh"
@@ -930,6 +945,11 @@ async def main_async(args):
     args.artifact_root = args.artifact_root.resolve()
     args.run_dir = args.run_dir.resolve()
     args.magic_reference = (args.magic_reference if args.magic_reference is not None else args.artifact_root / "results/quality-magic-judge-v2").resolve()
+    if args.untrained_reference is not None:
+        args.untrained_reference = args.untrained_reference.resolve()
+        if args.method != "sql" or args.concurrent_magic_reference:
+            raise ValueError("Untrained comparison requires SQL and a completed SQL reference")
+    args.skill_dir = (args.skill_dir if args.skill_dir is not None else Path(__file__).resolve().parent / ("skills" if args.semantic_search == "ppr" else "skills-vector")).resolve()
     if args.answers_from is not None:
         args.answers_from = args.answers_from.resolve()
         if args.method == "latency" or args.answers_from == args.run_dir:
@@ -971,6 +991,10 @@ async def main_async(args):
     config = {"method": args.method, "dataset": args.dataset, "artifact_root": str(args.artifact_root), "model": args.model, "base_url": args.base_url, "pd_url": PD_URL, "embedding_url": EMBEDDING_URL, "embedding_model": EMBEDDING_MODEL, "judge_model": "gpt-5" if args.official_open_judge else OPENAI_JUDGE_MODEL if args.openai_judge else args.model, "judge_api": "exact_option_letter" if args.dataset == "mcq" else "openai" if args.openai_judge else "local", "reasoning_effort": args.reasoning_effort, "concurrency": 1 if args.method == "latency" else args.concurrency, "answer_attempts": len(ATTEMPTS), "judge_attempts": "unlimited" if args.official_open_judge else len(ATTEMPTS), "questions": questions, "judge_rubric": RUBRIC, "judge_version": JUDGE_VERSION, "answer_source_run_dir": str(args.answers_from) if args.answers_from is not None else None, "investigation_call_limit": INVESTIGATION_CALL_LIMIT if args.answers_from is None else None, "live_metrics_interval_seconds": 1, "live_metrics_source": str(args.vllm_log) if args.vllm_log is not None else "openai_response_usage" if args.openai_judge else "prometheus"}
     if args.method == "sql":
         config.update({"retrieval_method": f"sql_{args.semantic_search}_semantic" if args.answers_from is None else "saved_answers", "live_magic_reference": str(args.magic_reference), "concurrent_magic_reference": args.concurrent_magic_reference, "overlap_accuracy_definition": "score >= 4" if args.mm_lifelong_judge else "score == 5"})
+        config["skill_dir"] = str(args.skill_dir)
+        if args.untrained_reference is not None:
+            del config["live_magic_reference"]
+            config["live_untrained_reference"] = str(args.untrained_reference)
     config.update({'time_format': args.time_format, 'gpu_ids': args.gpu_ids})
     config_path = args.run_dir / "config.json"
     if config_path.exists():
@@ -1024,4 +1048,6 @@ if __name__ == "__main__":
     parser.add_argument("--mm-lifelong-judge", action="store_true", help="Use the MM-Lifelong semantic-similarity rubric and its 4/5=1, 3=0.5, 0/1/2=0 mapping")
     parser.add_argument("--openai-judge", action="store_true", help="Judge saved answers with gpt-5.6-terra through the OpenAI API and SHARED_OPENAI_KEY")
     parser.add_argument("--magic-reference", type=Path, help="Completed MAGIC judgments with the same rubric for live overlap")
+    parser.add_argument("--untrained-reference", type=Path, help="Completed untrained SQL judgments with the same rubric for live overlap")
+    parser.add_argument("--skill-dir", type=Path, help="Skills supplied to the SQL answer agent")
     asyncio.run(main_async(parser.parse_args()))
