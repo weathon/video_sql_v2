@@ -146,7 +146,7 @@ def main(args):
             else:
                 wandb_id, resume = generate_id(), "never"
                 config_path.write_text(json.dumps({"evaluation": config, "wandb_id": wandb_id}, ensure_ascii=False, indent=2) + "\n")
-            run = wandb.init(project="video-sql-training-free", name=f"{run_root.name}-{dataset}", id=wandb_id, resume=resume, config=config, dir=str(directory), settings=wandb.Settings(x_disable_stats=True))
+            run = wandb.init(entity="3dsmile", project="video-sql-v2", name=f"{run_root.name}-{dataset}", id=wandb_id, resume=resume, config=config, dir=str(directory), settings=wandb.Settings(x_disable_stats=True))
             results = {}
             try:
                 with ThreadPoolExecutor(max_workers=5) as pool:

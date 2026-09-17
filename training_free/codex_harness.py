@@ -200,6 +200,10 @@ def answer_question(codex, dataset, question, directory, qa_url, embedding_url):
                     raise RuntimeError(f"Tool {record['name']}: {error}")
                 if record["name"] == "submit_answer":
                     submitted = json.loads(record["output"])["answer"]
+            if completed is not None and completed["status"] == "failed":
+                error_info = completed["error"]["codexErrorInfo"]
+                if error_info in ("contextWindowExceeded", "rateLimitExceeded", "serverOverloaded", "internalServerError") or isinstance(error_info, dict) and any(key in error_info for key in ("httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected", "responseTooManyFailedAttempts")):
+                    raise InvalidTrace(f"Codex turn failed: {completed['error']}")
             if completed is None or completed["status"] != "completed":
                 raise RuntimeError(f"Codex turn did not complete: {completed}")
             answer = submitted if submitted is not None else final_response
