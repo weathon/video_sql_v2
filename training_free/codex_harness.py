@@ -16,7 +16,7 @@ from agents.tool_context import ToolContext
 from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI, DefaultAsyncHttpxClient
+from openai import APIStatusError, APITimeoutError, AsyncOpenAI, DefaultAsyncHttpxClient
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 from openai_codex.generated.v2_all import ConfigReadResponse, ListMcpServerStatusResponse
 from openai_codex.types import ReasoningEffort
@@ -115,7 +115,7 @@ class CodexContext(HarnessContext):
 
 
 @contextlib.asynccontextmanager
-async def tool_context(dataset, artifact_root, directory, query_time, qa_url, embedding_url):
+async def tool_context(dataset, artifact_root, directory, question_id, query_time, qa_url, embedding_url):
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "traces").mkdir(exist_ok=True)
 
@@ -141,7 +141,7 @@ async def tool_context(dataset, artifact_root, directory, query_time, qa_url, em
             if expected not in [item["id"] for item in response.json()["data"]]:
                 raise RuntimeError(f"Unexpected model at {url}: {response.text}")
         month = dataset == "mmlifelong-month"
-        database = artifact_root / "index.duckdb" if month else artifact_root / "questions" / f"{os.environ['VIDEO_SQL_QUESTION_ID']}.duckdb"
+        database = artifact_root / "index.duckdb" if month else artifact_root / "questions" / f"{question_id}.duckdb"
         context = CodexContext(
             database=database,
             embedding_index=artifact_root / "embeddings",
@@ -166,9 +166,9 @@ async def tool_context(dataset, artifact_root, directory, query_time, qa_url, em
 async def serve():
     dataset = os.environ["VIDEO_SQL_DATASET"]
     directory = Path(os.environ["VIDEO_SQL_ATTEMPT_DIR"])
-    with contextlib.redirect_stdout(sys.stderr):
-        async with stdio_server() as (read_stream, write_stream):
-            async with tool_context(dataset, Path(os.environ["VIDEO_SQL_ARTIFACT_ROOT"]), directory, json.loads(os.environ["VIDEO_SQL_QUERY_TIME"]), os.environ["VIDEO_SQL_QA_URL"], os.environ["VIDEO_SQL_EMBEDDING_URL"]) as context:
+    async with stdio_server() as (read_stream, write_stream):
+        with contextlib.redirect_stdout(sys.stderr):
+            async with tool_context(dataset, Path(os.environ["VIDEO_SQL_ARTIFACT_ROOT"]), directory, os.environ["VIDEO_SQL_QUESTION_ID"], json.loads(os.environ["VIDEO_SQL_QUERY_TIME"]), os.environ["VIDEO_SQL_QA_URL"], os.environ["VIDEO_SQL_EMBEDDING_URL"]) as context:
                 functions, _ = make_tools(context)
                 tools = {tool.name: tool for tool in functions}
                 terminal = None
@@ -195,7 +195,7 @@ async def serve():
                         output = json.dumps({"error": terminal})
                         is_error = True
                     except BaseException as error:
-                        ordinary = isinstance(error, (InvalidTrace, APIConnectionError, httpx.TimeoutException)) or isinstance(error, APIStatusError) and (error.status_code in (408, 429) or error.status_code >= 500)
+                        ordinary = isinstance(error, (InvalidTrace, APITimeoutError, httpx.TimeoutException)) or isinstance(error, APIStatusError) and (error.status_code in (408, 429) or error.status_code >= 500)
                         terminal = {"category": "ordinary" if ordinary else "maintenance", "type": type(error).__name__, "message": str(error), "traceback": traceback.format_exc()}
                         output = json.dumps({"error": terminal})
                         is_error = True
@@ -225,7 +225,7 @@ async def serve():
                 await server.run(read_stream, write_stream, server.create_initialization_options(), raise_exceptions=True)
 
 
-def answer_question(dataset, artifact_root, directory, question, qa_url, embedding_url):
+def answer_question(dataset, artifact_root, directory, question, qa_url, embedding_url, stop):
     directory.mkdir(parents=True, exist_ok=True)
     working = directory / "workspace"
     working.mkdir(exist_ok=True)
@@ -268,6 +268,9 @@ def answer_question(dataset, artifact_root, directory, question, qa_url, embeddi
                 record = trace_json(event)
                 trace.write(json.dumps(record, ensure_ascii=False) + "\n")
                 trace.flush()
+                if stop.is_set() and terminal is None and answer is None and event.method != "turn/completed":
+                    terminal = {"category": "maintenance", "message": "Batch stopped after another worker's dependency/code failure"}
+                    trace.write(json.dumps({"interrupt": trace_json(turn.interrupt()), "reason": terminal}) + "\n")
                 if event.method == "thread/tokenUsage/updated":
                     usage = record["payload"]["tokenUsage"]["total"]
                     (directory / "usage.json").write_text(json.dumps(usage) + "\n")
@@ -296,6 +299,13 @@ def answer_question(dataset, artifact_root, directory, question, qa_url, embeddi
                 raise AttemptFailed(str(terminal))
             if answer is None:
                 if completed is not None and completed["status"] == "failed":
+                    info = completed["error"]["codexErrorInfo"]
+                    if info in ("contextWindowExceeded", "rateLimitExceeded", "serverOverloaded", "internalServerError"):
+                        raise AttemptFailed(f"Codex turn failed: {completed}")
+                    if isinstance(info, dict):
+                        status = next(iter(info.values()))["httpStatusCode"]
+                        if status is None or status in (408, 429) or status >= 500:
+                            raise AttemptFailed(f"Codex turn failed: {completed}")
                     raise RuntimeError(f"Codex turn failed: {completed}")
                 raise AttemptFailed(f"Codex turn ended without submit_answer: {completed}")
             return {"id": question["id"], "candidate_answer": answer, "thread_id": thread.id, "usage": usage, "attempt_dir": str(directory)}

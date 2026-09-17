@@ -233,7 +233,7 @@ class Evaluation:
                 self.emit("answer_retry", question["id"])
             self.emit("answer_started", question["id"])
             try:
-                answer = answer_question(self.dataset, self.artifact_root, attempt, {key: question[key] for key in ("id", "question", "query_time")}, self.qa_url, self.embedding_url)
+                answer = answer_question(self.dataset, self.artifact_root, attempt, {key: question[key] for key in ("id", "question", "query_time")}, self.qa_url, self.embedding_url, self.stop)
             except AttemptFailed as error:
                 (attempt / "outcome.json").write_text(json.dumps({"status": "ordinary_failure", "error": str(error)}) + "\n")
                 failed = True
