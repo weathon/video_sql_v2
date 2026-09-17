@@ -11,7 +11,7 @@
 - [上一阶段计划](/raid/wg25r/video_sql_trace2skill/plans/baseline_mmlifelong.md)：Month 数据协议、embedding 复用和已完成结果。
 - [MCP 与 analysis 交接说明](/raid/wg25r/video_sql_trace2skill/docs/mcp-analysis-handoff.md)：Codex 接入、权限、事件记录和 thread 归档。
 - [src/mcp.py](/raid/wg25r/video_sql_trace2skill/src/mcp.py)：stdio MCP 工具封装。
-- [src/analysis.py](/raid/wg25r/video_sql_trace2skill/src/analysis.py)：Codex SDK 生命周期；这里只借鉴客户端实现，不使用分析或技能生成提示。
+- [src/analysis.py](/raid/wg25r/video_sql_trace2skill/src/analysis.py)：Codex SDK 生命周期及 chat 归档。
 - [training_free/harness.py](/raid/wg25r/video_sql_trace2skill/training_free/harness.py)：现有 SQL、向量检索、QA、视频取证及数据集时间处理。
 - [fair 计划](/raid/wg25r/video_sql_trace2skill/plans/fair_plan.md)：EgoLife Open 对照协议。
 
@@ -33,11 +33,9 @@
 其他已确认决定：
 
 - Terra 使用现有 analysis 的设置(把high改成max)，不将不同模型的 reasoning 档位视为可直接比较的量。
-- 使用 Codex 原生循环和上下文管理，不设置 SQL60 共享调用预算，不提供 `replace_tool`，不增加额外强制回答步骤。
-- 使用原静态检索 skills；本轮不加载 analysis 生成的 skills。
+- 使用 Codex 原生循环和上下文管理，不设置 SQL60 共享调用预算，不提供 `replace_tool`。
 - 客户端不设置输入、输出 token 上限或采样参数。Qwen 保留 thinking；Codex 保留原生会话历史及可获取的 reasoning 事件。
-- 参考答案、旧答案、judge 结果仅由 evaluator 使用。
-- 本轮只运行 VideoSQL；不重跑 MAGIC、MCQ、embedding 或技能学习。
+- 参考答案仅供 judge 使用。
 
 ## 2. 现有 artifacts、embedding 来源与复现信息
 
@@ -158,39 +156,20 @@ EgoLife 向量同样由 `Qwen/Qwen3-VL-Embedding-8B` 生成。原视觉向量通
 
 ### Codex harness
 
-新增 `training_free/codex_harness.py`，同时承载 Codex 客户端适配和本实验 stdio MCP 入口。
+创建 `training_free/codex_harness.py`，用 Codex 作为 harness 复刻原本的 `harness.py`。
 
-- 参考 `src/mcp.py` 的封装方式，复用 `training_free/harness.py` 的工具实现；不直接使用目前固定 EgoLife 全库、无逐题截止的 `src/mcp.py` 配置。
-- 暴露现有 `run_sql`、vector `semantic_search`、`clip_qa`、`add_note`、`read_notes`、`read_skill`、`agent_raise`、`submit_answer`。
-- 工具 schema 从实际实现生成；保留 SQL scope、检索后 SQL 过滤、结果格式、视频采样及证据返回规则。视频 QA 保持现有 video-mode 请求。
-- 按数据集注入 schema、时间说明、视频身份和原静态 skills 路由。Month 使用已有 Month 专用 SQL/semantic 说明；EgoLife 使用原 `skills-vector` 说明。
-- Codex 专用 context 只记录调用次数，不执行 SQL60 调用限制。两种数据集的 QA 请求均不带客户端 token 上限；特别清除 EgoLife 旧 QA 路径中的 16,384 上限及其截断重试逻辑。
-- 每题每次尝试创建独立 Codex client、thread、MCP context 和输出目录，隔离 notes、调用计数及证据。
-- 固定 Terra/max/default，设置 `ephemeral=False`；正常结束或失败后调用 `thread_archive`，保存 thread ID、事件及归档返回。
-- 成功的 `submit_answer` 工具输出作为答案，客户端随后中断并收尾 turn；该预期中断不记失败。`agent_raise` 终止本次尝试；没有成功提交答案的普通终止记失败。
-- 通过客户端局部配置覆盖 MCP 注册，不修改全局 Codex 配置。沿用只读 sandbox、禁止提权和已验证的 legacy Landlock 配置。
-- 只开放本实验 MCP，关闭 shell、外部检索、其他 MCP 和额外数据访问能力，避免读取参考答案、历史结果或其他题目的输出。
+- 参考 `src/mcp.py` 了解原工具架构，沿用原 harness 的 SQL、向量检索、QA、视频取证及 skills。
+- 按前述两套数据协议处理 schema、时间格式、视频身份和 query time。
+- 两种数据集的 QA 请求均不带客户端 token 上限，包括 EgoLife 旧 QA 路径中的 16,384 上限。
+- Codex 使用 Terra/max/default，参考 `src/analysis.py` 使用 SDK 并归档 chats。
 - 保存实际 MCP 参数、返回文本/图片块、QA 请求响应、embedding 请求响应及错误。媒体日志保存来源、PTS、帧重建信息，供手工复核。
 
 ### Evaluator
 
-新增 `training_free/val_codex.py`，支持：
-
-```text
---dataset {mmlifelong-month,egolife-open}
---artifact-root
---run-dir
---qa-url
---embedding-url
---concurrency
---baseline-run
---ids
-```
-
-`--dataset` 决定时间格式、逐题数据库选择、QA reasoning 参数、答题尝试次数和 judge metadata；`--ids` 仅用于独立调试运行。正式运行使用完整题集。
+创建 `training_free/val_codex.py`，用 Codex harness 回答两套题集，记录答案、GPT-5 judge 结果和 W&B 指标。
 
 - 最多同时处理 5 道题，逐题保存答案后安排 judge。
-- 已完成答案不重跑；有答案但缺评分时只补 judge。重试创建新 thread，保留之前 attempts。
+- 支持断点续跑，保存各次尝试的结果。
 - Month 普通答题失败批末集中重试一次；维护错误修复后继续同方法运行，不计入普通重试次数。
 - EgoLife 按 fair 协议最多 4 次答题尝试。遇到确定的代码、配置或缺失服务问题立即停止并修复，不用重复请求掩盖故障。
 - 完成、失败、重试、答案、评分和 usage 持续落盘；最终失败保留原 ID。
@@ -200,27 +179,19 @@ EgoLife 向量同样由 `Qwen/Qwen3-VL-Embedding-8B` 生成。原视觉向量通
 
 ### Stage 0：资源检查与服务准备
 
-使用现有镜像 `video-sql-vllm-epd:egolife-baselines`，新建本任务专用服务：
+启动 Qwen3.8-27B-FP8 和 Qwen3-VL-Embedding-8B 的 Docker 服务，Qwen 使用单卡。
 
-| 服务 | 计划 GPU | 端口 |
-|---|---:|---:|
-| Qwen3.8-27B-FP8，TP=1 | 4 | 8410 |
-| Qwen3-VL-Embedding-8B | 5 | 8414 |
+启动前重新检查 GPU、端口及主机可用内存。资源不足立即报告，不等待、不停止其他任务服务。
 
-启动前重新检查 GPU、端口及主机可用内存；上述分配不代表资源已预留。资源不足立即报告，不等待、不停止其他任务服务。
-
-- Qwen 使用现有单体服务配置，保留 max-model-len 314573、既有 YaRN overrides、MTP 3、prefix caching、4 GiB 多模态缓存、image 650/video 1、max-num-seqs 50、GPU utilization 0.90、每 rank 128 GiB CPU KV offload，以及 thinking/preserve-thinking。
-- 使用单卡 TP=1；不启动独立 encoder 或 EPD proxy。
-- embedding served model name 保持 `qwen3-vl-embedding-8b`，服务参数沿用既有配置。本轮仅请求在线查询向量。
+- 服务参数沿用既有配置，保留 thinking 历史和非零多模态缓存。
+- embedding served model name 保持 `qwen3-vl-embedding-8b`，跳过离线 embedding 创建。
 - 保存实际命令、容器 ID、镜像 ID、模型和 SDK 版本。
 - 服务与评测均通过受控前台会话运行，不使用 `--rm`、后台启动或独立 watcher。
 - 使用项目 `.env` 中既有 `SHARED_OPENAI_KEY` 调用 judge；W&B 使用系统已有登录，不查找其他目录的密钥。
 
 ### Stage 1：实现、小范围调试与审查
 
-一次实现两种数据模式，完成下面的验证和审查后开始正式 Month 运行。
-
-调试输出和正式结果分开；调试题不自动算作正式完成题。
+完成实现、小范围调试和规定的审查。
 
 本次执行范围：仅实现和小测试，不启动正式评测。已新增 `training_free/codex_harness.py` 与 `training_free/val_codex.py`；独立改动审查指出的 embedding 临时错误分类和已提交答案恢复问题已修复。
 
@@ -230,33 +201,11 @@ EgoLife 向量同样由 `Qwen/Qwen3-VL-Embedding-8B` 生成。原视觉向量通
 
 ### Stage 2：MM-Lifelong Month 正式评测
 
-```bash
-.venv_baselines/bin/python -u -m training_free.val_codex \
-  --dataset mmlifelong-month \
-  --artifact-root /raid/wg25r/video_sql_trace2skill/runs/mmlifelong-month/artifacts \
-  --run-dir /raid/wg25r/video_sql_trace2skill/runs/mmlifelong-month-codex/formal \
-  --qa-url http://127.0.0.1:8410/v1 \
-  --embedding-url http://127.0.0.1:8414/v1 \
-  --concurrency 5 \
-  --baseline-run /raid/wg25r/video_sql_trace2skill/runs/mmlifelong-month/results/month-sql-gpt5
-```
-
-完成全部 623 题的答题、重试、judge 和阶段汇总后，再开始 EgoLife。服务继续保留供下一阶段使用。
+使用现有 Month artifacts，完成全部 623 题的答题、重试、GPT-5 judge 和结果记录后，再开始 EgoLife。
 
 ### Stage 3：EgoLife Open 正式评测
 
-```bash
-.venv_baselines/bin/python -u -m training_free.val_codex \
-  --dataset egolife-open \
-  --artifact-root /raid/videosql-video-artifacts \
-  --run-dir /raid/wg25r/video_sql_trace2skill/runs/egolife-open-codex/formal \
-  --qa-url http://127.0.0.1:8410/v1 \
-  --embedding-url http://127.0.0.1:8414/v1 \
-  --concurrency 5 \
-  --baseline-run /raid/wg25r/video_sql_trace2skill/runs/fair-qwen38/formal/fair-qwen38-sql-open
-```
-
-使用独立 W&B run、输出目录和全新的 contexts，不带入 Month 的 notes、答案或 thread 历史。
+使用现有 EgoLife Open artifacts，按已确认的 fair QA 和重试设置完成全部 500 题，记录答案、GPT-5 judge 结果和 W&B 指标。
 
 ### Stage 4：汇总与服务收尾
 
@@ -299,7 +248,7 @@ EgoLife 向量同样由 `Qwen/Qwen3-VL-Embedding-8B` 生成。原视觉向量通
 
 - `delta = 本次 Codex 指标 − 对应 Qwen VideoSQL 指标`，保存绝对差值。
 - 按原 ID 对齐；运行中比较共同完成题目，最终使用完整固定分母。
-- W&B 使用完成、失败、重试及评分事件触发更新，记录进度、两项指标、overlap 和 delta。
+- 保留 W&B 记录，包括进度、两项指标、overlap 和 delta。
 - 去掉 1 Hz 监控、vLLM metrics、GPU 和服务吞吐采集，不再进行 PD counter 对账。
 - 分别记录 Terra 主调用、Qwen SQL/semantic/video QA、GPT-5 judge 及重试 token。
 - Terra 使用 SDK usage 事件的累计值，避免重复累加；Qwen 和 judge 使用实际响应 usage。缺失 usage 明确记录为未知，不能填 0。
@@ -308,13 +257,12 @@ EgoLife 向量同样由 `Qwen/Qwen3-VL-Embedding-8B` 生成。原视觉向量通
 
 ## 6. 验证、审查与最终交付
 
-小范围调试必须覆盖：
+小范围调试并人工检查实际执行 trace：
 
 - Month 跨视频检索、同视频不同片段、零秒及小数秒、视频身份和视觉查询指令。
 - EgoLife `DHHMMSSFF` 与媒体秒数转换、逐题数据库选择、截止后证据不可见、视频读取不越过 query time。
 - 两种模式的 SQL 过滤、文本/视觉向量映射、QA 实际请求、返回证据帧。
-- 5 并发下 notes、MCP context 和输出目录隔离。
-- `submit_answer` 终止、`agent_raise`、普通失败重试、断点恢复及 thread 归档。
+- 5 并发答题、答案保存、普通失败重试、断点恢复及 chat 归档。
 - Month QA 实际带 `xhigh`，EgoLife QA 实际省略 effort，两边均无客户端 token 上限。
 - 两种 judge 的 metadata、score 映射、逐题 ID 对齐及 delta。
 - Terra usage 累计方式、Qwen/judge usage 和 W&B 事件日志。
