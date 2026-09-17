@@ -1,7 +1,3 @@
-#!/usr/bin/env bash
-set -euo pipefail
-cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
-exec .venv_baselines/bin/python -u - <<'PY'
 import json
 import os
 import socket
@@ -26,6 +22,7 @@ def service_ready(url, model):
     return True
 
 
+os.chdir(Path(__file__).resolve().parents[1])
 directory = Path("runs/analysis/services")
 directory.mkdir(parents=True, exist_ok=True)
 image = "video-sql-vllm-epd:egolife-baselines"
@@ -283,4 +280,3 @@ finally:
         process.wait()
         subprocess.run(["docker", "rm", name], check=True)
         log.close()
-PY
