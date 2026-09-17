@@ -16,7 +16,6 @@ from openai_codex import Codex, CodexConfig, Sandbox
 from openai_codex.types import ReasoningEffort
 from pydantic import BaseModel, ConfigDict, Field
 
-
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = "gpt-5.6-sol"
 ORIGINAL_SKILLS = ROOT / "training_free/skills-vector"
@@ -72,15 +71,37 @@ def trace_json(value):
 def run_agent(codex, directory, instructions, prompt, output_schema=None):
     trace_path = directory / f"events-{uuid.uuid4().hex}.jsonl"
     with trace_path.open("w") as trace:
-        request = {"model": MODEL, "effort": "high", "service_tier": "default", "ephemeral": False, "instructions": instructions, "prompt": prompt, "output_schema": output_schema}
+        request = {
+            "model": MODEL,
+            "effort": "high",
+            "service_tier": "default",
+            "ephemeral": False,
+            "instructions": instructions,
+            "prompt": prompt,
+            "output_schema": output_schema,
+        }
         trace.write(json.dumps({"request": request}, ensure_ascii=False) + "\n")
         trace.flush()
         print(f"AGENT_START directory={directory} trace={trace_path}", flush=True)
         thread = None
         try:
-            thread = codex.thread_start(model=MODEL, service_tier="default", ephemeral=False, cwd=str(ROOT), sandbox=Sandbox.full_access, developer_instructions=instructions)
-            trace.write(json.dumps({"thread": trace_json(thread.read().thread)}, ensure_ascii=False) + "\n")
-            turn = thread.turn(prompt, effort=ReasoningEffort.high, output_schema=output_schema)
+            thread = codex.thread_start(
+                model=MODEL,
+                service_tier="default",
+                ephemeral=False,
+                cwd=str(ROOT),
+                sandbox=Sandbox.full_access,
+                developer_instructions=instructions,
+            )
+            trace.write(
+                json.dumps(
+                    {"thread": trace_json(thread.read().thread)}, ensure_ascii=False
+                )
+                + "\n"
+            )
+            turn = thread.turn(
+                prompt, effort=ReasoningEffort.high, output_schema=output_schema
+            )
             final_response = None
             completed = None
             for event in turn.stream():
@@ -89,36 +110,67 @@ def run_agent(codex, directory, instructions, prompt, output_schema=None):
                 trace.flush()
                 if event.method == "item/completed":
                     item = record["payload"]["item"]
-                    print(f"AGENT_ITEM thread={thread.id} type={item['type']}", flush=True)
-                    if item["type"] == "agentMessage" and item["phase"] in (None, "final_answer"):
+                    print(
+                        f"AGENT_ITEM thread={thread.id} type={item['type']}", flush=True
+                    )
+                    if item["type"] == "agentMessage" and item["phase"] in (
+                        None,
+                        "final_answer",
+                    ):
                         final_response = item["text"]
                 elif event.method == "turn/completed":
                     completed = record["payload"]["turn"]
             if completed is None or completed["status"] != "completed":
                 raise RuntimeError(f"Codex turn did not complete: {completed}")
             if final_response is None or not final_response.strip():
-                raise RuntimeError(f"Codex thread {thread.id} returned no final response")
+                raise RuntimeError(
+                    f"Codex thread {thread.id} returned no final response"
+                )
             print(f"AGENT_DONE thread={thread.id} trace={trace_path}", flush=True)
             return final_response
         except BaseException as error:
-            trace.write(json.dumps({"error": {"type": type(error).__name__, "message": str(error)}}, ensure_ascii=False) + "\n")
-            print(f"AGENT_ERROR trace={trace_path} error={type(error).__name__}: {error}", flush=True)
+            trace.write(
+                json.dumps(
+                    {"error": {"type": type(error).__name__, "message": str(error)}},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            print(
+                f"AGENT_ERROR trace={trace_path} error={type(error).__name__}: {error}",
+                flush=True,
+            )
             raise
         finally:
             if thread is not None:
                 print(f"AGENT_ARCHIVE thread={thread.id}", flush=True)
                 archived = codex.thread_archive(thread.id)
-                trace.write(json.dumps({"archive": {"thread_id": thread.id, "response": trace_json(archived)}}, ensure_ascii=False) + "\n")
+                trace.write(
+                    json.dumps(
+                        {
+                            "archive": {
+                                "thread_id": thread.id,
+                                "response": trace_json(archived),
+                            }
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
 
 
 def analyze_batch(codex, batch, output):
     paths = sorted(str(path) for path in batch.parent.rglob("*.json"))
-    prompt = f"Batch entry: {batch}\nAll JSON paths in this batch:\n" + json.dumps(paths, ensure_ascii=False, indent=2)
+    prompt = f"Batch entry: {batch}\nAll JSON paths in this batch:\n" + json.dumps(
+        paths, ensure_ascii=False, indent=2
+    )
     directory = output / "analyses" / batch.parent.name
     directory.mkdir(parents=True, exist_ok=True)
     prompt_path = directory / "prompt.txt"
     if prompt_path.exists() and prompt_path.read_text() != prompt:
-        raise ValueError(f"Batch inputs differ from {prompt_path}; use a separate output directory")
+        raise ValueError(
+            f"Batch inputs differ from {prompt_path}; use a separate output directory"
+        )
     prompt_path.write_text(prompt)
     experience_path = directory / "experience.md"
     if not experience_path.exists():
@@ -132,17 +184,26 @@ def main(args):
     batches = [path.resolve(strict=True) for path in args.batches]
     names = [path.parent.name for path in batches]
     if len(set(names)) != len(names):
-        raise ValueError("Batch directories must have distinct names within one analysis run")
+        raise ValueError(
+            "Batch directories must have distinct names within one analysis run"
+        )
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    config = CodexConfig(cwd=str(ROOT), config_overrides=("mcp_servers.video_sql.required=true",))
+    config = CodexConfig(
+        cwd=str(ROOT), config_overrides=("mcp_servers.video_sql.required=true",)
+    )
     with Codex(config) as codex:
         with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = [pool.submit(analyze_batch, codex, batch, output) for batch in batches]
+            futures = [
+                pool.submit(analyze_batch, codex, batch, output) for batch in batches
+            ]
             try:
                 for completed, future in enumerate(as_completed(futures), 1):
                     experience_path = future.result()
-                    print(f"ANALYSIS_PROGRESS {completed}/{len(batches)} experience={experience_path}", flush=True)
+                    print(
+                        f"ANALYSIS_PROGRESS {completed}/{len(batches)} experience={experience_path}",
+                        flush=True,
+                    )
             finally:
                 for future in futures:
                     future.cancel()
@@ -150,16 +211,35 @@ def main(args):
 
         directory = output / "synthesis"
         directory.mkdir(exist_ok=True)
-        prompt = "Completed experience paths:\n" + json.dumps([str(path) for path in experiences], ensure_ascii=False, indent=2) + "\nOriginal skill paths:\n" + json.dumps([str(path) for path in sorted(ORIGINAL_SKILLS.glob("*.md"))], ensure_ascii=False, indent=2)
+        prompt = (
+            "Completed experience paths:\n"
+            + json.dumps(
+                [str(path) for path in experiences], ensure_ascii=False, indent=2
+            )
+            + "\nOriginal skill paths:\n"
+            + json.dumps(
+                [str(path) for path in sorted(ORIGINAL_SKILLS.glob("*.md"))],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         prompt_path = directory / "prompt.txt"
         if prompt_path.exists() and prompt_path.read_text() != prompt:
-            raise ValueError(f"Synthesis inputs differ from {prompt_path}; use a separate output directory")
+            raise ValueError(
+                f"Synthesis inputs differ from {prompt_path}; use a separate output directory"
+            )
         prompt_path.write_text(prompt)
         bundle_path = directory / "skills.json"
         if bundle_path.exists():
             bundle = LearnedSkills.model_validate_json(bundle_path.read_text())
         else:
-            response = run_agent(codex, directory, SYNTHESIS_PROMPT, prompt, LearnedSkills.model_json_schema())
+            response = run_agent(
+                codex,
+                directory,
+                SYNTHESIS_PROMPT,
+                prompt,
+                LearnedSkills.model_json_schema(),
+            )
             bundle = LearnedSkills.model_validate_json(response)
             bundle_path.write_text(bundle.model_dump_json(indent=2) + "\n")
         names = [skill.name for skill in bundle.skills]
@@ -168,14 +248,29 @@ def main(args):
         skill_dir = output / "skills"
         skill_dir.mkdir(exist_ok=True)
         for skill in bundle.skills:
-            front_matter = yaml.safe_dump({"name": skill.name, "description": skill.description}, sort_keys=False, allow_unicode=True, width=10000)
-            (skill_dir / f"{skill.name}.md").write_text("---\n" + front_matter + "---\n\n" + skill.content.strip() + "\n")
+            front_matter = yaml.safe_dump(
+                {"name": skill.name, "description": skill.description},
+                sort_keys=False,
+                allow_unicode=True,
+                width=10000,
+            )
+            (skill_dir / f"{skill.name}.md").write_text(
+                "---\n" + front_matter + "---\n\n" + skill.content.strip() + "\n"
+            )
         (skill_dir / "ROOT-SKILL.md").write_text(bundle.root_skill.strip() + "\n")
-        print(f"SKILLS_DONE directory={skill_dir} experiences={len(experiences)} skills={len(bundle.skills)}", flush=True)
+        print(
+            f"SKILLS_DONE directory={skill_dir} experiences={len(experiences)} skills={len(bundle.skills)}",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("batches", type=Path, nargs="+", help="Batch JSON files; each agent receives every JSON path beneath that batch's directory")
+    parser.add_argument(
+        "batches",
+        type=Path,
+        nargs="+",
+        help="Batch JSON files; each agent receives every JSON path beneath that batch's directory",
+    )
     parser.add_argument("--output", type=Path, default=ROOT / "runs/analysis")
     main(parser.parse_args())
