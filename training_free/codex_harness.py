@@ -242,12 +242,19 @@ def answer_question(dataset, artifact_root, directory, question, qa_url, embeddi
     overrides = ['web_search="disabled"', 'project_doc_max_bytes=0', 'skills.include_instructions=false', 'skills.bundled.enabled=false', 'tools.update_plan.enabled=false', 'tools.experimental_request_user_input.enabled=false', 'agents.enabled=false', 'features.use_legacy_landlock=true', 'features.code_mode_host=true']
     for feature in ("shell_tool", "unified_exec", "view_image", "apps", "plugins", "remote_plugin", "skill_search", "skill_mcp_dependency_install", "multi_agent", "multi_agent_v2", "browser_use", "computer_use", "image_generation", "workspace_dependencies", "tool_suggest", "goals", "hooks", "memories", "sleep_tool", "code_mode"):
         overrides.append(f"features.{feature}=false")
+    catalog_source = Path("/home/wg25r/.codex/models_cache.json")
+    catalog = json.loads(catalog_source.read_text())
+    model_info = next(model for model in catalog["models"] if model["slug"] == MODEL)
+    model_info["apply_patch_tool_type"] = None
+    catalog_path = directory / "model-catalog.json"
+    catalog_path.write_text(json.dumps({"models": [model_info]}, ensure_ascii=False) + "\n")
+    overrides.append("model_catalog_json=" + json.dumps(str(catalog_path)))
     config = CodexConfig(cwd=str(working), config_overrides=tuple(overrides))
     instructions = instructions_for(dataset)
     prompt = f"Question ID: {question['id']}\nQuestion: {question['question']}"
     if dataset == "egolife-open":
         prompt += f"\nQuery time: {question['query_time']} (DHHMMSSFF). Questioner: Jake / A1_JAKE."
-    request = {"model": MODEL, "effort": "max", "service_tier": "default", "ephemeral": False, "prompt": prompt, "instructions": instructions, "overrides": overrides}
+    request = {"model": MODEL, "effort": "max", "service_tier": "default", "ephemeral": False, "prompt": prompt, "instructions": instructions, "overrides": overrides, "model_catalog_source": str(catalog_source)}
     (directory / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2) + "\n")
     answer = None
     terminal = None
