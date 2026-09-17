@@ -239,8 +239,8 @@ def answer_question(dataset, artifact_root, directory, question, qa_url, embeddi
         "VIDEO_SQL_QA_URL": qa_url, "VIDEO_SQL_EMBEDDING_URL": embedding_url,
         "OMP_NUM_THREADS": "10", "MKL_NUM_THREADS": "10", "OPENBLAS_NUM_THREADS": "10", "NUMEXPR_NUM_THREADS": "10",
     }
-    overrides = ['web_search="disabled"', 'project_doc_max_bytes=0', 'skills.include_instructions=false', 'skills.bundled.enabled=false', 'tools.update_plan.enabled=false', 'tools.experimental_request_user_input.enabled=false', 'agents.enabled=false', 'features.use_legacy_landlock=true']
-    for feature in ("shell_tool", "unified_exec", "view_image", "apps", "plugins", "remote_plugin", "skill_search", "skill_mcp_dependency_install", "multi_agent", "multi_agent_v2", "browser_use", "computer_use", "image_generation", "workspace_dependencies", "tool_suggest", "goals", "hooks", "memories", "sleep_tool", "code_mode", "code_mode_host"):
+    overrides = ['web_search="disabled"', 'project_doc_max_bytes=0', 'skills.include_instructions=false', 'skills.bundled.enabled=false', 'tools.update_plan.enabled=false', 'tools.experimental_request_user_input.enabled=false', 'agents.enabled=false', 'features.use_legacy_landlock=true', 'features.code_mode_host=true']
+    for feature in ("shell_tool", "unified_exec", "view_image", "apps", "plugins", "remote_plugin", "skill_search", "skill_mcp_dependency_install", "multi_agent", "multi_agent_v2", "browser_use", "computer_use", "image_generation", "workspace_dependencies", "tool_suggest", "goals", "hooks", "memories", "sleep_tool", "code_mode"):
         overrides.append(f"features.{feature}=false")
     config = CodexConfig(cwd=str(working), config_overrides=tuple(overrides))
     instructions = instructions_for(dataset)
