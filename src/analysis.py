@@ -18,7 +18,7 @@ from openai_codex.types import ReasoningEffort
 from pydantic import BaseModel, ConfigDict, Field
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL = "gpt-5.6-sol"
+MODEL = "gpt-5.6-terra"
 ORIGINAL_SKILLS = ROOT / "training_free/skills-vector"
 
 ANALYSIS_PROMPT = """Analyze the supplied rollout batch to learn a short, reusable retrieval lesson.
@@ -29,7 +29,7 @@ Compare the main trajectory with its branches from their shared prefixes. Identi
 
 Use the video_sql MCP tools to test specific hypotheses or verify uncertain evidence when that would change the lesson. Read the relevant retrieval skills before applying them. Keep each check tied to the observed divergence. Record whether a conclusion comes from the saved trace or a new check, and do not claim a check succeeded when its tool returned an error.
 
-Return one short paragraph of experience in English, including practical dos and don'ts, the condition under which they apply, and concise supporting trajectory/tool references. Prefer transferable procedures over memorizing this question's answer, names, or dates. This paragraph is your final response. Preserve the input traces and existing skills.
+Return one short paragraph of experience in English, including practical dos and don'ts, the condition under which they apply, and concise supporting trajectory/tool references. State the lesson at a general procedural level that transfers across activities: for example, use "doing repeated events across days" rather than "shopping across days". Generalize the task condition and recommended actions beyond the scene, activity, objects, people, and dates in this question, while retaining the evidence-supported conditions and limitations. Keep concrete trace references as support, not as the scope of the lesson. This paragraph is your final response. Preserve the input traces and existing skills.
 """
 
 SYNTHESIS_PROMPT = """Synthesize the completed rollout-analysis experiences into reusable retrieval skills.
