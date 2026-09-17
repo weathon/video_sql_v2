@@ -215,10 +215,15 @@ def main(args):
             finally:
                 for future in futures:
                     future.cancel()
-            experiences = [experiences[batch] for batch in batches if batch in experiences]
+            experiences = [
+                experiences[batch] for batch in batches if batch in experiences
+            ]
 
         if not experiences:
-            print("ANALYSIS_NO_EXPERIENCES: all batches skipped; synthesis not started", flush=True)
+            print(
+                "ANALYSIS_NO_EXPERIENCES: all batches skipped; synthesis not started",
+                flush=True,
+            )
             return
 
         directory = output / "synthesis"
