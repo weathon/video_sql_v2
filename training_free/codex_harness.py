@@ -196,6 +196,8 @@ async def serve():
                         is_error = True
                     except BaseException as error:
                         ordinary = isinstance(error, (InvalidTrace, APITimeoutError, httpx.TimeoutException)) or isinstance(error, APIStatusError) and (error.status_code in (408, 429) or error.status_code >= 500)
+                        if isinstance(error, httpx.HTTPStatusError):
+                            ordinary = error.response.status_code in (408, 429) or error.response.status_code >= 500
                         terminal = {"category": "ordinary" if ordinary else "maintenance", "type": type(error).__name__, "message": str(error), "traceback": traceback.format_exc()}
                         output = json.dumps({"error": terminal})
                         is_error = True

@@ -13,8 +13,9 @@ from pathlib import Path
 import wandb
 from dotenv import load_dotenv
 from openai import APIConnectionError, APIStatusError, OpenAI
+from openai_codex import Codex, CodexConfig
 
-from training_free.codex_harness import AttemptFailed, EMBEDDING_MODEL, MODEL, QA_MODEL, ROOT, SKILLS, answer_question, instructions_for
+from training_free.codex_harness import AttemptFailed, EMBEDDING_MODEL, MODEL, QA_MODEL, ROOT, SKILLS, answer_question, instructions_for, trace_json
 from training_free.evaluate_mm_official import SYSTEM_PROMPT, build_prompt, parse_score, score_mapping
 
 
@@ -216,6 +217,22 @@ class Evaluation:
         directory.mkdir(parents=True, exist_ok=True)
         if (directory / "judgment.json").exists() or (directory / "failure.json").exists():
             return
+        for attempt in directory.glob("attempts/*"):
+            if (attempt / "thread.json").exists() and not (attempt / "archive.json").exists():
+                thread_id = json.loads((attempt / "thread.json").read_text())["id"]
+                request = json.loads((attempt / "request.json").read_text())
+                with Codex(CodexConfig(cwd=str(attempt / "workspace"), config_overrides=tuple(request["overrides"]))) as codex:
+                    archived = codex.thread_archive(thread_id)
+                (attempt / "archive.json").write_text(json.dumps({"thread_id": thread_id, "response": trace_json(archived)}) + "\n")
+            if (attempt / "submitted-answer.json").exists() and not (directory / "answer.json").exists():
+                submitted = json.loads((attempt / "submitted-answer.json").read_text())
+                usage = json.loads((attempt / "usage.json").read_text()) if (attempt / "usage.json").exists() else None
+                answer = {"id": question["id"], "candidate_answer": submitted["answer"], "thread_id": submitted["thread_id"], "usage": usage, "attempt_dir": str(attempt)}
+                (directory / "answer.json").write_text(json.dumps(answer, ensure_ascii=False, indent=2) + "\n")
+                (attempt / "outcome.json").write_text(json.dumps({"status": "answered"}) + "\n")
+                with self.lock:
+                    self.answers.add(question_id)
+                self.emit("answer_recovered", question["id"])
         if not (directory / "answer.json").exists():
             outcomes = [json.loads(path.read_text()) for path in directory.glob("attempts/*/outcome.json")]
             failures = sum(r["status"] == "ordinary_failure" for r in outcomes)
