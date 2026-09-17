@@ -16,7 +16,7 @@ import httpx
 def service_ready(url, model):
     try:
         response = httpx.get(url + "/models", timeout=10, trust_env=False)
-    except httpx.ConnectError:
+    except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError):
         return False
     response.raise_for_status()
     models = [item["id"] for item in response.json()["data"]]
