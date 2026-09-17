@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = "gpt-5.6-terra"
+SYNTHESIS_MODEL = "gpt-5-astra"
 ORIGINAL_SKILLS = ROOT / "training_free/skills-vector"
 
 ANALYSIS_PROMPT = """Analyze the supplied rollout batch to learn a short, reusable retrieval lesson.
@@ -37,6 +38,8 @@ SYNTHESIS_PROMPT = """Synthesize the completed rollout-analysis experiences into
 Use Python to read every supplied experience file and inspect the original skill files for their organization and conventions. Consolidate overlapping lessons, reconcile contradictions using their stated evidence and conditions, and retain useful dos and don'ts. Do not invent new experimental findings or turn question-specific answers into rules.
 
 Produce small, focused Markdown skills matching the original format. Each skill needs a descriptive kebab-case name, a routing description, and Markdown content with Introduction, When to use, and Main content sections. Keep relevant original guidance and incorporate the learned procedures. Also return a ROOT-SKILL guide that routes to the resulting skills. Return the skills in the required structured format. Read the source files without modifying them.
+
+Choose the skill organization from the learned procedures and their applicability conditions. The original six skills are reference material, not a fixed set of categories. Create as many focused skills as the experiences warrant, with new descriptive names wherever appropriate; there is no upper limit on their number. Do not force distinct procedures into the original six names. Make the ROOT-SKILL guide route to the actual resulting skill names.
 """
 
 
@@ -69,11 +72,11 @@ def trace_json(value):
     return value
 
 
-def run_agent(codex, directory, instructions, prompt, output_schema=None):
+def run_agent(codex, directory, instructions, prompt, output_schema=None, model=MODEL):
     trace_path = directory / f"events-{uuid.uuid4().hex}.jsonl"
     with trace_path.open("w") as trace:
         request = {
-            "model": MODEL,
+            "model": model,
             "effort": "high",
             "service_tier": "default",
             "ephemeral": False,
@@ -88,7 +91,7 @@ def run_agent(codex, directory, instructions, prompt, output_schema=None):
         try:
             thread = codex.thread_start(
                 approval_mode=ApprovalMode.deny_all,
-                model=MODEL,
+                model=model,
                 service_tier="default",
                 ephemeral=False,
                 cwd=str(ROOT),
@@ -257,6 +260,7 @@ def main(args):
                 SYNTHESIS_PROMPT,
                 prompt,
                 LearnedSkills.model_json_schema(),
+                model=SYNTHESIS_MODEL,
             )
             bundle = LearnedSkills.model_validate_json(response)
             bundle_path.write_text(bundle.model_dump_json(indent=2) + "\n")
