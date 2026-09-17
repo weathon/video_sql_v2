@@ -241,13 +241,8 @@ def main(args):
             )
         )
         prompt_path = directory / "prompt.txt"
-        if prompt_path.exists() and prompt_path.read_text() != prompt:
-            raise ValueError(
-                f"Synthesis inputs differ from {prompt_path}; use a separate output directory"
-            )
-        prompt_path.write_text(prompt)
         bundle_path = directory / "skills.json"
-        if bundle_path.exists():
+        if bundle_path.exists() and prompt_path.read_text() == prompt:
             bundle = LearnedSkills.model_validate_json(bundle_path.read_text())
         else:
             response = run_agent(
@@ -259,6 +254,7 @@ def main(args):
             )
             bundle = LearnedSkills.model_validate_json(response)
             bundle_path.write_text(bundle.model_dump_json(indent=2) + "\n")
+            prompt_path.write_text(prompt)
         names = [skill.name for skill in bundle.skills]
         if len(set(names)) != len(names):
             raise ValueError(f"Duplicate generated skill names: {names}")
