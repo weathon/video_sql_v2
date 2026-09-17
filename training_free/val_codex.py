@@ -14,6 +14,7 @@ import wandb
 from dotenv import load_dotenv
 from openai import APIConnectionError, APIStatusError, OpenAI
 from openai_codex import Codex, CodexConfig
+from wandb.sdk.lib.runid import generate_id
 
 from training_free.codex_harness import AttemptFailed, EMBEDDING_MODEL, MODEL, QA_MODEL, ROOT, SKILLS, answer_question, instructions_for, trace_json
 from training_free.evaluate_mm_official import SYSTEM_PROMPT, build_prompt, parse_score, score_mapping
@@ -123,7 +124,7 @@ class Evaluation:
         load_dotenv(ROOT / ".env")
         self.judge_client = OpenAI(api_key=os.environ["SHARED_OPENAI_KEY"], max_retries=0)
         wandb_path = self.run_dir / "wandb-run.json"
-        wandb_id = json.loads(wandb_path.read_text())["id"] if wandb_path.exists() else wandb.util.generate_id()
+        wandb_id = json.loads(wandb_path.read_text())["id"] if wandb_path.exists() else generate_id()
         self.wandb = wandb.init(project="video-sql-codex", id=wandb_id, name=self.run_dir.parent.name + "-" + self.run_dir.name, dir=str(self.run_dir), config=config, resume="must" if wandb_path.exists() else "never")
         wandb_path.write_text(json.dumps({"id": self.wandb.id, "url": self.wandb.url}) + "\n")
 
