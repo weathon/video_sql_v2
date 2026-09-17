@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import yaml
-from openai_codex import Codex, CodexConfig, Sandbox
+from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 from openai_codex.types import ReasoningEffort
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -87,6 +87,7 @@ def run_agent(codex, directory, instructions, prompt, output_schema=None):
         thread = None
         try:
             thread = codex.thread_start(
+                approval_mode=ApprovalMode.deny_all,
                 model=MODEL,
                 service_tier="default",
                 ephemeral=False,
