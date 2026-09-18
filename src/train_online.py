@@ -60,6 +60,8 @@ For every supplied rollout, assess the final answer, whether its evidence chain 
 
 Classify the observed errors while assigning credit. Use concise category names such as retrieval_scope, sql_logic, temporal_alignment, visual_perception, evidence_interpretation, reasoning, unsupported_or_lucky_answer, or tool_or_service; use another specific category when needed. Report rollout error_categories, and an error_category for each attributed call (null when no error is established). Locate where the failure originates and distinguish that error from its downstream propagation. If retrieval and SQL correctly locate the relevant evidence but visual QA misidentifies an object, retain the justified positive contribution of retrieval/SQL and assign negative credit to the visual error and subsequent unsupported use of it. Do not make earlier correct operations negative solely because the final answer is wrong. Conversely, a correct final answer reached by lucky guessing or unsupported reasoning must have answer_grounded=false; identify unsupported_or_lucky_answer and do not make the entire trace positive. Set answer_grounded=true only when the actual retrieved or visually verified evidence supports the submitted answer. Explain this assessment with concrete private trace references, including on correct answers. Generalize the resulting experience to the responsible stage rather than teaching avoidance of a tool that worked correctly.
 
+Perform explicit contrastive comparison within each question and phase. Group the five trajectories by official success (mapped reward 1) versus failure to reach that threshold, retaining partial scores in your interpretation. Identify concrete steps or strategies recurring in successful traces, those observed only in failures, and counterexamples. For each strategy contrast, list the actual success and failure rollout IDs where it occurs, so occurrence counts can be checked against the phase's group sizes. Cite actual calls and outputs in the evidence field, and explain differences in applicability or available evidence before attributing an outcome to the strategy. In the post analysis, contrast within each phase first, then compare pre versus post. If one outcome group is empty, say the success/failure contrast is unavailable rather than inventing it. The local contributions and strategy associations are heuristic teacher judgments, not causal effects established by replay or ablation. Do not claim replay, skill removal, or A/B verification occurred unless an actual supplied experiment record establishes it.
+
 Return the required structured output: private per-rollout assessments and attributions, a private comparison, and one short public experience in English. The experience must contain applicability conditions, practical dos and don'ts, and simple steps for similar questions. Generalize across activities, people, objects, scenes, and dates; for example, use doing repeated events across days rather than shopping across days. Use placeholders for any SQL examples. Do not put the question's answer, answer-derived hints, scene-specific facts, clue times, narrowed source locations, row/video/frame IDs, file paths, tool call references, or other question-specific evidence into the public experience. Keep all concrete references exclusively in the private analysis fields.
 
 Before returning, audit the public experience for answer and clue leakage, revise it until safe, and report the audit separately. The experience should teach a method that still requires the student to retrieve the answer independently.
@@ -99,9 +101,20 @@ class RolloutAssessment(BaseModel):
     credits: list[ToolCredit]
 
 
+class StrategyContrast(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    phase: str
+    strategy: str = Field(min_length=1)
+    success_rollouts: list[str]
+    failure_rollouts: list[str]
+    evidence: str = Field(min_length=1)
+    counterexamples_and_limits: str = Field(min_length=1)
+
+
 class QuestionAnalysis(BaseModel):
     model_config = ConfigDict(extra="forbid")
     assessments: list[RolloutAssessment]
+    strategy_contrasts: list[StrategyContrast]
     comparison: str = Field(min_length=1)
     experience: str = Field(min_length=1)
     leakage_free: bool
@@ -399,6 +412,25 @@ def analyze_question(question_dir, phase, skill_dir, qa_url, embedding_url):
                     ):
                         raise TeacherRetryableError(
                             f"Credit must cite a real call in that rollout: {credit.model_dump()}"
+                        )
+            rewards = {item["rollout"]: item["reward"] for item in rollouts}
+            for contrast in result.strategy_contrasts:
+                if contrast.phase not in phases:
+                    raise TeacherRetryableError(
+                        f"Unknown contrast phase: {contrast.phase}"
+                    )
+                for group, names in (
+                    (True, contrast.success_rollouts),
+                    (False, contrast.failure_rollouts),
+                ):
+                    if len(names) != len(set(names)) or any(
+                        name not in rewards
+                        or not name.startswith(contrast.phase + "/")
+                        or (rewards[name] == 1) != group
+                        for name in names
+                    ):
+                        raise TeacherRetryableError(
+                            f"Contrast membership must match actual phase and official outcomes: {contrast.model_dump()}"
                         )
             if not result.leakage_free:
                 raise TeacherRetryableError(

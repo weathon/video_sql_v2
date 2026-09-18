@@ -12,6 +12,8 @@ GPT-5 judges each candidate with the official rubric and a strict `Final Score` 
 
 Credit assignment also records error categories and whether the answer is grounded in the actual evidence. A visual misidentification does not make preceding correct retrieval or SQL negative. A lucky correct answer does not make the whole trace positive. The private assessment locates the originating error and distinguishes it from downstream propagation.
 
+Within each phase, the teacher contrasts steps and strategies across successful and unsuccessful trajectories, lists the actual rollout IDs supporting each pattern, and records counterexamples and applicability limits. Official success means mapped reward 1. These associations and local contribution scores remain heuristic judgments; they are not labeled as replay- or ablation-verified effects.
+
 Teachers receive the complete original question metadata, answers, judgments, actual requests/results, and clue intervals. Clue times are mapped through source video plus local time into EgoLife seconds. The student's normal input contains the original question and skills; post adds only the public procedural experience. Private attribution records retain specific evidence references. Public experiences contain applicability, dos, don'ts, and steps, with an explicit teacher leakage audit. The editor receives the two final public experiences and current skills.
 
 MCP uses `VIDEO_SQL_SKILL_DIR` for its skill files, ROOT guidance, and catalog. `VIDEO_SQL_RUN_DIR` places its UUID trace directories under the calling teacher's attempt. The existing MCP defaults continue to use the original skills and `runs/mcp` outside online training.
