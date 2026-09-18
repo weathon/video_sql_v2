@@ -58,6 +58,8 @@ You have privileged training metadata: the original question, reference answer, 
 
 For every supplied rollout, assess the final answer, whether its evidence chain is clean, and whether it reaches the answer directly without avoidable wrong directions. Necessary exploration is not automatically a mistake. Identify meaningful tool calls and give each a local contribution in [-1, 1], with the actual call_id, trace path, and an evidence-based rationale. Use the supplied trajectory advantage (mapped reward minus the mean of five rollouts of this question in the same phase) as context, not as a mandatory sum constraint. Equal-reward rollouts can still contain helpful and harmful calls. Do not mechanically label every call by the final score. Omit unsupported attributions, and use an empty list when no meaningful tool call exists. Do not invent contrasts or verified causes.
 
+Classify the observed errors while assigning credit. Use concise category names such as retrieval_scope, sql_logic, temporal_alignment, visual_perception, evidence_interpretation, reasoning, unsupported_or_lucky_answer, or tool_or_service; use another specific category when needed. Report rollout error_categories, and an error_category for each attributed call (null when no error is established). Locate where the failure originates and distinguish that error from its downstream propagation. If retrieval and SQL correctly locate the relevant evidence but visual QA misidentifies an object, retain the justified positive contribution of retrieval/SQL and assign negative credit to the visual error and subsequent unsupported use of it. Do not make earlier correct operations negative solely because the final answer is wrong. Conversely, a correct final answer reached by lucky guessing or unsupported reasoning must have answer_grounded=false; identify unsupported_or_lucky_answer and do not make the entire trace positive. Set answer_grounded=true only when the actual retrieved or visually verified evidence supports the submitted answer. Explain this assessment with concrete private trace references, including on correct answers. Generalize the resulting experience to the responsible stage rather than teaching avoidance of a tool that worked correctly.
+
 Return the required structured output: private per-rollout assessments and attributions, a private comparison, and one short public experience in English. The experience must contain applicability conditions, practical dos and don'ts, and simple steps for similar questions. Generalize across activities, people, objects, scenes, and dates; for example, use doing repeated events across days rather than shopping across days. Use placeholders for any SQL examples. Do not put the question's answer, answer-derived hints, scene-specific facts, clue times, narrowed source locations, row/video/frame IDs, file paths, tool call references, or other question-specific evidence into the public experience. Keep all concrete references exclusively in the private analysis fields.
 
 Before returning, audit the public experience for answer and clue leakage, revise it until safe, and report the audit separately. The experience should teach a method that still requires the student to retrieve the answer independently.
@@ -82,6 +84,7 @@ class ToolCredit(BaseModel):
     call_id: str
     trace_path: str
     contribution: float = Field(ge=-1, le=1, allow_inf_nan=False)
+    error_category: str | None
     rationale: str = Field(min_length=1)
 
 
@@ -89,6 +92,8 @@ class RolloutAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rollout: str
     answer_assessment: str = Field(min_length=1)
+    answer_grounded: bool
+    error_categories: list[str]
     clean_evidence: bool
     direct: bool
     credits: list[ToolCredit]
@@ -850,8 +855,17 @@ def batch_metrics(batch_dir, phase_results, elapsed_seconds):
     (batch_dir / "token-usage.json").write_text(
         json.dumps(list(usage.values()), ensure_ascii=False) + "\n"
     )
-    for role, model in (("qwen", MODEL), ("judge", JUDGE_MODEL)):
-        records = [item for item in usage.values() if item["model"] == model]
+    for role in ("qwen", "judge"):
+        records = [
+            item
+            for item in usage.values()
+            if any(
+                Path(path).parent.name == "traces"
+                and Path(path).parent.parent.name == "judge"
+                for path in item["trace_files"]
+            )
+            == (role == "judge")
+        ]
         for key in ("input_tokens", "cached_tokens", "output_tokens"):
             metrics[f"usage/{role}/{key}"] = sum(
                 item[key] for item in records if item[key] is not None
@@ -926,12 +940,10 @@ async def main(args):
             raise ValueError(
                 "Resume configuration differs from saved training configuration"
             )
-        resume = "must"
     else:
         order = random.sample(selected, len(selected))
         saved = {"config": config, "question_order": order, "wandb_id": generate_id()}
         config_path.write_text(json.dumps(saved, ensure_ascii=False, indent=2) + "\n")
-        resume = "allow"
     initial_skills = directory / "initial-skills"
     if not initial_skills.exists():
         shutil.copytree(ORIGINAL_SKILLS, initial_skills)
@@ -983,7 +995,7 @@ async def main(args):
             id=saved["wandb_id"],
             name=directory.name,
             config=config,
-            resume=resume,
+            resume="allow",
             dir=str(directory),
         )
         run.define_metric("batch")

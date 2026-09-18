@@ -10,6 +10,8 @@ Qwen uses the existing Week investigation budget, thinking/history, retry policy
 
 GPT-5 judges each candidate with the official rubric and a strict `Final Score` parser. Scores 4/5 map to 1, 3 maps to 0.5, and 0/1/2 map to 0. Each trajectory advantage is its mapped reward minus the mean of its question's five rollouts in the same phase. The teacher assigns evidence-supported local contributions in `[-1, 1]` to meaningful actual tool calls; these need not sum to the trajectory advantage.
 
+Credit assignment also records error categories and whether the answer is grounded in the actual evidence. A visual misidentification does not make preceding correct retrieval or SQL negative. A lucky correct answer does not make the whole trace positive. The private assessment locates the originating error and distinguishes it from downstream propagation.
+
 Teachers receive the complete original question metadata, answers, judgments, actual requests/results, and clue intervals. Clue times are mapped through source video plus local time into EgoLife seconds. The student's normal input contains the original question and skills; post adds only the public procedural experience. Private attribution records retain specific evidence references. Public experiences contain applicability, dos, don'ts, and steps, with an explicit teacher leakage audit. The editor receives the two final public experiences and current skills.
 
 MCP uses `VIDEO_SQL_SKILL_DIR` for its skill files, ROOT guidance, and catalog. `VIDEO_SQL_RUN_DIR` places its UUID trace directories under the calling teacher's attempt. The existing MCP defaults continue to use the original skills and `runs/mcp` outside online training.
