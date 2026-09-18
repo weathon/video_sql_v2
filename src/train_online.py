@@ -400,6 +400,10 @@ def analyze_question(question_dir, phase, skill_dir, qa_url, embedding_url):
                     f"Revise the public experience to remove leakage: {result.leakage_audit}"
                 )
         except BaseException as error:
+            if isinstance(
+                error, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)
+            ):
+                raise
             can_retry = teacher_retryable(error)
             attempt_dir.mkdir(exist_ok=True)
             error_path.write_text(
@@ -504,6 +508,10 @@ def edit_skills(batch_dir, skill_dir, experience_paths, qa_url, embedding_url):
                 if not (candidate / skill["filename"]).read_text().strip():
                     raise TeacherRetryableError(f"Empty skill: {skill['filename']}")
         except BaseException as error:
+            if isinstance(
+                error, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)
+            ):
+                raise
             can_retry = teacher_retryable(error)
             error_path.write_text(
                 json.dumps(
@@ -608,6 +616,19 @@ class OnlineTrainer:
                     ):
                         raise InvalidTrace(f"Rollout has no final answer: {session}")
                 except BaseException as error:
+                    if isinstance(
+                        error, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)
+                    ):
+                        (attempt_dir / "interrupted.json").write_text(
+                            json.dumps(
+                                {
+                                    "type": type(error).__name__,
+                                    "elapsed_seconds": time.monotonic() - started,
+                                }
+                            )
+                            + "\n"
+                        )
+                        raise
                     can_retry = retryable(error)
                     record = {
                         "type": type(error).__name__,
@@ -773,8 +794,8 @@ class OnlineTrainer:
         return result
 
 
-def batch_metrics(batch_dir, phase_results, elapsed_seconds):
-    metrics = {"elapsed_seconds": elapsed_seconds}
+def score_metrics(phase_results):
+    metrics = {}
     for phase, results in phase_results.items():
         question_ids = {item["question_id"] for item in results}
         metrics.update(
@@ -812,13 +833,19 @@ def batch_metrics(batch_dir, phase_results, elapsed_seconds):
                 / len(results),
             }
         )
-    for key in (
-        "accuracy",
-        "mean_rounded_score",
-        "mean_raw_score",
-        "at_least_one_correct_rate",
-    ):
-        metrics[f"delta/{key}"] = metrics[f"post/{key}"] - metrics[f"pre/{key}"]
+    if "post" in phase_results:
+        for key in (
+            "accuracy",
+            "mean_rounded_score",
+            "mean_raw_score",
+            "at_least_one_correct_rate",
+        ):
+            metrics[f"delta/{key}"] = metrics[f"post/{key}"] - metrics[f"pre/{key}"]
+    return metrics
+
+
+def batch_metrics(batch_dir, phase_results, elapsed_seconds):
+    metrics = {"elapsed_seconds": elapsed_seconds, **score_metrics(phase_results)}
     usage = collect_usage([batch_dir], rates=None)
     (batch_dir / "token-usage.json").write_text(
         json.dumps(list(usage.values()), ensure_ascii=False) + "\n"
@@ -1079,6 +1106,15 @@ async def main(args):
                                     )
                                 )
                     phase_results[phase] = [task.result() for task in tasks]
+                    phase_metrics = {
+                        "batch": batch_index,
+                        **score_metrics(phase_results),
+                    }
+                    (batch_dir / f"{phase}-metrics.json").write_text(
+                        json.dumps(phase_metrics, indent=2) + "\n"
+                    )
+                    run.log(phase_metrics)
+                    print("PHASE_DONE " + json.dumps(phase_metrics), flush=True)
                     async with asyncio.TaskGroup() as group:
                         for question in batch_questions:
                             group.create_task(
@@ -1165,7 +1201,10 @@ async def main(args):
                 json.dumps(summary, ensure_ascii=False, indent=2) + "\n"
             )
             print("TRAINING_COMPLETE " + json.dumps(summary), flush=True)
-        finally:
+        except BaseException:
+            run.finish(exit_code=1)
+            raise
+        else:
             run.finish()
 
 
