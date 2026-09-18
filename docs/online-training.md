@@ -43,4 +43,4 @@ W&B records phase metrics as soon as each round is graded. Batch accuracy is the
 
 `runs/` is ignored. Intermediate skills, requests, responses, logs, and per-question outputs stay there. The final skills copy is `final-skills/`, with compact completion metrics in `summary.json`. Commit only the final skills deliverable and compact final report after verification.
 
-The required fresh diff review and pre-run Claude repository review must finish normally with explicit results before formal execution. Live debugging must inspect actual SQL/vector/video responses, teacher evidence reads, public experience leakage, prompt injection, skills edits, and resume behavior. A successful process exit alone does not establish those paths worked.
+For this run, the user explicitly waived the Claude repository review. The fresh diff review must finish normally with an explicit result before formal execution. Live debugging must inspect actual SQL/vector/video responses, teacher evidence reads, public experience leakage, prompt injection, skills edits, and resume behavior. A successful process exit alone does not establish those paths worked.
