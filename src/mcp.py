@@ -37,7 +37,8 @@ async def record_wire_request(request):
 
 
 async def main():
-    directory = ROOT / "runs/mcp" / uuid.uuid4().hex
+    directory = Path(os.environ.get("VIDEO_SQL_RUN_DIR", ROOT / "runs/mcp")) / uuid.uuid4().hex
+    skill_dir = Path(os.environ.get("VIDEO_SQL_SKILL_DIR", ROOT / "training_free/skills-vector"))
     qa_url = os.environ["VIDEO_SQL_QA_URL"]
     embedding_url = os.environ["VIDEO_SQL_EMBEDDING_URL"]
     async with stdio_server() as (read_stream, write_stream):
@@ -48,8 +49,8 @@ async def main():
                 response.raise_for_status()
                 if expected not in [item["id"] for item in response.json()["data"]]:
                     raise RuntimeError(f"Unexpected model at {url}: {response.text}")
-            context = MCPHarnessContext(database=ARTIFACTS / "index.duckdb", embedding_index=ARTIFACTS / "embeddings", media_map=ARTIFACTS / "media-map.json", skill_dir=ROOT / "training_free/skills-vector", run_dir=directory, model=OpenAIResponsesModel(model=MODEL, openai_client=client), client=client, model_settings=ModelSettings(reasoning={"summary": "auto"}, store=False, response_include=["reasoning.encrypted_content"], preserve_raw_usage=True), run_config=RunConfig(tracing_disabled=True, reasoning_item_id_policy="preserve"), embedding_url=embedding_url, embedding_model="qwen3-vl-embedding-8b", embedding_client=embedding_client, query_time=None, model_limiter=asyncio.Semaphore(10), semantic_search_mode="vector", clip_qa_video=True)
-            functions, _ = make_tools(context)
+            context = MCPHarnessContext(database=ARTIFACTS / "index.duckdb", embedding_index=ARTIFACTS / "embeddings", media_map=ARTIFACTS / "media-map.json", skill_dir=skill_dir, run_dir=directory, model=OpenAIResponsesModel(model=MODEL, openai_client=client), client=client, model_settings=ModelSettings(reasoning={"summary": "auto"}, store=False, response_include=["reasoning.encrypted_content"], preserve_raw_usage=True), run_config=RunConfig(tracing_disabled=True, reasoning_item_id_policy="preserve"), embedding_url=embedding_url, embedding_model="qwen3-vl-embedding-8b", embedding_client=embedding_client, query_time=None, model_limiter=asyncio.Semaphore(10), semantic_search_mode="vector", clip_qa_video=True)
+            functions, catalog = make_tools(context)
             tools = {tool.name: tool for tool in functions}
             print(f"MCP_READY traces={directory}", file=sys.stderr, flush=True)
 
@@ -94,7 +95,9 @@ async def main():
                 print(f"TOOL_DONE name={params.name} tool_id={tool_id} is_error={is_error}", file=sys.stderr, flush=True)
                 return types.CallToolResult(content=content, is_error=is_error)
 
-            server = Server("video_sql", instructions=(ROOT / "src/prompt.md").read_text(), on_list_tools=list_tools, on_call_tool=call_tool)
+            skill_catalog = "\n".join(f"- {skill['name']}: {skill['description']}" for skill in catalog)
+            instructions = (ROOT / "src/prompt.md").read_text().replace("{root_skill}", (skill_dir / "ROOT-SKILL.md").read_text()).replace("{skill_catalog}", skill_catalog)
+            server = Server("video_sql", instructions=instructions, on_list_tools=list_tools, on_call_tool=call_tool)
             await server.run(read_stream, write_stream, server.create_initialization_options(), raise_exceptions=True)
 
 

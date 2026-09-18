@@ -25,26 +25,9 @@ SQL scope: Every run_sql query, including QA calls, must restrict its result wit
 Visual verification: Call clip_qa only after retrieval has clearly located the relevant interval and you have a specific unresolved question that requires viewing images. It is for targeted verification, not broad search or scanning speculative intervals.
 
 ROOT-SKILL (skill loading guidance):
-# Skill loading guide
-
-This guide is included in your instructions automatically. Other skills are not: call `read_skill(name)` to read their full content before applying them.
-
-- At the start of an investigation, load `general-retrieval` to plan the evidence search.
-- Before semantic retrieval, load `semantic-search`; before writing SQL or joining evidence, load `sql-schema`.
-- For before/after, first/last, duration, or interval boundaries, load `locating-time-intervals`.
-- For counts, distinct occurrences, rankings, or ordered events, load `counting-and-ordering`.
-- When visible identity, state, text, actions, or counts need checking in source media, load `visual-verification` before using `clip_qa`.
-- Check the available skill catalog for additional question-specific skills. Load the matching skills when their conditions apply, including when a new branch changes the investigation.
-
-**Reason:** A skill title or description is only a routing hint, not the skill's actual guidance. Load the relevant content before choosing the detailed method.
-
+{root_skill}
 
 Available skills:
-- counting-and-ordering: Use for counts, distinct occurrences, rankings, comparisons, and ordered sequences.
-- general-retrieval: Use for planning and coordinating a complete memory-retrieval investigation.
-- locating-time-intervals: Use when the question depends on before, after, first, last, duration, or a relative event window.
-- semantic-search: Use when exact SQL terms are unknown or a concept must be located from meaning.
-- sql-schema: Use when writing SQL or joining memory tables and evidence links.
-- visual-verification: Use when stored text cannot establish a visible detail, screen value, identity, state, count, or action precisely.
+{skill_catalog}
 
 After submit_answer, finish the investigation. If agent_raise reports an error, stop the investigation and report the reason.

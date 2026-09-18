@@ -1319,6 +1319,7 @@ class VideoSQLHarness:
         self,
         question: str,
         *,
+        experience: str | None = None,
         input_items: list[dict[str, Any]] | None = None,
         instructions: str | None = None,
         base_instructions: str | None = None,
@@ -1341,6 +1342,11 @@ class VideoSQLHarness:
             base_instructions = base_instructions.replace('WHERE start_ts >= 200000000 AND end_ts < 300000000', "WHERE video_id = '14' AND start_ts >= 300 AND end_ts < 600").replace('requested day/time', 'requested video/time')
         if self.context.time_format == "egolife" and self.context.query_time is None:
             base_instructions = base_instructions.replace("All rows in this database have already been filtered for the question's cutoff.", "The entire seven-day EgoLife corpus is available, with no question-time cutoff. The camera wearer is Jake / A1_JAKE. DAYn identifies the recording day.")
+        if experience is not None:
+            guidance = "\n\nGeneral procedural experience:\n" + experience
+            base_instructions += guidance
+            if instructions is not None:
+                instructions += guidance
         self.context.base_instructions = base_instructions
         self.context.compactions = compactions
         agent = Agent(
