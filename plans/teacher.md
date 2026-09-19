@@ -28,7 +28,7 @@
 - 给 `VideoSQLHarness.answer` 增加可选经验输入，在正常 prompt 上追加通用指导，保留现有 schema、工具和 skills 路由。
 - 调整 `src/mcp.py`，让分析进程加载当前批次的 skills；`src/prompt.md` 的 ROOT 与目录部分从同一版本生成。每个分析 agent 使用独立 MCP context。
 - 启动一个 `Qwen/Qwen3.8-27B-FP8` vLLM 服务，TP=2。沿用 Week 的模型长度、MTP、prefix cache、4 GiB 多模态 cache 和 CPU KV offload 设置，启动前核对其实际资源需求。
-- 当前候选 GPU 为 Qwen 0、1，embedding 4；执行时重新检查。Qwen 端口为 8310；8214 的 `qwen3-vl-embedding-8b` 服务使用一张 GPU，显存预算为 32 GiB。资源不足立即报告。
+- 当前候选 GPU 为 Qwen 0、1，embedding 4；执行时重新检查。Qwen 端口为 8310；8214 的 `qwen3-vl-embedding-8b` 服务使用一张 GPU，显存预算为 32 GiB，`max-model-len` 为 65,536。资源不足立即报告。
 - 分析 agent 使用只读权限；编辑 agent 使用限定到候选 skills 工作目录的写权限，并通过自动审批执行必要的沙箱外 `apply_patch`。prompt 写明已验证的沙箱外调用方法，不启用 full access。
 - Codex sessions 保存事件记录并在完成后 archive。
 

@@ -33,7 +33,7 @@ After the Qwen health/models endpoint at port 8310 is ready:
 .venv_baselines/bin/python -u -m src.train_online --run-dir runs/online-training > runs/online-training/training.log 2>&1
 ```
 
-The service is one TP=2 `Qwen/Qwen3.8-27B-FP8` container named `online-training-qwen`. It reuses the existing Week serving settings and the shared embedding endpoint at port 8214, using a separate GPU with a 32 GiB VRAM budget. A separate small debugging run can select a pair with `--ids 0 1 --run-dir runs/online-training-debug`; it still uses the complete five-pre/five-post protocol. Debug artifacts and skills are separate from the formal training run.
+The service is one TP=2 `Qwen/Qwen3.8-27B-FP8` container named `online-training-qwen`. It reuses the existing Week serving settings and the shared embedding endpoint at port 8214, using a separate GPU with a 32 GiB VRAM budget and `--max-model-len 65536`. A separate small debugging run can select a pair with `--ids 0 1 --run-dir runs/online-training-debug`; it still uses the complete five-pre/five-post protocol. Debug artifacts and skills are separate from the formal training run.
 
 After actual final-artifact verification, stop and manually remove only the task's Qwen container. Preserve the shared embedding service.
 
