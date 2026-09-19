@@ -1,4 +1,4 @@
-"""Start the online-training Qwen TP=4 server in a foreground Docker session."""
+"""Start the online-training Qwen TP=2 server in a foreground Docker session."""
 
 import argparse
 import csv
@@ -14,14 +14,14 @@ import httpx
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
-    "--gpus", required=True, help="Four idle GPU indices, comma separated"
+    "--gpus", required=True, help="Two idle GPU indices, comma separated"
 )
 parser.add_argument("--port", type=int, default=8310)
 parser.add_argument("--run-dir", type=Path, default=Path("runs/online-training"))
 args = parser.parse_args()
 gpu_ids = [int(value) for value in args.gpus.split(",")]
-if len(gpu_ids) != 4 or len(set(gpu_ids)) != 4:
-    raise ValueError("The training service requires four distinct GPUs")
+if len(gpu_ids) != 2 or len(set(gpu_ids)) != 2:
+    raise ValueError("The training service requires two distinct GPUs")
 gpu_text = subprocess.check_output(
     [
         "nvidia-smi",
@@ -53,7 +53,7 @@ memory = {
     for line in Path("/proc/meminfo").read_text().splitlines()
 }
 cpu_offload_per_rank = 137438953472
-required_memory = cpu_offload_per_rank * 4 + 32 * 1024**3
+required_memory = cpu_offload_per_rank * 2 + 32 * 1024**3
 if memory["MemAvailable"] < required_memory:
     raise RuntimeError(
         f"Insufficient host memory: available={memory['MemAvailable']} required={required_memory}"
@@ -118,7 +118,7 @@ command = [
     "--enable-prefix-caching",
     "--no-enable-flashinfer-autotune",
     "--tensor-parallel-size",
-    "4",
+    "2",
     "--mm-processor-cache-gb",
     "4",
     "--limit-mm-per-prompt",
