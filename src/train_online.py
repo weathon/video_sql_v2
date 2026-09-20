@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import math
+import os
 import random
 import re
 import shutil
@@ -1021,6 +1022,8 @@ async def main(args):
             response.raise_for_status()
             if expected not in [item["id"] for item in response.json()["data"]]:
                 raise RuntimeError(f"Unexpected model at {url}: {response.text}")
+        # W&B metrics are required; automatic Weave traces persist image payloads.
+        os.environ["WANDB_DISABLE_WEAVE"] = "true"
         run = wandb.init(
             entity="3dsmile",
             project="video-sql-v2",
