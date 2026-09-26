@@ -963,7 +963,6 @@ async def main_async(args):
         raise ValueError(f"Cannot resume invalidated results: {args.run_dir}")
     repository = Path(__file__).resolve().parents[1]
     load_dotenv(repository / ".env")
-    load_dotenv("/raid/wg25r/video_sql_v2/.env")
     if args.run_dir.is_relative_to(repository):
         relative = str(args.run_dir.relative_to(repository)) + "/"
         ignored = subprocess.run(["git", "check-ignore", "--quiet", relative], cwd=repository)

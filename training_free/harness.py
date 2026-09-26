@@ -5,7 +5,6 @@ import dataclasses
 import io
 import json
 import math
-import os
 import re
 import subprocess
 import threading
@@ -59,11 +58,6 @@ TOOL_REMINDER_CHARACTERS = 10_000
 INVESTIGATION_CALL_LIMIT = 60
 QA_MAX_OUTPUT_TOKENS = 16384
 QA_LENGTH_RETRIES = 3
-JEV_URL = "https://openrouter.ai/api/alpha/decisions"
-JEV_MODEL = "typesafe/jev-1.13"
-JEV_BATCH = 40
-JEV_ROW_LIMIT = 100
-JEV_FIELDS = ("id", "video_id", "text", "start_s", "end_s", "cosine_sim")
 SHARED_VECTORS = {}
 SHARED_ROW_IDS = {}
 
@@ -115,7 +109,6 @@ class HarnessContext:
     embedding_url: str
     embedding_model: str
     embedding_client: httpx.AsyncClient
-    jev_client: httpx.AsyncClient
     query_time: int | None
     time_format: Literal['egolife', 'mmlifelong'] = 'egolife'
     semantic_search_mode: Literal["ppr", "vector"] = "ppr"
@@ -956,16 +949,14 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
             "episode", "entity", "semantic", "topic_facts", "event_steps", "visual_clip",
         ],
         sql: str,
-        rerank: bool,
         question: str | None = None,
     ) -> str:
-        """Embed query, score every row of one embedded table by cosine similarity, then run sql over the temporary in-memory table semantic_hits. semantic_hits holds all columns of the chosen table plus cosine_sim (higher means more similar to query), start_ts and end_ts (DHHMMSSFF, added for topic_facts and event_steps), start_s and end_s (seconds since DAY1 00:00:00 for clip_qa). Use sql to rank by cosine_sim, filter or order by time, filter or sort by names or text, or aggregate. visual_clip matches the video embedding; episode matches caption text. With question=null, return up to 100 result rows with long text cells shortened; supply question to request a separate QA answer from the complete result. With rerank=true the first 100 result rows are judged for relevance to query by a separate decision model, returned sorted by its jev_relevance probability, and cosine_sim stays visible; the selected columns must include at least one of id, video_id, text, start_s, end_s or cosine_sim.
+        """Embed query, score every row of one embedded table by cosine similarity, then run sql over the temporary in-memory table semantic_hits. semantic_hits holds all columns of the chosen table plus cosine_sim (higher means more similar to query), start_ts and end_ts (DHHMMSSFF, added for topic_facts and event_steps), start_s and end_s (seconds since DAY1 00:00:00 for clip_qa). Use sql to rank by cosine_sim, filter or order by time, filter or sort by names or text, or aggregate. visual_clip matches the video embedding; episode matches caption text. With question=null, return up to 100 result rows with long text cells shortened; supply question to request a separate QA answer from the complete result.
 
         Args:
             query: Semantic search text.
             table: One of the embedded tables listed in the schema.
             sql: One read-only SELECT or WITH query over semantic_hits, for example SELECT id, text, start_ts, cosine_sim FROM semantic_hits ORDER BY cosine_sim DESC LIMIT 10.
-            rerank: Re-order the first 100 result rows by judged relevance to query and add a jev_relevance probability to each of them.
             question: Question to answer from the complete SQL result, preserving evidence IDs and times. JSON null returns raw rows.
         """
         if table not in SEARCH_TABLES:
@@ -973,7 +964,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         statements = sqlglot.parse(sql, read="duckdb")
         if len(statements) != 1 or not isinstance(statements[0], exp.Query):
             raise ValueError("sql must be exactly one read-only SELECT or WITH query over semantic_hits")
-        print(f"VECTOR request query={query!r} table={table} sql={sql!r} rerank={rerank} question={question!r}", flush=True)
+        print(f"VECTOR request query={query!r} table={table} sql={sql!r} question={question!r}", flush=True)
         embedding_request = {"model": context.embedding_model, "input": [normalize_text(query)]}
         if table == 'visual_clip' and context.time_format == 'mmlifelong':
             embedding_request = {"model": context.embedding_model, "messages": [{"role": "user", "content": [{"type": "text", "text": f"Retrieve video segments that help answer questions about a long-form livestream.\n{query}"}]}]}
@@ -1052,30 +1043,6 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         candidate_count, result_columns, raw_rows, has_more = await asyncio.to_thread(build_and_query)
         result = {"table": table, "candidate_count": candidate_count, "columns": result_columns, "rows": [{column: json_value(value, 500 if question is None else None) for column, value in zip(result_columns, row)} for row in raw_rows], "has_more": has_more}
         print(f"VECTOR result table={table} candidates={candidate_count} rows={len(raw_rows)} has_more={has_more}", flush=True)
-        if rerank:
-            head = result["rows"][:JEV_ROW_LIMIT]
-            states = [{column: json_value(value, None) for column, value in zip(result_columns, row) if column in JEV_FIELDS} for row in raw_rows[:JEV_ROW_LIMIT]]
-            if any(not state for state in states):
-                raise ValueError(f"rerank requires at least one of {list(JEV_FIELDS)} among the selected columns; this sql selected {result_columns}")
-            for offset in range(0, len(head), JEV_BATCH):
-                group = list(range(offset, min(offset + JEV_BATCH, len(head))))
-                request = {
-                    "model": JEV_MODEL,
-                    "state": {"query": query, "rows": {str(index): states[index] for index in group}},
-                    "questions": {str(index): {"type": "noul", "instructions": f"Does rows.{index} contain evidence that helps answer the query?", "criteria": {"true": "The row's text, video and time bear on what the query asks for.", "false": "The row is unrelated to the query or cannot bear on it."}} for index in group},
-                }
-                response = await context.jev_client.post(JEV_URL, json=request, headers={"Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"]})
-                if response.is_error:
-                    print(f"JEV error rows={group[0]}-{group[-1]}: {response.text}", flush=True)
-                response.raise_for_status()
-                payload = response.json()
-                trace = context.run_dir / "traces" / f"jev-{uuid.uuid4().hex}.json"
-                trace.write_text(json.dumps({"request": request, "response": payload}, ensure_ascii=False, indent=2) + "\n")
-                print(f"JEV rows={len(group)} model={payload['model']} usage={json.dumps(payload['usage'])} trace={trace.name}", flush=True)
-                for index in group:
-                    head[index]["jev_relevance"] = payload["answers"][str(index)]["noul"]
-            result["rows"] = sorted(head, key=lambda row: row["jev_relevance"], reverse=True) + result["rows"][JEV_ROW_LIMIT:]
-            result["columns"] = result_columns + ["jev_relevance"]
         if question is not None:
             submission, _ = await context.summary_response(
                 "semantic-qa",
@@ -1283,10 +1250,6 @@ class VideoSQLHarness:
                 timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
                 limits=httpx.Limits(max_connections=1000, max_keepalive_connections=256),
             ),
-            jev_client=httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=60, read=100000, write=100000, pool=100000),
-                limits=httpx.Limits(max_connections=1000, max_keepalive_connections=256),
-            ),
         )
         self.answer_tools, self.catalog = make_tools(self.context)
 
@@ -1407,4 +1370,3 @@ class VideoSQLHarness:
     async def close(self) -> None:
         await self.context.client.close()
         await self.context.embedding_client.aclose()
-        await self.context.jev_client.aclose()
