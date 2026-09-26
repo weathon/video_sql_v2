@@ -383,12 +383,13 @@ def main() -> None:
     parser.add_argument('--root', type=Path, default=Path('/raid/videosql-video-artifacts'))
     parser.add_argument('--embedding-url', default='http://127.0.0.1:8114/v1')
     parser.add_argument('--time-format', choices=('egolife', 'mmlifelong'), default='egolife')
+    parser.add_argument('--captions', type=Path, help='Directory holding regenerated mmlifelong_<granularity>.json caption files')
     args = parser.parse_args()
     args.root.mkdir(parents=True, exist_ok=True)
     if args.stage == 'prepare':
         if args.time_format == 'mmlifelong':
             from training_free.mmlifelong_data import prepare as prepare_mm
-            prepare_mm(args.root)
+            prepare_mm(args.root, args.captions)
         else:
             prepare(args.root)
     elif args.stage == 'media':

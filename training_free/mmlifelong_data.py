@@ -44,13 +44,19 @@ def import_visual_embeddings(root: Path) -> None:
     print(f'VIDEO_IMPORTED count={len(captions)} source={database}', flush=True)
 
 
-def prepare(root: Path) -> None:
+def prepare(root: Path, captions_dir: Path | None) -> None:
     from worldmm.memory.unified.graph import MultimodalGraph
     from worldmm.memory.unified.nodes import make_entity_id
 
     graph = MultimodalGraph()
     rows = {table: [] for table in MM_DDL}
     all_captions = {g: [] for g in ('30sec', '3min', '10min', '1h')}
+    override = {}
+    if captions_dir is not None:
+        for granularity in all_captions:
+            for record in json.loads((captions_dir / f'mmlifelong_{granularity}.json').read_text()):
+                override[(granularity, Path(record['video_path']).stem, float(record['start_sec']), float(record['end_sec']))] = record['text']
+        print(f'PREPARE_CAPTION_OVERRIDE source={captions_dir} entries={len(override)}', flush=True)
     magic = root / 'magic'
     (magic / 'captions').mkdir(parents=True, exist_ok=True)
     for video in sorted(SOURCE.iterdir(), key=lambda path: int(path.name)):
@@ -69,6 +75,9 @@ def prepare(root: Path) -> None:
         for original_id, node in native.nodes.items():
             node.id = node_ids[original_id]
             node.text = normalize_text(node.text)
+            if override and node.node_type.value in ('episode', 'visual_clip'):
+                granularity = node.metadata['granularity'] if node.node_type.value == 'episode' else '30sec'
+                node.text = normalize_text(override[(granularity, video_id, float(node.metadata['start_sec']), float(node.metadata['end_sec']))])
             node.metadata['video_id'] = video_id
             for field in ('subject', 'predicate', 'object'):
                 if field in node.metadata and isinstance(node.metadata[field], str):
@@ -86,7 +95,7 @@ def prepare(root: Path) -> None:
             rows[table].append({'src_id': edge.src_id, 'dst_id': edge.dst_id, 'edge_type': edge.edge_type.value, 'weight': edge.weight})
         for granularity, path in caption_paths.items():
             for caption in json.loads(Path(path).read_text()):
-                caption['text'] = normalize_text(caption['text'])
+                caption['text'] = normalize_text(override[(granularity, video_id, float(caption['start_sec']), float(caption['end_sec']))] if override else caption['text'])
                 caption['video_id'] = video_id
                 caption['clip_key'] = f"{video_id}:{float(caption['start_sec'])}:{float(caption['end_sec'])}"
                 all_captions[granularity].append(caption)
