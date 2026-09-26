@@ -15,7 +15,7 @@ from pathlib import Path
 import av
 import numpy as np
 import wandb
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, LengthFinishReasonError
 from PIL import Image
 from pydantic import BaseModel
 
@@ -27,7 +27,7 @@ DATASET = Path('/raid/huggingface/hub/datasets--MM-Lifelong--MM-Lifelong/snapsho
 GRANULARITIES = ('30sec', '3min', '10min', '1h')
 FRAMES = {'30sec': 32, '3min': 64, '10min': 128, '1h': 256}
 LONG_SIDE = 640
-EMPTY_COMPLETION_ATTEMPTS = 5
+CAPTION_ATTEMPTS = 5
 MODEL = 'Qwen/Qwen3.8-27B-FP8'
 INSTRUCTIONS = (
     'You are annotating one segment of a long livestream broadcast for a searchable memory index. '
@@ -148,14 +148,19 @@ async def run(args) -> None:
             prompt = f'Segment length: {item["end_sec"] - item["start_sec"]:.2f} seconds. The {count} images are uniformly sampled from it, in order.\nSpeech transcript for this segment:\n{transcript}'
             content = [{'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + base64.b64encode(jpeg).decode()}} for jpeg in jpegs]
             content.append({'type': 'text', 'text': prompt})
-            for attempt in range(EMPTY_COMPLETION_ATTEMPTS):
-                completion = await client.beta.chat.completions.parse(model=MODEL, messages=[{'role': 'system', 'content': INSTRUCTIONS}, {'role': 'user', 'content': content}], response_format=Caption, reasoning_effort='low')
+            caption = None
+            for attempt in range(CAPTION_ATTEMPTS):
+                try:
+                    completion = await client.beta.chat.completions.parse(model=MODEL, messages=[{'role': 'system', 'content': INSTRUCTIONS}, {'role': 'user', 'content': content}], response_format=Caption, reasoning_effort='low')
+                except LengthFinishReasonError as error:
+                    print(f'RECAPTION_RUNAWAY granularity={item["granularity"]} video_id={item["video_id"]} index={item["index"]} attempt={attempt} output_tokens={error.completion.usage.completion_tokens}', flush=True)
+                    continue
                 caption = completion.choices[0].message.parsed
                 if caption is not None:
                     break
                 print(f'RECAPTION_EMPTY granularity={item["granularity"]} video_id={item["video_id"]} index={item["index"]} attempt={attempt} finish_reason={completion.choices[0].finish_reason} output_tokens={completion.usage.completion_tokens}', flush=True)
             if caption is None:
-                raise RuntimeError(f'Caption request returned no parsed content in {EMPTY_COMPLETION_ATTEMPTS} attempts: item={item} finish_reason={completion.choices[0].finish_reason} content={completion.choices[0].message.content!r}')
+                raise RuntimeError(f'Caption request produced no usable content in {CAPTION_ATTEMPTS} attempts: item={item}')
             text = index_text(caption)
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(json.dumps({**item, 'decode_seconds': decode_s, 'frame_count': count, 'frame_times': times, 'attempts': attempt + 1, 'transcript_segments': len(spoken), 'transcript': transcript, 'prompt': prompt, 'response_id': completion.id, 'finish_reason': completion.choices[0].finish_reason, 'usage': completion.usage.model_dump(), 'message': completion.choices[0].message.model_dump(), 'parsed': caption.model_dump(), 'text': text}, ensure_ascii=False, indent=2) + '\n')
