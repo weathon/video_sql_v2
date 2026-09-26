@@ -1054,7 +1054,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         print(f"VECTOR result table={table} candidates={candidate_count} rows={len(raw_rows)} has_more={has_more}", flush=True)
         if rerank:
             head = result["rows"][:JEV_ROW_LIMIT]
-            states = [{field: row[field] for field in JEV_FIELDS if field in row} for row in head]
+            states = [{column: json_value(value, None) for column, value in zip(result_columns, row) if column in JEV_FIELDS} for row in raw_rows[:JEV_ROW_LIMIT]]
             if any(not state for state in states):
                 raise ValueError(f"rerank requires at least one of {list(JEV_FIELDS)} among the selected columns; this sql selected {result_columns}")
             for offset in range(0, len(head), JEV_BATCH):

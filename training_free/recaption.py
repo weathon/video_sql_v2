@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import av
+import numpy as np
 import wandb
 from openai import AsyncOpenAI
 from PIL import Image
@@ -49,11 +50,18 @@ class Caption(BaseModel):
     onscreen_text: list[str]
 
 
-def read_frames(video_path: str, start_s: float, decode_s: float, count: int) -> tuple[list[bytes], list[float]]:
+def read_frames(video_path: str, start_s: float, decode_s: float, fps: float, count: int) -> tuple[list[bytes], list[float]]:
+    available = int(decode_s * fps)
+    if available < count:
+        raise RuntimeError(f'Interval holds {available} frames, fewer than the {count} requested: {video_path} start={start_s} decode={decode_s}')
+    indices = [round(value) for value in np.linspace(0, available - 1, count)]
+    if len(set(indices)) != count:
+        raise RuntimeError(f'Uniform frame indices collide: {video_path} start={start_s} decode={decode_s} available={available} count={count}')
+    selection = '+'.join(f'eq(n\\,{index})' for index in indices)
     command = [
         'ffmpeg', '-hide_banner', '-nostdin', '-nostats', '-v', 'info',
         '-ss', f'{start_s:.6f}', '-i', video_path, '-t', f'{decode_s:.6f}', '-map', '0:v:0',
-        '-vf', f'fps={count}/{decode_s:.6f},scale={LONG_SIDE}:{LONG_SIDE}:force_original_aspect_ratio=decrease,showinfo',
+        '-vf', f'select={selection},scale={LONG_SIDE}:{LONG_SIDE}:force_original_aspect_ratio=decrease,showinfo',
         '-filter_threads', '1', '-fps_mode', 'passthrough', '-frames:v', str(count),
         '-threads', '1', '-f', 'image2pipe', '-c:v', 'png', 'pipe:1',
     ]
@@ -99,7 +107,7 @@ def main() -> None:
 
 
 async def run(args) -> None:
-    durations = {path.stem: json.loads(path.read_text())['duration'] for path in (Path('runs/mmlifelong-month/artifacts/video-metadata')).glob('*.json')}
+    durations = {path.stem: json.loads(path.read_text()) for path in (Path('runs/mmlifelong-month/artifacts/video-metadata')).glob('*.json')}
     transcripts = {}
     items = []
     for granularity in args.granularities:
@@ -132,8 +140,8 @@ async def run(args) -> None:
         async with semaphore:
             count = FRAMES[item['granularity']]
             source = f'runs/mmlifelong-month/artifacts/videos/month/{item["video_id"]}.mp4'
-            decode_s = min(item['end_sec'], durations[item['video_id']]) - item['start_sec']
-            jpegs, times = await asyncio.get_running_loop().run_in_executor(frame_executor, read_frames, source, item['start_sec'], decode_s, count)
+            decode_s = min(item['end_sec'], durations[item['video_id']]['duration']) - item['start_sec']
+            jpegs, times = await asyncio.get_running_loop().run_in_executor(frame_executor, read_frames, source, item['start_sec'], decode_s, durations[item['video_id']]['fps'], count)
             spoken = [segment for segment in transcripts[item['video_id']] if item['start_sec'] <= (segment['start_sec'] + segment['end_sec']) / 2 < item['end_sec']]
             transcript = '\n'.join(f'[{segment["start_sec"] - item["start_sec"]:.0f}s] {segment["text"]}' for segment in spoken) if spoken else 'none'
             prompt = f'Segment length: {item["end_sec"] - item["start_sec"]:.2f} seconds. The {count} images are uniformly sampled from it, in order.\nSpeech transcript for this segment:\n{transcript}'
@@ -145,7 +153,7 @@ async def run(args) -> None:
                 raise RuntimeError(f'Caption request returned no parsed content: item={item} finish_reason={completion.choices[0].finish_reason} content={completion.choices[0].message.content!r}')
             text = index_text(caption)
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(json.dumps({**item, 'decode_seconds': decode_s, 'frame_count': count, 'frame_times': times, 'transcript_segments': len(spoken), 'transcript': transcript, 'prompt': prompt, 'response_id': completion.id, 'finish_reason': completion.choices[0].finish_reason, 'usage': completion.usage.model_dump(), 'reasoning': completion.choices[0].message.model_dump().get('reasoning_content'), 'parsed': caption.model_dump(), 'text': text}, ensure_ascii=False, indent=2) + '\n')
+            output.write_text(json.dumps({**item, 'decode_seconds': decode_s, 'frame_count': count, 'frame_times': times, 'transcript_segments': len(spoken), 'transcript': transcript, 'prompt': prompt, 'response_id': completion.id, 'finish_reason': completion.choices[0].finish_reason, 'usage': completion.usage.model_dump(), 'message': completion.choices[0].message.model_dump(), 'parsed': caption.model_dump(), 'text': text}, ensure_ascii=False, indent=2) + '\n')
             with lock:
                 counters['done'] += 1
                 counters['input_tokens'] += completion.usage.prompt_tokens
