@@ -23,7 +23,7 @@ for table in ('topic_chains', 'event_chains'):
     MM_DDL[table] = DDL[table].removesuffix(')') + ', video_id VARCHAR)'
 for table in ('topic_facts', 'event_steps'):
     MM_DDL[table] = DDL[table].removesuffix(')') + ', video_id VARCHAR, start_ts DOUBLE, end_ts DOUBLE)'
-MM_SCHEMA = '\n'.join(MM_DDL.values()) + '\nAll 14 broadcasts are available to every question. video_id identifies the broadcast. start_ts/end_ts and semantic_hits.start_s/end_s are seconds within that video, including fractional seconds. There is no question cutoff. topic_facts.time and event_steps.start_time/end_time preserve HH:MM:SS strings; event_steps.day is NULL. Pass video_id with the video-local interval to clip_qa.'
+MM_SCHEMA = '\n'.join(MM_DDL.values()) + '\nAll 14 broadcasts are available to every question. video_id identifies the broadcast. start_ts/end_ts and semantic_hits.start_s/end_s are seconds within that video, including fractional seconds. semantic rows are consolidated per video, so their start_ts/end_ts span the whole video rather than locating the fact, and are NULL for rows with no entity link. There is no question cutoff. topic_facts.time and event_steps.start_time/end_time preserve HH:MM:SS strings; event_steps.day is NULL. Pass video_id with the video-local interval to clip_qa.'
 
 
 def import_visual_embeddings(root: Path) -> None:
@@ -72,6 +72,8 @@ def prepare(root: Path, captions_dir: Path | None) -> None:
         native.add_entity_nodes(str(source / 'episodic_memory/openie_results.json'), captions, 'IShowSpeed')
         native.add_semantic_nodes(str(source / 'semantic_memory/semantic_consolidation_results.json'), 'IShowSpeed')
         node_ids = {nid: f'{video_id}:vis_{node.start_ts}_{node.end_ts}' if node.node_type.value == 'visual_clip' else f'{video_id}:{nid}' for nid, node in native.nodes.items()}
+        linked_semantic = {node_ids[edge.dst_id] for edge in native.edges if edge.edge_type.value == 'has_property'}
+        video_end = max(float(caption['end_sec']) for caption in captions)
         for original_id, node in native.nodes.items():
             node.id = node_ids[original_id]
             node.text = normalize_text(node.text)
@@ -85,7 +87,10 @@ def prepare(root: Path, captions_dir: Path | None) -> None:
             if node.node_type.value == 'visual_clip':
                 node.metadata['clip_key'] = f'{video_id}:{float(node.start_ts)}:{float(node.end_ts)}'
             graph.nodes[node.id] = node
-            rows[node.node_type.value].append({'id': node.id, 'node_type': node.node_type.value, 'text': node.text, 'start_ts': node.start_ts, 'end_ts': node.end_ts, 'metadata': json.dumps(node.metadata, ensure_ascii=False), 'video_id': video_id})
+            start_ts, end_ts = node.start_ts, node.end_ts
+            if node.node_type.value == 'semantic':
+                start_ts, end_ts = (0.0, video_end) if node.id in linked_semantic else (None, None)
+            rows[node.node_type.value].append({'id': node.id, 'node_type': node.node_type.value, 'text': node.text, 'start_ts': start_ts, 'end_ts': end_ts, 'metadata': json.dumps(node.metadata, ensure_ascii=False), 'video_id': video_id})
         for edge in native.edges:
             edge.src_id, edge.dst_id = node_ids[edge.src_id], node_ids[edge.dst_id]
             graph.edges.append(edge)

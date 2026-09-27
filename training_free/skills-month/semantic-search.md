@@ -5,6 +5,8 @@ description: Use when exact SQL terms are unknown or a concept must be located f
 
 # Main content
 
+Try keyword matching with run_sql first. A lowercase LIKE pattern over text, fact or description finds named things, quoted speech and on-screen strings more reliably than similarity does, and it is exact. Fall back to this tool when you do not know the wording the index uses, or when keyword matching returned nothing.
+
 Call semantic_search(query, table, sql, question). The query is embedded and compared by cosine similarity with every row of the chosen table across all indexed videos; SQL then filters, ranks, orders or aggregates those rows.
 
 Choose episode for caption text, visual_clip for video embeddings, entity for names, semantic for triples, topic_facts for facts, or event_steps for descriptions. Caption text holds a scene description, an object inventory written as name: state pairs after `objects:`, and verbatim screen strings after `on-screen text:`, so object states and on-screen strings are searchable directly. semantic_hits contains the chosen table's columns plus cosine_sim, start_s and end_s. video_id identifies the source video; all numeric times are seconds within that video.

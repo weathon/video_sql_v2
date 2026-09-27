@@ -872,7 +872,7 @@ async def sample_frames(
 def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
     @function_tool(failure_error_function=tool_error_json)
     async def run_sql(sql: str, question: str | None = None) -> str:
-        """Execute one read-only SQL query scoped by an outer WHERE, LIMIT, HAVING, QUALIFY, or sampling clause, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Unrestricted queries are rejected before execution; rewrite them with a relevant time, entity, row-ID filter, or finite LIMIT. ORDER BY alone is not a restriction. With question=null, return up to 100 raw rows with long text cells shortened. Optionally supply question to request a separate QA answer from the complete scoped result, with supporting row IDs and times."""
+        """Reach for this first. Keyword matching with LIKE over the indexed text is the primary way to find evidence; use semantic_search only after keyword matching has failed. Execute one read-only SQL query scoped by an outer WHERE, LIMIT, HAVING, QUALIFY, or sampling clause, or a compact global COUNT/MIN/MAX/SUM/AVG aggregation. Unrestricted queries are rejected before execution; rewrite them with a relevant time, entity, row-ID filter, or finite LIMIT. ORDER BY alone is not a restriction. With question=null, return up to 100 raw rows with long text cells shortened. Optionally supply question to request a separate QA answer from the complete scoped result, with supporting row IDs and times."""
         statements = sqlglot.parse(sql, read="duckdb")
         if len(statements) != 1 or statements[0] is None:
             raise ValueError("Submit exactly one scoped SQL query; rewrite this request.")
@@ -951,7 +951,7 @@ def make_tools(context: HarnessContext) -> tuple[list[Any], Any]:
         sql: str,
         question: str | None = None,
     ) -> str:
-        """Embed query, score every row of one embedded table by cosine similarity, then run sql over the temporary in-memory table semantic_hits. semantic_hits holds all columns of the chosen table plus cosine_sim (higher means more similar to query), start_ts and end_ts (DHHMMSSFF, added for topic_facts and event_steps), start_s and end_s (seconds since DAY1 00:00:00 for clip_qa). Use sql to rank by cosine_sim, filter or order by time, filter or sort by names or text, or aggregate. visual_clip matches the video embedding; episode matches caption text. With question=null, return up to 100 result rows with long text cells shortened; supply question to request a separate QA answer from the complete result.
+        """Use this only after keyword matching with run_sql has failed to find the evidence. Embed query, score every row of one embedded table by cosine similarity, then run sql over the temporary in-memory table semantic_hits. semantic_hits holds all columns of the chosen table plus cosine_sim (higher means more similar to query), start_ts and end_ts (DHHMMSSFF, added for topic_facts and event_steps), start_s and end_s (seconds since DAY1 00:00:00 for clip_qa). Use sql to rank by cosine_sim, filter or order by time, filter or sort by names or text, or aggregate. visual_clip matches the video embedding; episode matches caption text. With question=null, return up to 100 result rows with long text cells shortened; supply question to request a separate QA answer from the complete result.
 
         Args:
             query: Semantic search text.

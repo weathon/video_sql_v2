@@ -5,7 +5,7 @@ description: Use when writing SQL or joining memory tables and evidence links.
 
 # Main content
 
-Every question can access all 14 indexed videos. video_id identifies a broadcast; timestamps are seconds within that video, including fractional seconds. There is no query-time cutoff. Never compare local timestamps across videos without retaining video_id. Numeric video IDs give broadcast ordering.
+Keyword matching here is the first choice for finding evidence; reach for semantic_search only when it returns nothing. Every question can access all 14 indexed videos. video_id identifies a broadcast; timestamps are seconds within that video, including fractional seconds. There is no query-time cutoff. Never compare local timestamps across videos without retaining video_id. Numeric video IDs give broadcast ordering.
 
 - entity, episode, semantic, visual_clip: id, node_type, text, start_ts, end_ts, metadata, video_id.
 - episode metadata includes granularity (30sec, 3min, 10min, 1h), video_path, start_sec, end_sec. visual_clip also identifies the exact cached interval. entity metadata includes normalized_name and frequency; semantic metadata includes subject, predicate, object.
